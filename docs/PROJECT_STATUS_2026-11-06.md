@@ -12,6 +12,8 @@
 
 本文档说明当前代码已经实现什么、只完成到哪一层、哪些能力尚未完成，以及用什么证据验证。它优先记录可复查的事实，不把设计稿、代码存在和真机端到端通过混为一谈。
 
+按用户最初要求、后续细化要求和参考项目整理的完整追踪账本见 [Eta 原始需求、参考项目与实施状态总报告](REQUIREMENTS_AND_SOURCE_REFERENCE_REPORT_2026-11-06.md)。
+
 ## 1. 当前结论
 
 Eta 目前是在 Mangi-11/Eta 的 Kotlin/Compose Android 底座上开发的增强分支。保留原有 Miuix/Mica 视觉语言，并把新增能力尽量隔离在 `io.github.mangi.eta.fork` 下，便于继续吸收上游更新。
