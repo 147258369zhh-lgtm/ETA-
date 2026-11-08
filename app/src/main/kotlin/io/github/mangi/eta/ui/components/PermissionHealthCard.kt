@@ -20,6 +20,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
 import io.github.mangi.eta.ui.model.PermissionHealthUiState
 import io.github.mangi.eta.ui.model.PermissionStatusUi
 import top.yukonga.miuix.kmp.basic.Card
@@ -33,14 +34,15 @@ fun PermissionHealthCard(
     onOpenPermissions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val issueCount = state.items.count { it.status != PermissionStatusUi.Available }
+    val tokens = LocalEtaDesignTokens.current
+    val issueCount = state.issueCount
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = tokens.settingsHorizontalInset, vertical = 6.dp),
         onClick = onOpenPermissions,
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(tokens.cardContentPadding)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = stringResource(R.string.ui_permission_health_3048bb),
@@ -63,7 +65,8 @@ fun PermissionHealthCard(
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))
-            state.items.take(3).forEach { item ->
+            state.items.sortedBy { it.status == PermissionStatusUi.Available || !it.requiredForCore }
+                .take(3).forEach { item ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

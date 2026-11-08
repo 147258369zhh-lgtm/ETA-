@@ -69,8 +69,12 @@ internal object AgentRuntimePolicy {
     }
 
     private fun SharedPreferences?.allowed(key: String): Boolean {
-        if (this == null) return false
         val default = Prefs.Keys.BOOLEAN_DEFAULTS[key] ?: false
+        // Runtime can be created by Android before the UI has materialized the local
+        // preference file (for example after a force-stop or a direct service bind).
+        // A missing preference store means "use the product default", not "remove every
+        // tool from the model schema".  The execution layer still rechecks each capability.
+        if (this == null) return default
         return runCatching { getBoolean(key, default) }.getOrDefault(false)
     }
 

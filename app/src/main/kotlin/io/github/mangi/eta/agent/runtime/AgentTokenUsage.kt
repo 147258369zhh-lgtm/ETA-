@@ -6,11 +6,15 @@ internal data class AgentTokenUsage(
     val outputTokens: Int? = null,
     val reasoningTokens: Int? = null,
     val cachedTokens: Int? = null,
+    val billingBasis: Int = AgentBillingTokens.UNKNOWN,
+    val cacheWriteTokens: Int? = null,
+    val toolUseTokens: Int? = null,
+    val localRuntime: LocalRuntimeMetrics? = null,
 ) {
     val isEmpty: Boolean
         get() = contextTokens == null &&
             inputTokens == null &&
             outputTokens == null &&
             reasoningTokens == null &&
-            cachedTokens == null
+            cachedTokens == null && cacheWriteTokens == null && toolUseTokens == null && localRuntime == null
 }

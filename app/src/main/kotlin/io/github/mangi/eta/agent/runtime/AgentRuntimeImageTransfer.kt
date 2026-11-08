@@ -28,6 +28,9 @@ internal object AgentRuntimeImageTransfer {
     private const val MAX_IMAGE_COUNT = 8
     private const val MAX_IMAGE_BYTES = 12 * 1024 * 1024
     private const val MAX_TOTAL_IMAGE_BYTES = 32 * 1024 * 1024
+    private const val MODEL_ATTACHMENT_TOTAL_BYTES = 1_024 * 1024
+    private const val MODEL_ATTACHMENT_MAX_BYTES = 480 * 1024
+    private const val MODEL_ATTACHMENT_MIN_BYTES = 96 * 1024
     private const val MAX_REMOTE_URL_CHARS = 16 * 1024
     private const val MAX_ENCODED_IMAGE_CHARS = MAX_IMAGE_BYTES * 2
     private const val CACHE_DIRECTORY = "agent-runtime-transfer"
@@ -136,6 +139,11 @@ internal object AgentRuntimeImageTransfer {
         if (request.images.size > MAX_IMAGE_COUNT) {
             throw ImageTransferException("一次最多支持 $MAX_IMAGE_COUNT 张图片")
         }
+        val attachmentCount = request.images.count { image ->
+            !image.preserveOriginal && (image.fileDescriptor != null || image.remoteUrl == null)
+        }.coerceAtLeast(1)
+        val attachmentTargetBytes = (MODEL_ATTACHMENT_TOTAL_BYTES / attachmentCount)
+            .coerceIn(MODEL_ATTACHMENT_MIN_BYTES, MODEL_ATTACHMENT_MAX_BYTES)
 
         var totalBytes = 0L
         val images = request.images.mapIndexed { index, image ->
@@ -161,7 +169,12 @@ internal object AgentRuntimeImageTransfer {
                 val materialized = if (image.preserveOriginal) {
                     AgentImageCodec.fromScreenBytes(bytes, image.source, image.mimeType)
                 } else {
-                    AgentImageCodec.fromAttachmentBytes(bytes, image.source, image.mimeType)
+                    AgentImageCodec.fromAttachmentBytes(
+                        bytes = bytes,
+                        source = image.source,
+                        mimeHint = image.mimeType,
+                        targetBytes = attachmentTargetBytes,
+                    )
                 }
                 return@mapIndexed materialized.also {
                     AndroidAgentLogger.debug {

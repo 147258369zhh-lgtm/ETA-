@@ -29,10 +29,14 @@ import io.github.mangi.eta.core.safeLogType
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,12 +53,23 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
  */
 internal object VirtualDisplayController {
 
+    private const val HEALTH_CHECK_INTERVAL_MS = 3_000L
+    private const val RECOVERY_WINDOW_MS = 60_000L
+    private const val MAX_RECOVERY_ATTEMPTS = 1
+
     private val lock = Any()
     private val mutableSnapshots = MutableStateFlow(VirtualDisplaySnapshot.Inactive)
     val snapshots: StateFlow<VirtualDisplaySnapshot> = mutableSnapshots.asStateFlow()
 
     private val frameSequenceGenerator = AtomicLong(0L)
     private val touchSequenceGenerator = AtomicLong(0L)
+    private val manualGeneration = AtomicLong(0L)
+    private val sessionSequence = AtomicLong(0L)
+    private val releaseGeneration = AtomicLong(0L)
+    private val manualInputExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { action -> Thread(action, "eta-vd-manual-input").apply { isDaemon = true } }
+    private val healthExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { action ->
+        Thread(action, "eta-vd-health").apply { isDaemon = true }
+    }
 
     @Volatile
     private var highFrequencyPreview: Boolean = false
@@ -73,6 +88,33 @@ internal object VirtualDisplayController {
     private var latestFullBitmap: Bitmap? = null
     private var lastUiFrameAtElapsedMs: Long = 0L
     private val mutedPackages = linkedSetOf<String>()
+    private var controllerContext: Context? = null
+    private var rootAvailability: () -> Boolean = { RootAccess.isGranted }
+    private var currentSessionId: String = ""
+    private var currentBackend: VirtualDisplayBackend = VirtualDisplayBackend.NONE
+    private var healthCheck: ScheduledFuture<*>? = null
+    private var recoveryAttempt: Int = 0
+    private var lastRecoveryAtElapsedMs: Long = Long.MIN_VALUE
+    private var recoveryInFlight: Boolean = false
+    private var lastLaunch: LaunchSnapshot? = null
+
+    private sealed interface LaunchSnapshot {
+        val packageName: String
+        val appName: String
+        val intent: Intent
+
+        data class App(
+            override val packageName: String,
+            override val appName: String,
+            override val intent: Intent,
+        ) : LaunchSnapshot
+
+        data class Uri(
+            override val packageName: String,
+            override val appName: String,
+            override val intent: Intent,
+        ) : LaunchSnapshot
+    }
 
     fun isBackendAvailable(rootAvailable: Boolean, lsposedAvailable: Boolean): Boolean =
         rootAvailable || lsposedAvailable
@@ -84,8 +126,12 @@ internal object VirtualDisplayController {
     fun setUserControlling(controlling: Boolean) {
         synchronized(lock) {
             val current = mutableSnapshots.value
-            if (!current.active || current.userControlling == controlling) return
-            mutableSnapshots.value = current.copy(userControlling = controlling)
+            if (
+                !current.active ||
+                current.lifecycle != VirtualDisplayLifecycle.ACTIVE ||
+                current.userControlling == controlling
+            ) return
+            mutableSnapshots.value = current.copy(userControlling = controlling, manualInputGeneration = manualGeneration.incrementAndGet())
             if (controlling) highFrequencyPreview = true
         }
     }
@@ -95,29 +141,73 @@ internal object VirtualDisplayController {
     }
 
     /**
-     * 确保受信任虚拟屏已就绪并返回其 displayId；不可用时返回 null，由调用方平滑回退至物理主屏。
+     * 确保受信任虚拟屏已就绪并返回其 displayId；不可用时返回 null，调用方必须明确报告失败。
      */
     fun ensureVirtualDisplay(
         context: Context,
         rootAvailable: () -> Boolean = { RootAccess.isGranted },
     ): Int? {
+        val appContext = context.applicationContext
         synchronized(lock) {
-            if (CanvasRoutingPolicy.isVirtualDisplay(activeDisplayId) && imageReader != null) {
+            controllerContext = appContext
+            rootAvailability = rootAvailable
+            if (isCurrentDisplayHealthyLocked(appContext)) {
                 return activeDisplayId
             }
         }
-        val appContext = context.applicationContext
         val (width, height, densityDpi) = resolvePhysicalDisplayMetrics(appContext)
         synchronized(lock) {
-            if (CanvasRoutingPolicy.isVirtualDisplay(activeDisplayId) && imageReader != null) {
+            if (isCurrentDisplayHealthyLocked(appContext)) {
                 return activeDisplayId
             }
-            releaseLocked(appContext, rootAvailable)
+            releaseResourcesLocked(
+                appContext,
+                rootAvailable,
+                restoreAudio = !recoveryInFlight,
+            )
+            currentSessionId = "vd-${sessionSequence.incrementAndGet()}"
+            currentBackend = VirtualDisplayBackend.NONE
+            mutableSnapshots.value = VirtualDisplaySnapshot(
+                width = width,
+                height = height,
+                sessionId = currentSessionId,
+                lifecycle = VirtualDisplayLifecycle.STARTING,
+                recoveryAttempt = recoveryAttempt,
+            )
 
-            val thread = HandlerThread("eta-virtual-display-frame").apply { start() }
-            val handler = Handler(thread.looper)
-            val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
-            reader.setOnImageAvailableListener(::onFrameAvailable, handler)
+            var workerToClean: HandlerThread? = null
+            val frameResources = runCatching {
+                val worker = HandlerThread("eta-virtual-display-frame").apply { start() }
+                workerToClean = worker
+                val workerHandler = Handler(worker.looper)
+                val frameReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
+                frameReader.setOnImageAvailableListener(::onFrameAvailable, workerHandler)
+                Triple(worker, workerHandler, frameReader)
+            }.getOrElse { throwable ->
+                workerToClean?.let { worker -> runCatching { worker.quitSafely() } }
+                val failedSession = currentSessionId
+                releaseResourcesLocked(
+                    appContext,
+                    rootAvailable,
+                    restoreAudio = !recoveryInFlight,
+                )
+                mutableSnapshots.value = VirtualDisplaySnapshot(
+                    width = width,
+                    height = height,
+                    sessionId = failedSession,
+                    lifecycle = VirtualDisplayLifecycle.FAILED,
+                    recoveryAttempt = recoveryAttempt,
+                    failureReason = "FRAME_SOURCE_CREATE_FAILED",
+                )
+                AndroidAgentLogger.error(
+                    "Virtual display frame source creation failed",
+                    throwable,
+                )
+                return null
+            }
+            val thread = frameResources.first
+            val handler = frameResources.second
+            val reader = frameResources.third
 
             frameThread = thread
             frameHandler = handler
@@ -138,12 +228,9 @@ internal object VirtualDisplayController {
                 if (CanvasRoutingPolicy.isVirtualDisplay(id)) {
                     inProcessVirtualDisplay = createdInProcess
                     activeDisplayId = id
-                    mutableSnapshots.value = VirtualDisplaySnapshot(
-                        active = true,
-                        displayId = id,
-                        width = width,
-                        height = height,
-                    )
+                    currentBackend = VirtualDisplayBackend.IN_PROCESS
+                    publishActiveLocked()
+                    scheduleHealthCheckLocked(appContext, rootAvailable)
                     AndroidAgentLogger.info("Virtual display created in-process: displayId=$id size=${width}x$height")
                     return id
                 }
@@ -161,18 +248,29 @@ internal object VirtualDisplayController {
                 )
                 if (rootId != null && CanvasRoutingPolicy.isVirtualDisplay(rootId)) {
                     activeDisplayId = rootId
-                    mutableSnapshots.value = VirtualDisplaySnapshot(
-                        active = true,
-                        displayId = rootId,
-                        width = width,
-                        height = height,
-                    )
+                    currentBackend = VirtualDisplayBackend.ROOT_BRIDGE
+                    publishActiveLocked()
+                    scheduleHealthCheckLocked(appContext, rootAvailable)
                     AndroidAgentLogger.info("Virtual display created via root bridge: displayId=$rootId size=${width}x$height")
                     return rootId
                 }
             }
 
-            releaseLocked(appContext, rootAvailable)
+            val failedSession = currentSessionId
+            releaseResourcesLocked(
+                appContext,
+                rootAvailable,
+                restoreAudio = !recoveryInFlight,
+            )
+            mutableSnapshots.value = VirtualDisplaySnapshot(
+                width = width,
+                height = height,
+                sessionId = failedSession,
+                lifecycle = VirtualDisplayLifecycle.FAILED,
+                recoveryAttempt = recoveryAttempt,
+                failureReason = "VIRTUAL_DISPLAY_CREATE_FAILED",
+            )
+            AndroidAgentLogger.warn("Virtual display creation failed after compatibility fallbacks")
             return null
         }
     }
@@ -213,7 +311,7 @@ internal object VirtualDisplayController {
                 val cmd = if (!component.isNullOrBlank()) {
                     "am start --user $userId --display $displayId -n ${DeviceToolContract.quote(component)}"
                 } else {
-                    "monkey -p ${DeviceToolContract.quote(packageName)} -c android.intent.category.LAUNCHER 1"
+                    return null
                 }
                 if (!startedInProcess) {
                     val exec = BoundedRootCommandExecutor(AndroidAgentLogger, rootAvailable = rootAvailable)
@@ -236,8 +334,15 @@ internal object VirtualDisplayController {
                     appName = appName,
                     packageName = packageName,
                     materializingToMain = false,
+                    failureReason = null,
                 )
             }
+            lastLaunch = LaunchSnapshot.App(
+                packageName = packageName,
+                appName = appName,
+                intent = Intent(launchIntent),
+            )
+            if (!recoveryInFlight) recoveryAttempt = 0
         }
         return displayId
     }
@@ -279,12 +384,21 @@ internal object VirtualDisplayController {
 
         synchronized(lock) {
             val current = mutableSnapshots.value
+            val resolvedPackage = intent.resolveActivity(appContext.packageManager)?.packageName.orEmpty()
             if (current.active && current.displayId == displayId) {
                 mutableSnapshots.value = current.copy(
                     appName = targetLabel.ifBlank { current.appName },
+                    packageName = resolvedPackage.ifBlank { current.packageName },
                     materializingToMain = false,
+                    failureReason = null,
                 )
             }
+            lastLaunch = LaunchSnapshot.Uri(
+                packageName = resolvedPackage,
+                appName = targetLabel.ifBlank { uriDisplayName(intent) },
+                intent = Intent(intent),
+            )
+            if (!recoveryInFlight) recoveryAttempt = 0
         }
         return displayId
     }
@@ -396,13 +510,15 @@ internal object VirtualDisplayController {
         normalizedY: Float,
         longPress: Boolean = false,
         rootAvailable: () -> Boolean = { RootAccess.isGranted },
+        withControl: ((() -> Unit) -> Unit) = { it() },
     ) {
         val snapshot = mutableSnapshots.value
-        if (!snapshot.active || !CanvasRoutingPolicy.isVirtualDisplay(snapshot.displayId)) return
+        if (!snapshot.active || !snapshot.userControlling || !CanvasRoutingPolicy.isVirtualDisplay(snapshot.displayId) || !normalizedX.isFinite() || !normalizedY.isFinite()) return
         val x = (normalizedX.coerceIn(0f, 1f) * (snapshot.width - 1)).roundToInt()
         val y = (normalizedY.coerceIn(0f, 1f) * (snapshot.height - 1)).roundToInt()
         emitTapEffect(x, y, longPress = longPress)
-        thread(name = "eta-vd-user-tap", isDaemon = true) {
+        manualInputExecutor.execute { withControl {
+            if (!mutableSnapshots.value.userControlling || mutableSnapshots.value.displayId != snapshot.displayId || mutableSnapshots.value.manualInputGeneration != snapshot.manualInputGeneration) return@withControl
             val duration = if (longPress) 650L else 55L
             val dispatched = AgentAccessibilityService.current()
                 ?.gestureTap(x.toFloat(), y.toFloat(), durationMs = duration, displayId = snapshot.displayId)
@@ -420,7 +536,7 @@ internal object VirtualDisplayController {
                     exec.close()
                 }
             }
-        }
+        } }
     }
 
     fun dispatchUserSwipeOnCanvas(
@@ -430,16 +546,18 @@ internal object VirtualDisplayController {
         endY: Float,
         durationMs: Int = 320,
         rootAvailable: () -> Boolean = { RootAccess.isGranted },
+        withControl: ((() -> Unit) -> Unit) = { it() },
     ) {
         val snapshot = mutableSnapshots.value
-        if (!snapshot.active || !CanvasRoutingPolicy.isVirtualDisplay(snapshot.displayId)) return
+        if (!snapshot.active || !snapshot.userControlling || !CanvasRoutingPolicy.isVirtualDisplay(snapshot.displayId) || listOf(startX, startY, endX, endY).any { !it.isFinite() }) return
         val x1 = (startX.coerceIn(0f, 1f) * (snapshot.width - 1)).roundToInt()
         val y1 = (startY.coerceIn(0f, 1f) * (snapshot.height - 1)).roundToInt()
         val x2 = (endX.coerceIn(0f, 1f) * (snapshot.width - 1)).roundToInt()
         val y2 = (endY.coerceIn(0f, 1f) * (snapshot.height - 1)).roundToInt()
         val safeDuration = durationMs.coerceIn(140, 1_000)
         emitSwipeEffect(x1, y1, x2, y2, safeDuration)
-        thread(name = "eta-vd-user-swipe", isDaemon = true) {
+        manualInputExecutor.execute { withControl {
+            if (!mutableSnapshots.value.userControlling || mutableSnapshots.value.displayId != snapshot.displayId || mutableSnapshots.value.manualInputGeneration != snapshot.manualInputGeneration) return@withControl
             val dispatched = AgentAccessibilityService.current()
                 ?.gestureSwipe(
                     x1.toFloat(),
@@ -460,7 +578,7 @@ internal object VirtualDisplayController {
                     exec.close()
                 }
             }
-        }
+        } }
     }
 
     fun release(
@@ -468,21 +586,51 @@ internal object VirtualDisplayController {
         rootAvailable: () -> Boolean = { RootAccess.isGranted },
     ) {
         synchronized(lock) {
-            releaseLocked(context, rootAvailable)
+            releaseGeneration.incrementAndGet()
+            if (!hasResourcesLocked() && mutableSnapshots.value.lifecycle == VirtualDisplayLifecycle.IDLE) {
+                recoveryInFlight = false
+                recoveryAttempt = 0
+                lastLaunch = null
+                return
+            }
+            val current = mutableSnapshots.value
+            if (current.active || current.lifecycle != VirtualDisplayLifecycle.IDLE) {
+                mutableSnapshots.value = current.copy(
+                    active = false,
+                    lifecycle = VirtualDisplayLifecycle.RELEASING,
+                    userControlling = false,
+                    frame = null,
+                    touchEffect = null,
+                )
+            }
+            releaseResourcesLocked(
+                context = context,
+                rootAvailable = rootAvailable,
+                restoreAudio = true,
+            )
+            recoveryInFlight = false
+            recoveryAttempt = 0
+            lastLaunch = null
+            currentSessionId = ""
+            currentBackend = VirtualDisplayBackend.NONE
+            controllerContext = null
+            mutableSnapshots.value = VirtualDisplaySnapshot.Inactive
         }
     }
 
-    private fun releaseLocked(
+    private fun releaseResourcesLocked(
         context: Context?,
         rootAvailable: () -> Boolean,
+        restoreAudio: Boolean,
     ) {
         highFrequencyPreview = false
         activeDisplayId = Display.DEFAULT_DISPLAY
-        mutableSnapshots.value = VirtualDisplaySnapshot.Inactive
+        healthCheck?.cancel(false)
+        healthCheck = null
 
-        if (context != null && mutedPackages.isNotEmpty()) {
+        if (restoreAudio && context != null && mutedPackages.isNotEmpty()) {
             restoreMutedPackages(context.applicationContext, rootAvailable)
-        } else {
+        } else if (restoreAudio) {
             mutedPackages.clear()
         }
 
@@ -531,6 +679,155 @@ internal object VirtualDisplayController {
         lastUiFrameAtElapsedMs = 0L
     }
 
+    private fun hasResourcesLocked(): Boolean =
+        imageReader != null || inProcessVirtualDisplay != null || rootBridgeProcess != null || frameThread != null
+
+    private fun publishActiveLocked() {
+        val current = mutableSnapshots.value
+        val now = SystemClock.elapsedRealtime()
+        mutableSnapshots.value = current.copy(
+            active = true,
+            displayId = activeDisplayId,
+            width = displayWidth,
+            height = displayHeight,
+            sessionId = currentSessionId,
+            lifecycle = VirtualDisplayLifecycle.ACTIVE,
+            backend = currentBackend,
+            recoveryAttempt = recoveryAttempt,
+            failureReason = null,
+            startedAtElapsedMs = now,
+        )
+    }
+
+    private fun isCurrentDisplayHealthyLocked(context: Context): Boolean {
+        if (imageReader == null || !CanvasRoutingPolicy.isVirtualDisplay(activeDisplayId)) return false
+        if (currentBackend == VirtualDisplayBackend.ROOT_BRIDGE && rootBridgeProcess?.isAlive != true) {
+            return false
+        }
+        val displayManager = context.getSystemService(DisplayManager::class.java) ?: return false
+        return displayManager.getDisplay(activeDisplayId) != null
+    }
+
+    private fun scheduleHealthCheckLocked(
+        context: Context,
+        rootAvailable: () -> Boolean,
+    ) {
+        healthCheck?.cancel(false)
+        healthCheck = healthExecutor.scheduleWithFixedDelay(
+            {
+                val failure = synchronized(lock) {
+                    val snapshot = mutableSnapshots.value
+                    when {
+                        recoveryInFlight || !snapshot.active -> null
+                        !isCurrentDisplayHealthyLocked(context) -> "DISPLAY_OR_BRIDGE_LOST"
+                        else -> null
+                    }
+                }
+                if (failure != null) requestRecovery(context, rootAvailable, failure)
+            },
+            HEALTH_CHECK_INTERVAL_MS,
+            HEALTH_CHECK_INTERVAL_MS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    private fun requestRecovery(
+        context: Context,
+        rootAvailable: () -> Boolean,
+        failureReason: String,
+    ) {
+        val recoveryPlan = synchronized(lock) {
+            if (recoveryInFlight) return
+            val current = mutableSnapshots.value
+            if (!current.active) return
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastRecoveryAtElapsedMs < RECOVERY_WINDOW_MS && recoveryAttempt >= MAX_RECOVERY_ATTEMPTS) {
+                failLocked(context, rootAvailable, current.copy(active = false), "RECOVERY_EXHAUSTED")
+                return
+            }
+            recoveryInFlight = true
+            lastRecoveryAtElapsedMs = now
+            recoveryAttempt += 1
+            mutableSnapshots.value = current.copy(
+                active = false,
+                lifecycle = VirtualDisplayLifecycle.RECOVERING,
+                recoveryAttempt = recoveryAttempt,
+                failureReason = failureReason,
+                userControlling = false,
+                touchEffect = null,
+            )
+            releaseResourcesLocked(context, rootAvailable, restoreAudio = false)
+            Pair(lastLaunch, releaseGeneration.get())
+        }
+        AndroidAgentLogger.warn("Virtual display recovery started: reason=$failureReason")
+        val launch = recoveryPlan.first
+        val generation = recoveryPlan.second
+        val recoveredDisplayId = synchronized(lock) {
+            if (releaseGeneration.get() != generation) {
+                recoveryInFlight = false
+                return
+            }
+            ensureVirtualDisplay(context, rootAvailable)
+        }
+        val relaunched = if (recoveredDisplayId != null && launch != null) {
+            when (launch) {
+                is LaunchSnapshot.App -> launchAppOnVirtualDisplay(
+                    context = context,
+                    packageName = launch.packageName,
+                    appName = launch.appName,
+                    launchIntent = launch.intent,
+                    rootAvailable = rootAvailable,
+                ) != null
+                is LaunchSnapshot.Uri -> openUriOnVirtualDisplay(
+                    context = context,
+                    intent = launch.intent,
+                    targetLabel = launch.appName,
+                    rootAvailable = rootAvailable,
+                ) != null
+            }
+        } else {
+            recoveredDisplayId != null
+        }
+        synchronized(lock) {
+            recoveryInFlight = false
+            if (releaseGeneration.get() != generation) return
+            if (!relaunched) {
+                failLocked(
+                    context,
+                    rootAvailable,
+                    mutableSnapshots.value.copy(active = false),
+                    "RESTORE_FAILED",
+                )
+            } else {
+                AndroidAgentLogger.info("Virtual display recovery completed: displayId=$recoveredDisplayId")
+            }
+        }
+    }
+
+    private fun failLocked(
+        context: Context,
+        rootAvailable: () -> Boolean,
+        failedSnapshot: VirtualDisplaySnapshot,
+        reason: String,
+    ) {
+        releaseResourcesLocked(context, rootAvailable, restoreAudio = true)
+        currentBackend = VirtualDisplayBackend.NONE
+        lastLaunch = null
+        mutableSnapshots.value = failedSnapshot.copy(
+            active = false,
+            displayId = failedSnapshot.displayId,
+            lifecycle = VirtualDisplayLifecycle.FAILED,
+            backend = VirtualDisplayBackend.NONE,
+            userControlling = false,
+            materializingToMain = false,
+            frame = null,
+            touchEffect = null,
+            recoveryAttempt = recoveryAttempt,
+            failureReason = reason,
+        )
+        AndroidAgentLogger.warn("Virtual display stopped: reason=$reason")
+    }
+
     private fun onFrameAvailable(reader: ImageReader) {
         val image = try {
             reader.acquireLatestImage()
@@ -542,6 +839,7 @@ internal object VirtualDisplayController {
             val now = SystemClock.elapsedRealtime()
             val minIntervalMs = if (highFrequencyPreview) 30L else 160L
             val shouldUpdateUi = now - lastUiFrameAtElapsedMs >= minIntervalMs || latestFullBitmap == null
+            if (!shouldUpdateUi) return
 
             val bitmap = decodeImageToBitmap(image) ?: return
             var oldBitmap: Bitmap? = null
@@ -560,6 +858,7 @@ internal object VirtualDisplayController {
                         mutableSnapshots.value = current.copy(
                             frame = previewBitmap.asImageBitmap(),
                             frameSequence = frameSequenceGenerator.incrementAndGet(),
+                            lastFrameAtElapsedMs = now,
                         )
                     }
                 }
@@ -617,33 +916,46 @@ internal object VirtualDisplayController {
         width: Int,
         height: Int,
         densityDpi: Int,
-    ): VirtualDisplay? = runCatching {
+    ): VirtualDisplay? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             runCatching { HiddenApiBypass.addHiddenApiExemptions("Landroid/hardware/display/") }
         }
-        val dm = appContext.getSystemService(DisplayManager::class.java) ?: return@runCatching null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val config = VirtualDisplayConfig.Builder(
-                CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
-                width,
-                height,
-                densityDpi,
-            )
-                .setSurface(surface)
-                .setFlags(CanvasRoutingPolicy.TRUSTED_INTERACTIVE_FLAGS)
-                .build()
-            dm.createVirtualDisplay(config)
-        } else {
-            dm.createVirtualDisplay(
-                CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
-                width,
-                height,
-                densityDpi,
-                surface,
-                CanvasRoutingPolicy.TRUSTED_INTERACTIVE_FLAGS,
-            )
+        val dm = appContext.getSystemService(DisplayManager::class.java) ?: return null
+        for (flags in CanvasRoutingPolicy.FLAG_CANDIDATES) {
+            val display = runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    val config = VirtualDisplayConfig.Builder(
+                        CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
+                        width,
+                        height,
+                        densityDpi,
+                    )
+                        .setSurface(surface)
+                        .setFlags(flags)
+                        .build()
+                    dm.createVirtualDisplay(config)
+                } else {
+                    dm.createVirtualDisplay(
+                        CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
+                        width,
+                        height,
+                        densityDpi,
+                        surface,
+                        flags,
+                    )
+                }
+            }.getOrNull()
+            val displayId = display?.display?.displayId ?: Display.INVALID_DISPLAY
+            if (display != null && CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
+                if (flags != CanvasRoutingPolicy.TRUSTED_INTERACTIVE_FLAGS) {
+                    AndroidAgentLogger.warn("Virtual display in-process compatibility flags=$flags")
+                }
+                return display
+            }
+            display?.let { runCatching { it.release() } }
         }
-    }.getOrNull()
+        return null
+    }
 
     private fun tryCreateRootBridgedVirtualDisplay(
         appContext: Context,
@@ -751,9 +1063,9 @@ internal object VirtualDisplayController {
                     android.app.TaskInfo::class.java.getField("displayId").getInt(info)
                 }.getOrDefault(Display.INVALID_DISPLAY)
                 val topPkg = info.topActivity?.packageName ?: info.baseActivity?.packageName
-                if (taskDisplay == displayId || (packageName.isNotEmpty() && topPkg == packageName)) {
+                if (taskDisplay == displayId && (packageName.isEmpty() || topPkg == packageName)) {
                     targetTaskId = info.taskId
-                    if (taskDisplay == displayId) break
+                    break
                 }
             }
             if (targetTaskId > 0) {
@@ -883,6 +1195,22 @@ internal object VirtualDisplayController {
                 height = point.y
             }
         }
-        return Triple(width, height, density)
+        val sourcePixels = width.toLong() * height.toLong()
+        val scale = if (sourcePixels > MAX_FRAME_PIXELS) {
+            sqrt(MAX_FRAME_PIXELS.toDouble() / sourcePixels.toDouble()).toFloat()
+        } else {
+            1f
+        }
+        val safeWidth = (width * scale).roundToInt().coerceAtLeast(720)
+        val safeHeight = (height * scale).roundToInt().coerceAtLeast(1280)
+        val safeDensity = (density * scale).roundToInt().coerceIn(160, 640)
+        return Triple(safeWidth, safeHeight, safeDensity)
     }
+
+    private fun uriDisplayName(intent: Intent): String =
+        intent.data?.host?.takeIf { it.isNotBlank() }
+            ?: intent.data?.scheme?.takeIf { it.isNotBlank() }
+            ?: intent.`package`.orEmpty()
+
+    private const val MAX_FRAME_PIXELS = 1080L * 2400L
 }

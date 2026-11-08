@@ -144,4 +144,6 @@ internal class AgentRunController {
     }
 }
 
-internal class AgentRunCancelledException : RuntimeException("Agent run cancelled")
+internal class AgentRunCancelledException(
+    val localRuntime: LocalRuntimeMetrics? = null,
+) : RuntimeException("Agent run cancelled")

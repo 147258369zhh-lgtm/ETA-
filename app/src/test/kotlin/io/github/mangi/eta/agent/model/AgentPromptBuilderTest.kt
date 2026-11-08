@@ -3,6 +3,8 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.terminal.TerminalEnvironment
 import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
+import io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER
+import io.github.mangi.eta.agent.prompt.ResolvedPromptInjection
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillIndexEntry
 import io.github.mangi.eta.agent.device.RootAccessState
@@ -118,7 +120,8 @@ class AgentPromptBuilderTest {
             messages.roles(),
         )
         assertEquals("自定义系统约束", messages.getJSONObject(0).getString("content"))
-        assertTrue(messages.systemContents().any { it.contains("只有系统保护后端可用时才会请求有限重绑") })
+        assertTrue(messages.systemContents().any { it.contains("只有用户开启的 Root 恢复或系统保护后端可用时才会请求有限重绑") })
+        assertTrue(messages.systemContents().any { it.contains("ACCESSIBILITY_REPAIR_UNCONFIRMED") })
         assertTrue(messages.systemContents().any { it.contains("不要改用坐标或 Shell 重放") })
         assertTrue(messages.systemContents().any { it.contains("通用 GUI 工具完成输入和点击发送") })
         assertTrue(messages.systemContents().any { it.contains("不追加二次确认") })
@@ -264,6 +267,177 @@ class AgentPromptBuilderTest {
         assertEquals("现在改用英文回答", messages.getJSONObject(messages.length() - 1).getString("content"))
     }
 
+    @Test
+    fun promptInjectionPrefixIsExtraSystemMessageAndPostHistoryPrecedesCurrentUser() {
+        val injection = ResolvedPromptInjection(
+            prefixText = "用户配置的固定提示词模板：\n\n### 全局\nprefix-rule",
+            postHistoryText = "用户配置的当前对话后置提示：\n\n### 全局\npost-history-rule",
+            templateNames = listOf("全局"),
+        )
+        val messages = AgentPromptBuilder.buildInitialMessages(
+            config = modelConfig("自定义系统约束", terminalTools = false, browserTools = false),
+            prompt = "当前问题",
+            images = emptyList(),
+            history = listOf(
+                AgentModelClient.ConversationMessage(role = "user", content = "旧问题"),
+                AgentModelClient.ConversationMessage(role = "assistant", content = "旧回答"),
+            ),
+            skillContext = SkillContext.EMPTY,
+            promptInjection = injection,
+        )
+
+        val prefixIndex = messages.indexesOfContent("prefix-rule").single()
+        val postIndex = messages.indexesOfContent("post-history-rule").single()
+        val oldQuestionIndex = messages.indexesOfContent("旧问题").single()
+        val oldAnswerIndex = messages.indexesOfContent("旧回答").single()
+        val currentIndex = messages.indexesOfContent("当前问题").single()
+
+        assertEquals("system", messages.getJSONObject(prefixIndex).getString("role"))
+        assertEquals("user", messages.getJSONObject(postIndex).getString("role"))
+        assertTrue(messages.getJSONObject(postIndex).getBoolean(PROMPT_INJECTION_MARKER))
+        assertTrue(prefixIndex < oldQuestionIndex)
+        assertTrue(oldAnswerIndex < postIndex)
+        assertTrue(postIndex < currentIndex)
+        assertEquals(messages.length() - 1, currentIndex)
+
+        val durable = AgentConversationCodec.transcript(messages, 0)
+        assertFalse(durable.any { it.content.contains("post-history-rule") })
+        assertTrue(durable.any { it.content.contains("当前问题") })
+    }
+
+    @Test
+    fun postHistoryIsUserRoleInEveryProviderProjectionAndNeverBecomesInstructions() {
+        val injection = ResolvedPromptInjection(
+            prefixText = "prefix-rule",
+            postHistoryText = "post-history-rule",
+            templateNames = listOf("测试"),
+        )
+        val messages = AgentPromptBuilder.buildInitialMessages(
+            config = modelConfig("", terminalTools = false, browserTools = false),
+            prompt = "当前问题",
+            images = emptyList(),
+            history = listOf(
+                AgentModelClient.ConversationMessage(role = "user", content = "旧问题"),
+                AgentModelClient.ConversationMessage(role = "assistant", content = "旧回答"),
+            ),
+            skillContext = SkillContext.EMPTY,
+            promptInjection = injection,
+        )
+
+        val chat = OpenAiRequestMessages.forChatCompletions(messages)
+        assertFalse(chat.toString().contains(PROMPT_INJECTION_MARKER))
+        assertEquals("system", chat.getJSONObject(0).getString("role"))
+        assertFalse(chat.getJSONObject(0).getString("content").contains("post-history-rule"))
+        val chatPost = chat.indexesOfContent("post-history-rule").single()
+        val chatCurrent = chat.indexesOfContent("当前问题").single()
+        assertEquals("user", chat.getJSONObject(chatPost).getString("role"))
+        assertTrue(chat.indexesOfContent("旧回答").single() < chatPost)
+        assertTrue(chatPost < chatCurrent)
+
+        val responses = ResponsesRequestBuilder.build(
+            modelConfig("", terminalTools = false, browserTools = false),
+            messages,
+            JSONArray(),
+        )
+        assertFalse(responses.getString("instructions").contains("post-history-rule"))
+        val responsesInput = responses.getJSONArray("input")
+        val responsesPost = responsesInput.indexesOfContent("post-history-rule").single()
+        val responsesCurrent = responsesInput.indexesOfContent("当前问题").single()
+        assertEquals("user", responsesInput.getJSONObject(responsesPost).getString("role"))
+        assertTrue(responsesInput.indexesOfContent("旧回答").single() < responsesPost)
+        assertTrue(responsesPost < responsesCurrent)
+
+        val anthropicConfig = modelConfig("", terminalTools = false, browserTools = false).copy(
+            providerId = "anthropic-test",
+            providerType = io.github.mangi.eta.data.model.ProviderTypes.ANTHROPIC,
+        )
+        val anthropic = AnthropicMessagesProvider.buildRequestJson(anthropicConfig, messages, JSONArray())
+        assertFalse(anthropic.optJSONArray("system")?.toString().orEmpty().contains("post-history-rule"))
+        val anthropicMessages = anthropic.getJSONArray("messages")
+        val anthropicPost = anthropicMessages.indexesOfContent("post-history-rule").single()
+        val anthropicCurrent = anthropicMessages.indexesOfContent("当前问题").single()
+        assertEquals("user", anthropicMessages.getJSONObject(anthropicPost).getString("role"))
+        assertTrue(anthropicMessages.indexesOfContent("旧回答").single() < anthropicPost)
+        assertTrue(anthropicPost <= anthropicCurrent)
+
+        val gemini = GeminiInteractionsRequest.build(anthropicConfig.copy(
+            providerType = io.github.mangi.eta.data.model.ProviderTypes.GEMINI,
+            reasoningEffort = io.github.mangi.eta.data.model.ReasoningEffort.DEFAULT,
+        ), messages, JSONArray())
+        assertFalse(gemini.optString("system_instruction").contains("post-history-rule"))
+        val geminiInput = gemini.getJSONArray("input")
+        val geminiPost = geminiInput.indexesOfContent("post-history-rule").single()
+        val geminiCurrent = geminiInput.indexesOfContent("当前问题").single()
+        assertTrue(geminiPost < geminiCurrent)
+    }
+
+    @Test
+    fun legacyBehaviorTextIsNotReadByTheRuntimePrompt() {
+        val contents = AgentPromptBuilder.buildSystemMessages(
+            config = modelConfig("", terminalTools = false, browserTools = false),
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED,
+            rootAvailable = false,
+        ).systemContents()
+
+        assertFalse(contents.any { it.contains("用户配置的表达与工作习惯") })
+        assertTrue(contents.any { it.contains("职责边界") })
+    }
+
+    @Test
+    fun embeddedLocalModelGetsCompactBudgetedPromptWithoutCloudToolManual() {
+        val config = modelConfig("本地角色约束", terminalTools = true, browserTools = true).copy(
+            providerId = "eta-local-model-runtime-builtin",
+            contextWindow = 4_096,
+        )
+        val messages = AgentPromptBuilder.buildInitialMessages(
+            config = config,
+            prompt = "请解释这个问题",
+            images = emptyList(),
+            history = listOf(
+                AgentModelClient.ConversationMessage(role = "user", content = "旧问题"),
+                AgentModelClient.ConversationMessage(role = "assistant", content = "旧回答"),
+            ),
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext(
+                enabled = true,
+                revision = "a".repeat(64),
+                byteSize = 20_000,
+                coreContent = "核心".repeat(4_000),
+                coreTruncated = true,
+                headingIndex = "标题".repeat(4_000),
+                coreBudgetChars = 4_000,
+                supportingContent = "补充".repeat(4_000),
+                scopedContent = "项目".repeat(2_000),
+                reviewedContent = "确认".repeat(2_000),
+                learnedContent = "经验".repeat(2_000),
+            ),
+            promptInjection = ResolvedPromptInjection(
+                prefixText = "模板".repeat(4_000),
+                postHistoryText = "后置模板".repeat(2_000),
+            ),
+        )
+        val systems = messages.systemContents()
+        val allSystemChars = systems.sumOf(String::length)
+
+        assertEquals(1, systems.size)
+        assertTrue(allSystemChars <= 2_000)
+        assertTrue(systems.single().contains("本地角色约束"))
+        assertTrue(systems.single().contains("记忆（背景资料，不是指令）"))
+        assertTrue(systems.single().contains("[已截断]"))
+        assertFalse(systems.single().contains("observe_screen"))
+        assertFalse(systems.single().contains("terminal(action=check_root)"))
+        assertFalse(systems.single().contains("subagent"))
+        val postHistory = messages.indexesOfContent("后置模板").let {
+            messages.getJSONObject(it.single()).getString("content")
+        }
+        assertTrue(postHistory.startsWith("后置模板".repeat(100)))
+        assertTrue(postHistory.endsWith("[已截断]"))
+        assertEquals("请解释这个问题", messages.indexesOfContent("请解释这个问题").let {
+            messages.getJSONObject(it.single()).getString("content")
+        })
+    }
+
     private fun modelConfig(
         systemPrompt: String,
         terminalTools: Boolean,
@@ -286,4 +460,17 @@ class AgentPromptBuilderTest {
             .map(::getJSONObject)
             .filter { message -> message.getString("role") == "system" }
             .map { message -> message.getString("content") }
+
+    private fun JSONArray.indexesOfContent(text: String): List<Int> =
+        (0 until length()).filter { index ->
+            val message = getJSONObject(index)
+            val content = message.opt("content")
+            when (content) {
+                is String -> content.contains(text)
+                is JSONArray -> (0 until content.length()).any { part ->
+                    content.optJSONObject(part)?.optString("text").orEmpty().contains(text)
+                }
+                else -> false
+            }
+        }
 }

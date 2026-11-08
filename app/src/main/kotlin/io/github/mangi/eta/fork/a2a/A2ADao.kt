@@ -23,6 +23,9 @@ internal interface A2ADao {
     @Query("DELETE FROM a2a_agents WHERE id = :id")
     suspend fun deleteAgent(id: String)
 
+    @Query("UPDATE a2a_agents SET enabled = :enabled, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setAgentEnabled(id: String, enabled: Boolean, updatedAt: Long): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTask(task: A2ATaskEntity)
 

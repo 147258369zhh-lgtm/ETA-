@@ -7,16 +7,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.skill.SkillPrerequisiteStatus
+import io.github.mangi.eta.agent.skill.SkillQualityIssue
+import io.github.mangi.eta.agent.skill.SkillQualityPolicy
+import io.github.mangi.eta.agent.skill.SkillReadinessInspector
 import io.github.mangi.eta.agent.skill.SkillRuntime
+import io.github.mangi.eta.agent.skill.SkillVersionRestoreOutcome
+import io.github.mangi.eta.agent.skill.SkillVersionService
 import io.github.mangi.eta.ui.model.AgentSkillsUiState
 import io.github.mangi.eta.ui.model.SkillItemUi
 import io.github.mangi.eta.ui.model.SkillNoticeUi
 import io.github.mangi.eta.ui.model.SkillReplacementUi
+import io.github.mangi.eta.ui.model.SkillVersionUi
 import io.github.mangi.eta.ui.model.canDeleteUserSkill
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /** Skills 管理页状态：列表、开关、删除与本地 ZIP 安装的二次确认流程。 */
 internal class AgentSkillsStore(
@@ -51,6 +59,15 @@ internal class AgentSkillsStore(
                 }
                 return@launch
             }
+            val usage = runCatching {
+                io.github.mangi.eta.agent.skill.SkillUsageStore(appContext).readAll()
+            }.getOrDefault(emptyMap())
+            val readinessEnvironment = runCatching {
+                SkillReadinessInspector.capture(appContext)
+            }.getOrNull()
+            val versions = runCatching { SkillVersionService(appContext).listAll() }
+                .getOrDefault(emptyList())
+                .groupBy { it.skillId }
             val items = entries.map { entry ->
                 val capabilities = buildList {
                     if (entry.hasScripts) add("scripts")
@@ -58,6 +75,41 @@ internal class AgentSkillsStore(
                     if (entry.hasAssets) add("assets")
                     if (entry.hasEvals) add("evals")
                 }
+                val quality = SkillQualityPolicy.evaluate(entry, usage[entry.id])
+                val qualityLabel = when (quality.issue) {
+                    SkillQualityIssue.NONE -> null
+                    SkillQualityIssue.STALE -> "长期未使用"
+                    SkillQualityIssue.HIGH_FAILURE_RATE -> "失败率偏高"
+                }
+                val qualityDetail = when (quality.issue) {
+                    SkillQualityIssue.NONE -> null
+                    SkillQualityIssue.STALE -> if (quality.daysSinceUse == null) {
+                        "已超过 90 天没有使用记录"
+                    } else if (quality.useCount == 0) {
+                        "安装后 ${quality.daysSinceUse} 天尚未使用"
+                    } else {
+                        "最近使用距今 ${quality.daysSinceUse} 天"
+                    }
+                    SkillQualityIssue.HIGH_FAILURE_RATE -> {
+                        "最近 ${quality.useCount} 次调用中失败 ${quality.failureCount} 次，" +
+                            "失败率 ${(quality.failureRate * 100).roundToInt()}%"
+                    }
+                }
+                val prerequisites = readinessEnvironment?.let { environment ->
+                    SkillReadinessInspector.inspect(entry.dependencies, environment)
+                }.orEmpty()
+                val blocked = prerequisites.filter { it.status == SkillPrerequisiteStatus.BLOCKED }
+                val unverified = prerequisites.filter { it.status == SkillPrerequisiteStatus.UNVERIFIED }
+                val prerequisiteLabel = when {
+                    blocked.isNotEmpty() -> blocked.size.toString() + " 项依赖未满足"
+                    unverified.isNotEmpty() -> unverified.size.toString() + " 项依赖待确认"
+                    prerequisites.isNotEmpty() -> "依赖已就绪"
+                    else -> null
+                }
+                val prerequisiteDetail = prerequisites
+                    .take(4)
+                    .joinToString("；") { report -> report.requirement + " · " + report.detail }
+                    .ifBlank { null }
                 SkillItemUi(
                     id = entry.id,
                     name = entry.name,
@@ -66,6 +118,31 @@ internal class AgentSkillsStore(
                     enabled = entry.enabled,
                     installed = entry.installed,
                     capabilities = capabilities,
+                    sourceName = entry.provenance?.sourceName?.lineSequence()?.firstOrNull()?.trim()
+                        ?.take(80)
+                        ?.takeIf(String::isNotBlank),
+                    version = entry.provenance?.version?.lineSequence()?.firstOrNull()?.trim()
+                        ?.take(40)
+                        ?.takeIf(String::isNotBlank),
+                    installedAt = entry.provenance?.installedAt?.takeIf { it > 0L },
+                    useCount = usage[entry.id]?.useCount ?: 0,
+                    lastUsedAt = usage[entry.id]?.lastUsedAt?.takeIf { it > 0L },
+                    reviewRecommended = quality.issue != SkillQualityIssue.NONE,
+                    qualityLabel = qualityLabel,
+                    qualityDetail = qualityDetail,
+                    dependencies = entry.dependencies,
+                    prerequisiteLabel = prerequisiteLabel,
+                    prerequisiteDetail = prerequisiteDetail,
+                    setupRequired = blocked.isNotEmpty(),
+                    versions = versions[entry.id].orEmpty().map { backup ->
+                        SkillVersionUi(
+                            id = backup.id,
+                            version = backup.version,
+                            sourceName = backup.sourceName.takeIf(String::isNotBlank),
+                            createdAt = backup.createdAt,
+                            sizeBytes = backup.sizeBytes,
+                        )
+                    },
                 )
             }
             withContext(Dispatchers.Main) {
@@ -330,6 +407,8 @@ internal class AgentSkillsStore(
                 appContext.getString(R.string.state_ui_the_target_with_the_same_name_is_not_a_user_skil_00474b)
             SkillZipImportOutcome.FailureCode.READ_FAILED -> appContext.getString(R.string.state_ui_the_selected_file_cannot_be_read_please_select_a_7265b9)
             SkillZipImportOutcome.FailureCode.STORAGE_FAILED -> appContext.getString(R.string.state_ui_unable_to_save_skills_original_skills_have_been__9d4748)
+            SkillZipImportOutcome.FailureCode.VERSION_BACKUP_FAILED ->
+                appContext.getString(R.string.state_skill_version_backup_failed_before_update)
             SkillZipImportOutcome.FailureCode.RECOVERY_REQUIRED ->
                 appContext.getString(R.string.state_ui_the_installation_failed_and_automatic_recovery_d_0d9e01)
         }
@@ -362,6 +441,34 @@ internal class AgentSkillsStore(
                 )
             }
             if (succeeded) refreshSkills()
+        }
+    }
+
+    fun restoreSkillVersion(skillId: String, backupId: String) {
+        if (skillsState.isImporting || skillsState.busySkillId != null) return
+        skillsState = skillsState.copy(busySkillId = skillId, notice = null)
+        scope.launch(Dispatchers.IO) {
+            val outcome = runCatching { SkillVersionService(appContext).restore(backupId) }
+                .getOrElse { SkillVersionRestoreOutcome.Failure(it.message ?: "版本恢复失败") }
+            withContext(Dispatchers.Main) {
+                skillsState = skillsState.copy(
+                    busySkillId = null,
+                    notice = when (outcome) {
+                        is SkillVersionRestoreOutcome.Success -> newSkillNotice(
+                            title = "版本已恢复",
+                            message = outcome.backup.displayName + " 已恢复" +
+                                (outcome.backup.version?.let { "到 v$it" } ?: "到上一个版本"),
+                            isError = false,
+                        )
+                        is SkillVersionRestoreOutcome.Failure -> newSkillNotice(
+                            title = if (outcome.recoveryRequired) "版本恢复需要修复" else "版本恢复失败",
+                            message = outcome.message,
+                            isError = true,
+                        )
+                    },
+                )
+            }
+            refreshSkills()
         }
     }
 

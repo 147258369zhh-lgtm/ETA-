@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.voice
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
@@ -9,6 +10,10 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -82,6 +87,7 @@ internal fun AssistantComposer(
     onMicrophone: (holdToTalk: Boolean) -> Unit,
     onCancelSpeech: () -> Unit,
     onFinishSpeech: () -> Unit,
+    onStopSpeaking: () -> Unit,
     onOpenSpeechSettings: () -> Unit,
     onKeyboard: () -> Unit,
     keyboardVisible: Boolean,
@@ -118,6 +124,7 @@ internal fun AssistantComposer(
                     onMicrophone = onMicrophone,
                     onCancelSpeech = onCancelSpeech,
                     onFinishSpeech = onFinishSpeech,
+                    onStopSpeaking = onStopSpeaking,
                     keyboardVisible = keyboardVisible,
                     colors = colors,
                     onInputChange = onInputChange,
@@ -141,6 +148,7 @@ private fun AssistantInputBar(
     onMicrophone: (holdToTalk: Boolean) -> Unit,
     onCancelSpeech: () -> Unit,
     onFinishSpeech: () -> Unit,
+    onStopSpeaking: () -> Unit,
     keyboardVisible: Boolean,
     colors: EtaVoicePanelColors,
     onInputChange: (String) -> Unit,
@@ -183,18 +191,21 @@ private fun AssistantInputBar(
     val inputShape = RoundedCornerShape(25.dp)
     val trailingIcon = when {
         speech.active || state.phase == EtaVoicePhase.PROCESSING -> R.drawable.ic_assistant_stop
+        speech.speaking -> R.drawable.ic_assistant_voice
         canSubmit || !recognitionEnabled -> R.drawable.ic_assistant_send
         else -> R.drawable.ic_assistant_voice
     }
     val trailingDescription = when {
         speech.active -> R.string.voice_finish_speech
         state.phase == EtaVoicePhase.PROCESSING -> R.string.action_stop
+        speech.speaking -> R.string.voice_interrupt_speak
         canSubmit || !recognitionEnabled -> R.string.voice_send
         else -> R.string.voice_tap_to_speak
     }
     val trailingAction = when {
         speech.active -> onFinishSpeech
         state.phase == EtaVoicePhase.PROCESSING -> onStop
+        speech.speaking -> ({ onMicrophone(false) })
         canSubmit || !recognitionEnabled -> onSubmit
         else -> { { onMicrophone(false) } }
     }
@@ -216,6 +227,30 @@ private fun AssistantInputBar(
             .padding(start = 18.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 朗读中留一个安静的停止入口：不想说话时也能立刻收声。
+        AnimatedVisibility(
+            visible = speech.speaking,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onStopSpeaking),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_assistant_stop),
+                        contentDescription = stringResource(R.string.voice_stop_speaking),
+                        modifier = Modifier.size(16.dp),
+                        tint = colors.inputSecondary,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+        }
         BasicTextField(
             value = input,
             onValueChange = onInputChange,
@@ -243,7 +278,12 @@ private fun AssistantInputBar(
                     if (input.isEmpty()) {
                         Text(
                             text = stringResource(
-                                if (speech.holdToTalk) R.string.voice_release_to_send else R.string.voice_input_hint,
+                                when {
+                                    speech.holdToTalk -> R.string.voice_release_to_send
+                                    speech.speaking && speech.bargeInArmed -> R.string.voice_interrupt_hint
+                                    speech.speaking -> R.string.voice_speaking_hint
+                                    else -> R.string.voice_input_hint
+                                },
                             ),
                             color = hintColor,
                             fontSize = 15.sp,
@@ -263,6 +303,7 @@ private fun AssistantInputBar(
             enabled = speech.phase != EtaSpeechPhase.RECOGNIZING &&
                 (recognitionEnabled || canSubmit || state.phase == EtaVoicePhase.PROCESSING),
             holdToTalkAvailable = recognitionEnabled && !speech.active && !canSubmit && state.phase != EtaVoicePhase.PROCESSING,
+            halo = speech.speaking && speech.bargeInArmed,
             onClick = trailingAction,
             onHoldStart = { onMicrophone(true) },
             onHoldEnd = onFinishSpeech,
@@ -282,6 +323,7 @@ private fun AssistantTrailingButton(
     tint: Color,
     enabled: Boolean,
     holdToTalkAvailable: Boolean,
+    halo: Boolean,
     onClick: () -> Unit,
     onHoldStart: () -> Unit,
     onHoldEnd: () -> Unit,
@@ -294,6 +336,17 @@ private fun AssistantTrailingButton(
     val currentHoldEnd by rememberUpdatedState(onHoldEnd)
     val currentHoldCancel by rememberUpdatedState(onHoldCancel)
     var pressed by remember { mutableStateOf(false) }
+    // 朗读中话筒确实在听：用一圈缓慢呼吸的描边表示“说句话就能打断”。
+    val haloTransition = rememberInfiniteTransition(label = "assistant_mic_halo")
+    val haloAlpha by haloTransition.animateFloat(
+        initialValue = 0.10f,
+        targetValue = 0.42f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "assistant_mic_halo_alpha",
+    )
     Box(
         modifier = Modifier
             .size(40.dp)
@@ -303,6 +356,13 @@ private fun AssistantTrailingButton(
                 scaleY = scale
             }
             .clip(CircleShape)
+            .then(
+                if (halo) {
+                    Modifier.border(1.2.dp, tint.copy(alpha = haloAlpha), CircleShape)
+                } else {
+                    Modifier
+                },
+            )
             // 手势检测不产生无障碍动作；读屏用户只需要点击语义，按住说话依赖触摸时长不适合读屏。
             .semantics(mergeDescendants = true) {
                 role = Role.Button

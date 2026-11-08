@@ -19,7 +19,7 @@ internal object AgentFileToolCatalog {
             .put("path", path()).put("content", text("完整文件内容或追加内容，UTF-8 编码后最多 512 KiB。", 524288))
             .put("append", JSONObject().put("type", "boolean").put("default", false))
             .put("expected_revision", revision()), listOf("path", "content")))
-        tools.put(tool("edit_file", "精确替换不超过 512 KiB 的 UTF-8 文件中的 old_text。默认必须唯一匹配；未找到或多处匹配时不写入，应重新读取或补充上下文。写入前再次检查旧内容；atomic 不代表与外部程序互斥。", properties()
+        tools.put(tool("edit_file", "精确替换不超过 512 KiB 的 UTF-8 文件中的 old_text。默认必须唯一匹配；未找到或多处匹配时不写入，应重新读取或补充上下文。expected_revision 过期但 old_text 仍唯一匹配时，会在当前版本上安全重试，并用 revision_refreshed=true 提示；写入前再次检查旧内容与版本。atomic 不代表与外部程序互斥。", properties()
             .put("path", path()).put("old_text", text("必须与文件中旧内容完全匹配，不可为空。", 524288).put("minLength", 1))
             .put("new_text", text("替换内容，空字符串表示删除匹配片段。", 524288))
             .put("replace_all", JSONObject().put("type", "boolean").put("default", false))

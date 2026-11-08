@@ -21,7 +21,25 @@ internal object ProviderParameterDiagnostics {
             }
             if (fields.size >= 3) break
         }
-        return (codes.take(1) + fields.take(3).map { "字段 $it" }).joinToString("；").ifEmpty { null }
+        val hint = messageHint(error.optString("message"))
+        return (codes.take(1) + fields.take(3).map { "字段 $it" } + listOfNotNull(hint))
+            .distinct()
+            .joinToString("；")
+            .ifEmpty { null }
+    }
+
+    private fun messageHint(raw: String): String? {
+        val message = raw.lowercase()
+        return when {
+            listOf("tool", "function", "schema").any(message::contains) -> "工具定义不受支持"
+            listOf("message", "content", "role", "tool_call_id").any(message::contains) -> "消息历史格式无效"
+            listOf("stream", "include_usage").any(message::contains) -> "流式参数不受支持"
+            listOf("reasoning", "thinking", "effort").any(message::contains) -> "思考参数不受支持"
+            listOf("max_tokens", "max_completion_tokens", "output token").any(message::contains) -> "输出长度参数无效"
+            listOf("temperature", "top_p").any(message::contains) -> "采样参数不受支持"
+            "model" in message -> "模型名称或权限无效"
+            else -> null
+        }
     }
 
     private fun safeParameterPath(raw: String): String? {
@@ -40,9 +58,11 @@ internal object ProviderParameterDiagnostics {
     private val requestParameterRoots = setOf(
         "model", "input", "system_instruction", "tools", "generation_config", "response_format",
         "stream", "store", "previous_interaction_id", "background", "safety_settings", "service_tier",
+        "messages", "max_tokens", "max_completion_tokens", "max_output_tokens", "tool_choice",
+        "stream_options", "include_usage", "reasoning", "reasoning_effort", "temperature", "top_p",
     )
     private val publicParameterNames = requestParameterRoots + setOf(
-        "content", "type", "role", "name", "description", "parameters", "properties", "items",
+        "content", "type", "role", "name", "description", "function", "parameters", "properties", "items",
         "required", "additionalProperties", "oneOf", "anyOf", "allOf", "enum", "const", "format",
         "minimum", "maximum", "minItems", "maxItems", "minLength", "maxLength", "pattern",
         "thinking_level", "thinking_summaries", "tool_choice", "max_output_tokens", "temperature", "top_p",

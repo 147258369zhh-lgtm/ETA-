@@ -16,15 +16,17 @@ import org.junit.Test
 
 class AgentRuntimePolicyTest {
     @Test
-    fun unavailablePreferencesFailClosed() {
+    fun unavailablePreferencesUseProductDefaults() {
         assertEquals(
             AgentRuntimePolicy.Permissions(
-                terminalTools = false,
-                browserTools = false,
-                thinking = false,
-                autoCompaction = false,
-                subagentTools = false,
-                virtualDisplay = false,
+                terminalTools = true,
+                browserTools = true,
+                deviceDirectTools = true,
+                deviceSensitiveReadTools = true,
+                deviceSensitiveActionTools = true,
+                thinking = true,
+                subagentTools = true,
+                virtualDisplay = true,
             ),
             AgentRuntimePolicy.permissions(null),
         )

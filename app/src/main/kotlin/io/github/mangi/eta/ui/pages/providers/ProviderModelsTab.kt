@@ -130,6 +130,7 @@ private val editableReasoningEfforts = listOf(
  * 不会越过真实上限。
  */
 internal val contextWindowPresets = listOf(128_000, 200_000, 256_000, 1_000_000)
+private val localContextWindowPresets = listOf(8_192, 16_384, 32_768, 65_536, 131_072)
 
 private val modelDialogBodyMaxHeight = 520.dp
 private val modelDialogChromeHeight = 112.dp
@@ -484,6 +485,7 @@ internal fun ProviderModelsTab(
     editingModel?.let { model ->
         ModelEditDialog(
             nativeGemini = provider is GeminiProviderSetting,
+            localService = isLocalModelServiceUrl(provider.baseUrl),
             model = model,
             isNew = isCreatingModel,
             isSaving = isMutatingModel,
@@ -803,6 +805,7 @@ private fun ModelListItem(
 @Composable
 private fun ModelEditDialog(
     nativeGemini: Boolean,
+    localService: Boolean,
     model: Model,
     isNew: Boolean,
     isSaving: Boolean,
@@ -814,9 +817,12 @@ private fun ModelEditDialog(
     val context = LocalContext.current
     var displayName by remember(model.id, isNew) { mutableStateOf(model.displayName) }
     var modelId by remember(model.id, isNew) { mutableStateOf(model.modelId) }
-    var contextWindowOverrideText by remember(model.id, isNew) {
+    var contextWindowOverrideText by remember(model.id, isNew, localService) {
         // 早先拉取、未写入窗口的模型也带着远端标注，打开编辑时直接预填。
-        mutableStateOf((model.contextWindowOverride ?: model.contextWindow)?.toString().orEmpty())
+        mutableStateOf(
+            (model.contextWindowOverride ?: model.contextWindow)?.toString().orEmpty()
+                .ifBlank { if (localService && isNew) "32768" else "" },
+        )
     }
     var reasoningOverrideActive by remember(model.id, isNew) {
         mutableStateOf(
@@ -835,7 +841,10 @@ private fun ModelEditDialog(
         )
     }
     val contextError = contextWindowInputError(contextWindowOverrideText)
+    val contextValue = contextWindowOverrideText.toIntOrNull()
+    val hasConfirmedContextWindow = contextValue != null && contextValue > 0 && contextError == null
     val geminiCapabilities = if (nativeGemini) GeminiModelCapabilities.requestReasoningCapabilities(modelId) else null
+    val availableContextPresets = if (localService) localContextWindowPresets else contextWindowPresets
 
     fun resetAutomaticReasoning() {
         reasoningOverrideActive = false
@@ -916,13 +925,12 @@ private fun ModelEditDialog(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                val contextValue = contextWindowOverrideText.toIntOrNull()
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(top = 10.dp),
                 ) {
-                    contextWindowPresets.forEach { preset ->
+                    availableContextPresets.forEach { preset ->
                         EtaChoiceChip(
                             text = formatCompactTokenCount(preset),
                             selected = contextValue == preset,
@@ -937,7 +945,7 @@ private fun ModelEditDialog(
                             stringResource(R.string.provider_context_window_hint)
                         contextError != null ->
                             stringResource(R.string.provider_context_window_invalid)
-                        contextValue != null && contextValue !in contextWindowPresets ->
+                        contextValue != null && contextValue !in availableContextPresets ->
                             stringResource(R.string.provider_context_window_value, formatCompactTokenCount(contextValue))
                         else -> stringResource(R.string.provider_context_window_usage)
                     },
@@ -949,6 +957,14 @@ private fun ModelEditDialog(
                     },
                     modifier = Modifier.padding(start = 4.dp, top = 8.dp),
                 )
+                if (localService) {
+                    Text(
+                        text = "本地小模型常见上下文为 8K–32K；请按模型实际能力选择，填得过大会在请求前触发不必要的压缩。",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(start = 4.dp, top = 6.dp),
+                    )
+                }
                 Spacer(modifier = Modifier.height(16.dp))
                 // 弹窗内不再套卡片：卡片与弹窗同色看不出边界，内边距只会让这一段错开左缘。
                 Row(
@@ -1080,7 +1096,7 @@ private fun ModelEditDialog(
             confirmEnabled = !isSaving &&
                 displayName.isNotBlank() &&
                 modelId.isNotBlank() &&
-                contextError == null,
+                hasConfirmedContextWindow,
             cancelEnabled = !isSaving,
             onCancel = onDismiss,
             onConfirm = { onSubmit(updated()) },

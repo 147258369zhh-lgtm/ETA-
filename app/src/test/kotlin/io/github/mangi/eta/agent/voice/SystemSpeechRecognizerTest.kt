@@ -13,7 +13,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [33, 36, 37], application = Application::class)
 class SystemSpeechRecognizerTest {
     private fun service(
         packageName: String,

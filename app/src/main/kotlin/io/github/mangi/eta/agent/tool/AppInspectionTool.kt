@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.os.Environment
+import android.provider.Settings
 import io.github.mangi.eta.agent.device.DeviceToolContract
 import org.json.JSONArray
 import org.json.JSONObject
@@ -45,7 +47,7 @@ internal class AppInspectionTool(private val context: Context) {
             permissions.put(JSONObject()
                 .put("name", requested[index].take(256))
                 .put("name_truncated", requested[index].length > 256)
-                .put("granted", (info.requestedPermissionsFlags?.getOrNull(index) ?: 0) and PackageInfo.REQUESTED_PERMISSION_GRANTED != 0))
+                .put("granted", permissionGranted(info, requested[index], index)))
         }
         val splitPaths = application.splitSourceDirs.orEmpty()
         return JSONObject()
@@ -77,5 +79,19 @@ internal class AppInspectionTool(private val context: Context) {
         JSONObject().put("available", false).put("code", "INSTALL_SOURCE_UNAVAILABLE")
     } catch (_: SecurityException) {
         JSONObject().put("available", false).put("code", "INSTALL_SOURCE_ACCESS_DENIED")
+    }
+
+    /** requestedPermissionsFlags 不反映 appop；检查本应用时改用系统实际授权状态。 */
+    private fun permissionGranted(info: PackageInfo, permission: String, index: Int): Boolean {
+        if (info.packageName == context.packageName) {
+            when (permission) {
+                Manifest.permission.SYSTEM_ALERT_WINDOW -> return Settings.canDrawOverlays(context)
+                Manifest.permission.PACKAGE_USAGE_STATS -> return AgentPersonalContextTools.hasUsageAccess(context)
+                Manifest.permission.MANAGE_EXTERNAL_STORAGE -> return Environment.isExternalStorageManager()
+                Manifest.permission.WRITE_SETTINGS -> return Settings.System.canWrite(context)
+            }
+        }
+        return ((info.requestedPermissionsFlags?.getOrNull(index) ?: 0) and
+            PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
     }
 }

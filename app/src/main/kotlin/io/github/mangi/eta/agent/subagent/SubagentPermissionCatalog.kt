@@ -25,6 +25,16 @@ internal object SubagentPermissionCatalog {
     private val memoryTools = SubagentProfile.READ_ONLY_TOOLS.filterTo(linkedSetOf()) {
         it.startsWith("memory_") || it.startsWith("character_memory_") || it.startsWith("skills_")
     }
+    // These tools are appended by AgentToolCatalog independently of the legacy
+    // READ_ONLY_TOOLS set. Keep them in the shared permission catalog as well, otherwise
+    // meeting runs publish the schemas but AgentToolPolicy removes them before the model
+    // sees them.
+    private val skillDiscoveryTools = setOf("skills_list_curated", "skills_inspect_github")
+    private val automationTools = setOf(
+        "schedule_create", "schedule_list", "schedule_pause", "schedule_delete",
+    )
+    private val learningTools = setOf("learning_feedback")
+    private val voiceTools = setOf("voice_synthesize")
     private val personalReadTools = (
         PersonalSearchTools.names +
             AgentPhoneToolCatalog.entries.filter { it.personal && !it.write }.map { it.name } +
@@ -76,6 +86,34 @@ internal object SubagentPermissionCatalog {
             summary = "读取长期记忆、角色记忆和已安装技能",
             tools = memoryTools,
             risk = SubagentPermissionCategory.Risk.READ,
+        ),
+        SubagentPermissionCategory(
+            id = "skills-discovery",
+            title = "技能目录调研",
+            summary = "查看公开技能目录和仓库中的技能定义",
+            tools = skillDiscoveryTools,
+            risk = SubagentPermissionCategory.Risk.READ,
+        ),
+        SubagentPermissionCategory(
+            id = "automation",
+            title = "定时任务",
+            summary = "查看、创建、暂停和删除 Eta 定时任务",
+            tools = automationTools,
+            risk = SubagentPermissionCategory.Risk.WRITE,
+        ),
+        SubagentPermissionCategory(
+            id = "learning-feedback",
+            title = "运行反馈",
+            summary = "记录用户明确提供的运行评分和纠正",
+            tools = learningTools,
+            risk = SubagentPermissionCategory.Risk.WRITE,
+        ),
+        SubagentPermissionCategory(
+            id = "voice-generation",
+            title = "语音生成",
+            summary = "使用当前语音设置把文本合成为 WAV 音频文件",
+            tools = voiceTools,
+            risk = SubagentPermissionCategory.Risk.WRITE,
         ),
         SubagentPermissionCategory(
             id = "files-write",

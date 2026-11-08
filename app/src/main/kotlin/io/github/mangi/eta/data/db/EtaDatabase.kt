@@ -14,6 +14,9 @@ import androidx.room.migration.Migration
         ConversationContextCheckpointEntity::class,
         ConversationMessageEntity::class,
         ConversationStateEntity::class,
+        ConversationBranchEntity::class,
+        ConversationMessageOriginEntity::class,
+        ConversationBranchSetupEntity::class,
         ProviderEntity::class,
         ProviderModelEntity::class,
         RuntimeResultEntity::class,
@@ -26,7 +29,7 @@ import androidx.room.migration.Migration
         CharacterEntity::class,
         UserPersonaEntity::class,
     ],
-    version = 24,
+    version = 26,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -67,6 +70,8 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_21_22,
                         MIGRATION_22_23,
                         MIGRATION_23_24,
+                        MIGRATION_24_25,
+                        MIGRATION_25_26,
                     )
                     .addCallback(object : Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) { createTextChunkCleanup(db) }
@@ -120,6 +125,29 @@ internal abstract class EtaDatabase : RoomDatabase() {
 
         internal val MIGRATION_23_24 = Migration(23, 24) { database ->
             database.execSQL("ALTER TABLE conversations ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
+        }
+
+        internal val MIGRATION_25_26 = Migration(25, 26) { database ->
+            database.execSQL("CREATE TABLE conversation_branch_setups (conversation_id TEXT NOT NULL PRIMARY KEY, setup_id TEXT NOT NULL, " +
+                "folder_id TEXT, context_window INTEGER, project_id TEXT, created_at INTEGER NOT NULL, completed_at INTEGER, " +
+                "completion_mode TEXT, error_code TEXT, FOREIGN KEY(conversation_id) REFERENCES conversation_branches(conversation_id) ON DELETE CASCADE)")
+            database.execSQL("CREATE UNIQUE INDEX index_conversation_branch_setups_setup_id ON conversation_branch_setups(setup_id)")
+        }
+
+        internal val MIGRATION_24_25 = Migration(24, 25) { database ->
+            database.execSQL("CREATE TABLE conversation_branches (conversation_id TEXT NOT NULL PRIMARY KEY, " +
+                "family_id TEXT NOT NULL, parent_conversation_id TEXT, source_conversation_id TEXT, source_message_id TEXT, " +
+                "source_sort_index INTEGER, history_mode TEXT NOT NULL, created_at INTEGER NOT NULL, " +
+                "FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE, " +
+                "FOREIGN KEY(parent_conversation_id) REFERENCES conversations(id) ON DELETE SET NULL)")
+            database.execSQL("CREATE INDEX index_conversation_branches_family_id ON conversation_branches(family_id)")
+            database.execSQL("CREATE INDEX index_conversation_branches_parent_conversation_id ON conversation_branches(parent_conversation_id)")
+            database.execSQL("CREATE TABLE conversation_message_origins (message_id TEXT NOT NULL PRIMARY KEY, " +
+                "conversation_id TEXT NOT NULL, source_conversation_id TEXT NOT NULL, source_message_id TEXT NOT NULL, " +
+                "source_sort_index INTEGER NOT NULL, " +
+                "FOREIGN KEY(message_id) REFERENCES conversation_messages(id) ON DELETE CASCADE, " +
+                "FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE)")
+            database.execSQL("CREATE INDEX index_conversation_message_origins_conversation_id ON conversation_message_origins(conversation_id)")
         }
 
         private fun createTextChunkCleanup(database: androidx.sqlite.db.SupportSQLiteDatabase) {

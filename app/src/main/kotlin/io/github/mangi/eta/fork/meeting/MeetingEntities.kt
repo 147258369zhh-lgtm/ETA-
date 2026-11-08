@@ -36,6 +36,8 @@ internal data class MeetingRoomEntity(
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     @ColumnInfo(name = "archived_at") val archivedAt: Long? = null,
+    @ColumnInfo(name = "pinned_at") val pinnedAt: Long? = null,
+    @ColumnInfo(name = "context_window_override") val contextWindowOverride: Int? = null,
 )
 
 @Entity(
@@ -123,6 +125,8 @@ internal data class MeetingRoomSnapshot(
     val participants: List<MeetingParticipantEntity>,
     val messages: List<MeetingMessageEntity>,
     val tasks: List<MeetingTaskEntity>,
+    val timelineEvents: List<MeetingEventEntity> = emptyList(),
+    val messageAttachments: Map<String, io.github.mangi.eta.data.repository.ConversationAttachments> = emptyMap(),
 )
 
 internal data class MeetingRoomSummaryRow(
@@ -134,4 +138,6 @@ internal data class MeetingRoomSummaryRow(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     @ColumnInfo(name = "participant_count") val participantCount: Int,
     @ColumnInfo(name = "archived_at") val archivedAt: Long? = null,
+    @ColumnInfo(name = "pinned_at") val pinnedAt: Long? = null,
+    @ColumnInfo(name = "context_window_override") val contextWindowOverride: Int? = null,
 )

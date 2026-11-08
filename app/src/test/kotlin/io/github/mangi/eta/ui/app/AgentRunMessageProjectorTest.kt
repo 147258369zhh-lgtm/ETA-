@@ -114,7 +114,7 @@ class AgentRunMessageProjectorTest {
     }
 
     @Test
-    fun retryKeepsFailedAttemptSeparateAndReplayClearsItsNotice() {
+    fun retryRemovesFailedAttemptAndReplayClearsItsNotice() {
         val projector = AgentRunMessageProjector { 1_000L }
         val partial = projector.appendTextDelta("retry-run", 2, 0, "半截", emptyList())
         val event = AgentEvent.ModelRetryScheduled(2, 1, 3, 2_000, "MODEL_TIMEOUT")
@@ -124,8 +124,8 @@ class AgentRunMessageProjectorTest {
         val repeated = projector.scheduleModelRetry("retry-run", event, retrying)
         assertEquals(retrying, repeated)
         val resumed = projector.appendTextDelta("retry-run", 3, 0, "完整回答", retrying)
-        assertEquals(listOf("半截", "完整回答"), resumed.filterIsInstance<AgentMessageUi>().map { it.content })
-        assertFalse(resumed.filterIsInstance<AgentMessageUi>().first().isStreaming)
+        assertEquals(listOf("完整回答"), resumed.filterIsInstance<AgentMessageUi>().map { it.content })
+        assertTrue(resumed.filterIsInstance<AgentMessageUi>().single().isStreaming)
         assertEquals(SystemNoticeCode.ModelRetry, resumed.filterIsInstance<SystemNoticeMessageUi>().single().code)
         assertTrue(projector.resetForReplay("retry-run", resumed).isEmpty())
     }

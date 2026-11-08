@@ -39,6 +39,8 @@ internal class AgentLoop(
     private val purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
     private val roleplayContext: RoleplayRunContext? = null,
     initialSupplementIndex: Int = 0,
+    private val initialRound: Int = 1,
+    private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
 ) {
     data class Result(
         val content: String,
@@ -62,6 +64,7 @@ internal class AgentLoop(
         config, messages, systemCount, operationId, provider, runController,
         { sensitiveToolCallIds }, onEvent, onContextSnapshot, { transcript.length() },
         roleplay = roleplayContext != null,
+        metricsScope = metricsScope,
     )
     private var supplementIndex = initialSupplementIndex
 
@@ -80,8 +83,8 @@ internal class AgentLoop(
         publishedTranscriptSize = transcript.length()
     }
 
-    fun compactOnly(): Result {
-        context.compact(force = true)
+    fun compactOnly(selection: IntRange? = null): Result {
+        context.compact(force = true, selection = selection)
         return Result("", "", emptySet())
     }
 
@@ -90,12 +93,12 @@ internal class AgentLoop(
     fun sensitiveToolCallIdsSnapshot(): Set<String> = sensitiveToolCallIds.toSet()
 
     fun run(): Result {
-        var round = 1
+        var round = initialRound
         var precedingTools: JSONArray? = null
 
         while (true) {
             runController.throwIfCancelled()
-            if (purpose.allowsTools) appendPendingSteeringMessage()
+            if (purpose.acceptsSteering) appendPendingSteeringMessage()
             var responseOutputStarted = false
 
             // 带签名的工具链沿用发出调用时的请求前缀，工具链完成后再刷新目录。
@@ -133,18 +136,21 @@ internal class AgentLoop(
                             },
                             onProviderEvent = { attemptRound, providerEvent ->
                                 if (
-                                    providerEvent is ProviderEvent.BlockStart ||
                                     providerEvent is ProviderEvent.BlockDelta ||
                                     providerEvent is ProviderEvent.HostedToolStarted ||
                                     providerEvent is ProviderEvent.SearchSuggestions
                                 ) {
+                                    // A block header is emitted before several providers have sent
+                                    // the request or finished prefill. It does not prove that model
+                                    // output reached the user, so context overflow after this point
+                                    // may still be compacted and retried safely.
                                     responseOutputStarted = true
                                 }
                                 if (providerEvent is ProviderEvent.HostedToolStarted) hostedToolStarted = true
                                 if (!purpose.allowsTools && (providerEvent is ProviderEvent.HostedToolStarted ||
                                         providerEvent is ProviderEvent.SearchSuggestions ||
                                         providerEvent is ProviderEvent.BlockStart && providerEvent.kind == AssistantBlockKind.TOOL_CALL)) {
-                                    throw AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
+                                    throw unexpectedToolFailure()
                                 }
                                 if (providerEvent is ProviderEvent.Usage) {
                                     roundInputTokens = providerEvent.contextInputTokens ?: roundInputTokens
@@ -159,7 +165,7 @@ internal class AgentLoop(
                             discardAttemptReasoning = { accumulatedReasoning.setLength(reasoningLengthBeforeRound) },
                         ).also { response ->
                             rejectContentFilter(response.response)
-                            if (purpose == ProviderRequestPurpose.CHAT) validateChatResponse(response.response)
+                            if (purpose.acceptsSteering) validateChatResponse(response.response)
                         }
                     } catch (failure: Exception) {
                         val classified = AgentModelFailure.transport(failure) ?: throw failure
@@ -194,7 +200,7 @@ internal class AgentLoop(
             val assistantMessage = providerResponse.assistantMessage
             val toolCalls = AgentConversationCodec.parseToolCalls(assistantMessage)
             if (!purpose.allowsTools && toolCalls.isNotEmpty()) {
-                throw AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
+                throw unexpectedToolFailure()
             }
             if (purpose == ProviderRequestPurpose.REPLY_REWRITE && providerResponse.stopReason != AssistantStopReason.END_TURN) {
                 throw AgentModelFailure("REPLY_REWRITE_INCOMPLETE", false, "模型未返回完整的改写回复；原回复未改变。")
@@ -237,7 +243,7 @@ internal class AgentLoop(
             publishTranscript()
 
             // assistant 已自然结束时再检查 steering。这样补充消息不会丢掉刚完成的回答。
-            if (purpose.allowsTools && appendPendingSteeringOrSeal()) {
+            if (purpose.acceptsSteering && appendPendingSteeringOrSeal()) {
                 round += 1
                 continue
             }
@@ -257,6 +263,12 @@ internal class AgentLoop(
                 sensitiveToolCallIds = sensitiveToolCallIds.toSet(),
             )
         }
+    }
+
+    private fun unexpectedToolFailure() = if (purpose == ProviderRequestPurpose.FALLBACK) {
+        AgentModelFailure("FALLBACK_TOOLS_DISABLED", false, "备用模型请求了工具，已停止；本次未执行工具。")
+    } else {
+        AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
     }
 
     /**

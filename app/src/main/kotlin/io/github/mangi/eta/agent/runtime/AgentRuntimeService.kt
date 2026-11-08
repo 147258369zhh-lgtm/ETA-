@@ -141,6 +141,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     override fun onCreate() {
         super.onCreate()
+        // Ensure the runtime permission source exists even when Android starts this
+        // service directly before the main Activity/Application path has opened settings.
+        // Without this, a transient null preference store was interpreted as all tool
+        // categories disabled.
+        Prefs.initLocal(this)
         activeInstance = this
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
@@ -381,6 +386,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 operation = request.operation,
                 eventSink = { event -> sendEventTo(replyTo, event) },
                 resultSink = { result -> sendResultTo(replyTo, result) },
+                telemetry = AgentRunTelemetry(request, onSnapshot = { AgentRunMetricsStore.enqueue(this, it) },
+                    priceResolver = { provider, model -> AgentTokenPriceStore.resolve(this, provider, model) }),
                 beforeTerminalPublish = {
                     runs.finish(request.runId, session)?.releaseIncoming()
                     AgentExecutionService.release("run:${request.runId}")
@@ -1037,10 +1044,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 },
                 onFullscreenVirtualDisplay = ::requestFullscreenVirtualDisplay,
                 onTapVirtualCanvas = { nx, ny, longPress ->
-                    VirtualDisplayController.dispatchUserTapOnCanvas(nx, ny, longPress)
+                    VirtualDisplayController.dispatchUserTapOnCanvas(nx, ny, longPress, withControl = { action -> guiControl.withUserAction(controlRunId, block = action) })
                 },
                 onSwipeVirtualCanvas = { sx, sy, ex, ey, durationMs ->
-                    VirtualDisplayController.dispatchUserSwipeOnCanvas(sx, sy, ex, ey, durationMs)
+                    VirtualDisplayController.dispatchUserSwipeOnCanvas(sx, sy, ex, ey, durationMs, withControl = { action -> guiControl.withUserAction(controlRunId, block = action) })
                 },
             )
         }

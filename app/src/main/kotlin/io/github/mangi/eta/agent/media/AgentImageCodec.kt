@@ -35,13 +35,14 @@ internal object AgentImageCodec {
         )
     }
 
-    /** 用户附件统一编码为模型兼容的 JPEG，并保持原始像素尺寸。 */
+    /** 用户附件统一编码为模型兼容的 JPEG，并在发送前限制尺寸与字节预算。 */
     fun fromAttachmentBytes(
         bytes: ByteArray,
         source: String,
         mimeHint: String = "image/jpeg",
+        targetBytes: Int = 480 * 1024,
     ): AgentModelClient.ModelImage =
-        AgentModelImageEncoder.attachment(bytes, source, mimeHint)
+        AgentModelImageEncoder.attachment(bytes, source, mimeHint, targetBytes)
             ?: error("无法解码图片")
 
     /** 已有截图编码直接透传，不解码像素、缩放或转换格式。 */

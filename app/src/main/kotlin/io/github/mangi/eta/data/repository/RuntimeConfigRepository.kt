@@ -2,12 +2,14 @@ package io.github.mangi.eta.data.repository
 
 import android.content.SharedPreferences
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentModelFallbackPolicy
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.ModelFallbackSettings
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
@@ -57,6 +59,28 @@ internal object RuntimeConfigRepository {
 
     suspend fun setSubagentSettings(settings: SubagentSettings) {
         SettingsDataStore.setSubagentSettings(settings)
+    }
+
+    fun modelFallbackSettingsFlow() = SettingsDataStore.modelFallbackSettingsFlow()
+
+    suspend fun modelFallbackSettings(): ModelFallbackSettings = SettingsDataStore.modelFallbackSettings()
+
+    suspend fun setModelFallbackSettings(settings: ModelFallbackSettings) {
+        SettingsDataStore.setModelFallbackSettings(settings)
+    }
+
+    /** Resolves the explicitly selected backup model and removes privileged tools by default. */
+    suspend fun fallbackRuntimeConfig(primary: AgentModelClient.ModelConfig): AgentModelClient.ModelConfig? {
+        val settings = SettingsDataStore.modelFallbackSettings()
+        if (!settings.enabled || settings.modelId.isNullOrBlank()) return null
+        ProviderRepository.ensureBuiltInsMerged()
+        val selected = ProviderRepository.allProviders().enabledModel(
+            settings.modelId,
+            settings.providerId,
+        ) ?: return null
+        val fallback = buildRuntimeConfig(selected.provider, selected.model)
+        if (fallback.providerId == primary.providerId && fallback.baseUrl == primary.baseUrl && fallback.model == primary.model) return null
+        return AgentModelFallbackPolicy.constrainConfig(primary, fallback)
     }
 
     /**
@@ -399,6 +423,7 @@ internal object RuntimeConfigRepository {
                 ?: AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
             openAiEndpointMode = endpointMode,
             hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
+            supportsTools = model.toolCall != false,
             thinkingEnabled = reasoningCapabilities != null,
             reasoningEffort = reasoningCapabilities?.let { ReasoningEffort.DEFAULT }
                 ?: ReasoningEffort.OFF,

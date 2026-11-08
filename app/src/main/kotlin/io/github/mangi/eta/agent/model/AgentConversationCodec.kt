@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import java.io.InputStream
+import io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -210,6 +211,7 @@ internal object AgentConversationCodec {
         return buildList {
             for (index in startIndex until messages.length()) {
                 messages.optJSONObject(index)
+                    ?.takeUnless { it.optBoolean(PROMPT_INJECTION_MARKER) }
                     ?.let { redactSensitiveToolData(it, redactedIds) }
                     ?.let(::fromJsonObject)
                     ?.let(::sanitizeMessage)

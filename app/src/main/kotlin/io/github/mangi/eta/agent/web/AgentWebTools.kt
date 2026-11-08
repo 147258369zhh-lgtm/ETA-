@@ -53,24 +53,44 @@ internal class AgentWebTools(
         val limit = args.optInt("max_results", 5)
         val query = args.getString("query")
         val config = runtimeConfig()
-        val page = when (config.searchBackend) {
-            WebToolBackend.BUILTIN -> searchBuiltIn(query, limit)
-            WebToolBackend.DEEPSEEK -> ConfigurableWebBackends.searchDeepSeek(
-                transport = transport,
-                baseUrl = config.deepSeekBaseUrl,
-                apiKey = config.deepSeekApiKey,
-                query = query,
-                maxResults = limit,
-                ensureActive = ::ensureActive,
-            )
-            WebToolBackend.CUSTOM -> ConfigurableWebBackends.searchCustom(
-                transport = transport,
-                config = config.customSearch,
-                apiKey = config.customSearchApiKey,
-                query = query,
-                maxResults = limit,
-                ensureActive = ::ensureActive,
-            )
+        val remoteProvider = when (config.searchBackend) {
+            WebToolBackend.BUILTIN -> null
+            WebToolBackend.DEEPSEEK -> "deepseek"
+            WebToolBackend.CUSTOM -> "custom"
+        }
+        var fallbackFrom: String? = null
+        val page = if (remoteProvider == null) {
+            searchBuiltIn(query, limit)
+        } else {
+            try {
+                when (config.searchBackend) {
+                    WebToolBackend.DEEPSEEK -> ConfigurableWebBackends.searchDeepSeek(
+                        transport = transport,
+                        baseUrl = config.deepSeekBaseUrl,
+                        apiKey = config.deepSeekApiKey,
+                        query = query,
+                        maxResults = limit,
+                        ensureActive = ::ensureActive,
+                    )
+                    WebToolBackend.CUSTOM -> ConfigurableWebBackends.searchCustom(
+                        transport = transport,
+                        config = config.customSearch,
+                        apiKey = config.customSearchApiKey,
+                        query = query,
+                        maxResults = limit,
+                        ensureActive = ::ensureActive,
+                    )
+                    WebToolBackend.BUILTIN -> error("unreachable")
+                }
+            } catch (failure: Exception) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                if (failure is WebRequestException && failure.code in setOf("WEB_CANCELLED", "INVALID_ARGUMENT")) {
+                    throw failure
+                }
+                ensureActive()
+                fallbackFrom = remoteProvider
+                searchBuiltIn(query, limit)
+            }
         }
         val results = JSONArray()
         page.results.forEachIndexed { index, item ->
@@ -93,6 +113,7 @@ internal class AgentWebTools(
             .put("limit_reasons", JSONArray(page.limitReasons)).put("skipped_results", page.skippedResults)
             .put("source_role", "untrusted_web_content")
             .put("citation_hint", "引用检索结果时使用其标题和原始 URL；摘要不等于已读取完整网页。")
+            .also { if (fallbackFrom != null) it.put("fallback_from", fallbackFrom) }
     }
 
     private fun searchBuiltIn(query: String, limit: Int): SearchPage {
@@ -260,6 +281,14 @@ internal class AgentWebTools(
             .also {
                 status?.let { value -> it.put("http_status", value) }
                 if (code in setOf("WEB_NETWORK_ERROR", "WEB_TIMEOUT", "WEB_ACCESS_DENIED")) it.put("local_network_access", localNetworkAccess())
+                if (tool == "web_search" && code in setOf(
+                        "WEB_NETWORK_ERROR", "WEB_TIMEOUT", "SEARCH_CHALLENGE", "SEARCH_RATE_LIMITED",
+                        "SEARCH_AUTH_REQUIRED", "SEARCH_AUTH_FAILED", "SEARCH_PARSE_FAILED", "WEB_HTTP_ERROR",
+                    )
+                ) {
+                    it.put("retry_with", JSONArray(listOf("fetch_url", "browser_use")))
+                    it.put("retry_hint", "搜索后端暂不可用；已知具体网址时改用 fetch_url，需要验证码或交互时改用 browser_use。")
+                }
             }
 
     override fun close() {

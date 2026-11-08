@@ -3,6 +3,9 @@ package io.github.mangi.eta.ui.screens.meeting
 import io.github.mangi.eta.fork.meeting.MeetingAuthorType
 import io.github.mangi.eta.fork.meeting.MeetingRoomSnapshot
 import io.github.mangi.eta.fork.meeting.MeetingTaskStatus
+import io.github.mangi.eta.fork.meeting.MeetingStreamActivity
+import io.github.mangi.eta.fork.meeting.MeetingStreamPhase
+import io.github.mangi.eta.agent.runtime.AgentEvent
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -36,7 +39,11 @@ internal object MeetingMarkdownExporter {
         }
 
         append("\n## 对话记录\n")
+        val streamMetadata = snapshot.timelineEvents.filter { it.roomId == snapshot.room.id && it.type.startsWith(MeetingStreamActivity.EVENT_PREFIX) }
+            .groupBy { it.type.removePrefix(MeetingStreamActivity.EVENT_PREFIX) }.mapValues { (_, events) -> events.maxBy { it.id } }
         snapshot.messages.forEach { message ->
+            val stream = streamMetadata[message.id]?.let { MeetingStreamActivity.decode(it.payloadJson, message.content) }
+                ?.takeIf { it.messageId == message.id && message.authorType == MeetingAuthorType.SYSTEM }
             append("\n### ")
                 .append(message.authorName)
                 .append(" · ")
@@ -45,7 +52,9 @@ internal object MeetingMarkdownExporter {
                         MeetingAuthorType.USER -> "用户"
                         MeetingAuthorType.HOST -> "主持人"
                         MeetingAuthorType.AGENT -> "Agent"
-                        MeetingAuthorType.SYSTEM -> "系统"
+                        MeetingAuthorType.SYSTEM -> if (stream != null) {
+                            if (stream.kind == AgentEvent.AssistantBlockKind.THINKING) "思考过程" else "过程输出"
+                        } else "系统"
                         else -> message.authorType
                     },
                 )
@@ -54,6 +63,20 @@ internal object MeetingMarkdownExporter {
                 .append("\n\n")
                 .append(message.content.trim())
                 .append('\n')
+            snapshot.messageAttachments[message.id]?.let { attachments ->
+                attachments.images.forEachIndexed { index, image ->
+                    append("\n![附件图片 ").append(index + 1).append("](<").append(image.uri.replace(">", "%3E")).append(">)\n")
+                }
+                if (attachments.images.isNotEmpty()) append("\n> 图片链接指向本机文件；迁移完整内容请使用完整备份。\n")
+            }
+            if (stream != null) {
+                if (stream.truncated) append("\n> 实时预览已截断；完整结果以最终答复为准。\n")
+                when (stream.phase) {
+                    MeetingStreamPhase.STREAMING -> append("\n> 导出时尚未完成，仅包含已收到的部分文字。\n")
+                    MeetingStreamPhase.INTERRUPTED -> append("\n> 此次输出已中断，保留部分文字。\n")
+                    else -> Unit
+                }
+            }
         }
 
         if (snapshot.tasks.isNotEmpty()) {

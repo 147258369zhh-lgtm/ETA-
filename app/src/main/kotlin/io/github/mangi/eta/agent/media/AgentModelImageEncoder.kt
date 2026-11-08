@@ -21,8 +21,16 @@ internal const val MAX_AGENT_IMAGE_BYTES = 12 * 1024 * 1024
 
 /** 仅负责为工具截图和聊天预览生成独立的图片副本。 */
 internal object AgentModelImageEncoder {
-    private const val MODEL_JPEG_QUALITY = 95
+    private const val MODEL_JPEG_QUALITY = 84
     private const val PREVIEW_JPEG_QUALITY = 80
+    private const val MODEL_IMAGE_LONG_EDGE = 1_568
+    private const val MODEL_IMAGE_MAX_PIXELS = 2_500_000L
+    private const val ATTACHMENT_TARGET_BYTES = 480 * 1024
+    private const val TOOL_VISION_TARGET_BYTES = 720 * 1024
+    private const val MIN_MODEL_IMAGE_TARGET_BYTES = 96 * 1024
+    private const val MIN_MODEL_IMAGE_EDGE = 320
+    private const val MODEL_IMAGE_DIMENSION_RETRY_SCALE = 0.82
+    private const val MAX_MODEL_IMAGE_ENCODING_ATTEMPTS = 6
 
     private data class EncodingProfile(
         val format: Bitmap.CompressFormat,
@@ -30,6 +38,7 @@ internal object AgentModelImageEncoder {
         val quality: Int,
         val maxLongEdge: Int? = null,
         val maxPixels: Long? = null,
+        val targetBytes: Int? = null,
     )
 
     private data class ImageBounds(
@@ -46,9 +55,12 @@ internal object AgentModelImageEncoder {
         quality = 100,
     )
     private val attachmentProfile = EncodingProfile(
+        maxLongEdge = MODEL_IMAGE_LONG_EDGE,
+        maxPixels = MODEL_IMAGE_MAX_PIXELS,
         format = Bitmap.CompressFormat.JPEG,
         mimeType = "image/jpeg",
         quality = MODEL_JPEG_QUALITY,
+        targetBytes = ATTACHMENT_TARGET_BYTES,
     )
     private val previewProfile = EncodingProfile(
         maxLongEdge = 512,
@@ -58,15 +70,19 @@ internal object AgentModelImageEncoder {
         quality = PREVIEW_JPEG_QUALITY,
     )
     private val toolVisionProfile = EncodingProfile(
+        maxLongEdge = MODEL_IMAGE_LONG_EDGE,
+        maxPixels = MODEL_IMAGE_MAX_PIXELS,
         format = Bitmap.CompressFormat.JPEG,
         mimeType = "image/jpeg",
         quality = MODEL_JPEG_QUALITY,
+        targetBytes = TOOL_VISION_TARGET_BYTES,
     )
 
     fun attachment(
         bytes: ByteArray,
         source: String,
         mimeHint: String,
+        targetBytes: Int = ATTACHMENT_TARGET_BYTES,
     ): AgentModelClient.ModelImage? {
         if (!bytes.hasSupportedImageMagic()) return null
         val bounds = inspectBounds(bytes, mimeHint)
@@ -74,7 +90,9 @@ internal object AgentModelImageEncoder {
             bytes = bytes,
             source = source,
             bounds = bounds,
-            profile = attachmentProfile,
+            profile = attachmentProfile.copy(
+                targetBytes = targetBytes.coerceIn(MIN_MODEL_IMAGE_TARGET_BYTES, ATTACHMENT_TARGET_BYTES),
+            ),
         )
         // 普通附件保持 JPEG 兼容路径；截图不经过这里的解码与重编码。
         return encoded
@@ -157,38 +175,77 @@ internal object AgentModelImageEncoder {
         flattenAlpha: Boolean,
     ): AgentModelClient.ModelImage {
         require(!bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) { "图片位图不可用" }
-        val encodedBitmap = renderBitmap(
-            bitmap = bitmap,
-            target = targetSize(bitmap.width, bitmap.height, profile),
-            flattenAlpha = flattenAlpha,
-        )
-        try {
-            val initialCapacity = minOf(
-                encodedBitmap.width * encodedBitmap.height / 4,
-                2 * 1024 * 1024,
-            ).coerceAtLeast(32 * 1024)
-            val output = ByteArrayOutputStream(initialCapacity)
-            check(encodedBitmap.compress(profile.format, profile.quality, output)) {
-                "图片编码失败"
+        var target = targetSize(bitmap.width, bitmap.height, profile)
+        var lastEncoded: ByteArray? = null
+        var lastWidth = target.width
+        var lastHeight = target.height
+        for (attempt in 0 until MAX_MODEL_IMAGE_ENCODING_ATTEMPTS) {
+            val encodedBitmap = renderBitmap(
+                bitmap = bitmap,
+                target = target,
+                flattenAlpha = flattenAlpha,
+            )
+            try {
+                lastWidth = encodedBitmap.width
+                lastHeight = encodedBitmap.height
+                lastEncoded = encodeBitmapBytes(encodedBitmap, profile)
+                if (lastEncoded.size <= (profile.targetBytes ?: MAX_AGENT_IMAGE_BYTES)) {
+                    return lastEncoded.toModelImage(source, profile, lastWidth, lastHeight)
+                }
+            } finally {
+                if (encodedBitmap !== bitmap && !encodedBitmap.isRecycled) {
+                    encodedBitmap.recycle()
+                }
             }
-            val encoded = output.toByteArray()
-            require(encoded.isNotEmpty() && encoded.size <= MAX_AGENT_IMAGE_BYTES) {
+            val next = TargetSize(
+                width = (target.width * MODEL_IMAGE_DIMENSION_RETRY_SCALE).toInt().coerceAtLeast(1),
+                height = (target.height * MODEL_IMAGE_DIMENSION_RETRY_SCALE).toInt().coerceAtLeast(1),
+            )
+            if (minOf(next.width, next.height) < MIN_MODEL_IMAGE_EDGE) break
+            target = next
+        }
+        val encoded = checkNotNull(lastEncoded) { "图片编码失败" }
+        if (profile.targetBytes != null && encoded.size > profile.targetBytes) {
+            // Very detailed images can remain above the soft target. The 12 MiB hard limit is
+            // still enforced so a single malformed image can never break Binder or HTTP framing.
+            require(encoded.size <= MAX_AGENT_IMAGE_BYTES) {
                 "图片数据过大：${encoded.size}"
             }
-            return AgentModelClient.ModelImage(
-                reference = "data:${profile.mimeType};base64,${Base64.encodeToString(encoded, Base64.NO_WRAP)}",
-                mimeType = profile.mimeType,
-                bytes = encoded.size,
-                width = encodedBitmap.width,
-                height = encodedBitmap.height,
-                source = source,
-            )
-        } finally {
-            if (encodedBitmap !== bitmap && !encodedBitmap.isRecycled) {
-                encodedBitmap.recycle()
+        }
+        return encoded.toModelImage(source, profile, lastWidth, lastHeight)
+    }
+
+    private fun encodeBitmapBytes(
+        bitmap: Bitmap,
+        profile: EncodingProfile,
+    ): ByteArray {
+        val initialCapacity = minOf(
+            bitmap.width * bitmap.height / 4,
+            2 * 1024 * 1024,
+        ).coerceAtLeast(32 * 1024)
+        return ByteArrayOutputStream(initialCapacity).use { output ->
+            check(bitmap.compress(profile.format, profile.quality, output)) { "图片编码失败" }
+            output.toByteArray().also { encoded ->
+                require(encoded.isNotEmpty() && encoded.size <= MAX_AGENT_IMAGE_BYTES) {
+                    "图片数据过大：${encoded.size}"
+                }
             }
         }
     }
+
+    private fun ByteArray.toModelImage(
+        source: String,
+        profile: EncodingProfile,
+        width: Int,
+        height: Int,
+    ): AgentModelClient.ModelImage = AgentModelClient.ModelImage(
+        reference = "data:${profile.mimeType};base64,${Base64.encodeToString(this, Base64.NO_WRAP)}",
+        mimeType = profile.mimeType,
+        bytes = size,
+        width = width,
+        height = height,
+        source = source,
+    )
 
     private fun renderBitmap(
         bitmap: Bitmap,

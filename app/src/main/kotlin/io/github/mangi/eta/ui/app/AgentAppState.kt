@@ -4,15 +4,21 @@ import io.github.mangi.eta.agent.model.AgentContextSnapshot
 
 import android.content.ContentResolver
 import android.content.Context
+import io.github.mangi.eta.data.model.ConversationSubject
+import io.github.mangi.eta.data.repository.ConversationAttachmentDrafts
+import io.github.mangi.eta.data.repository.ConversationAttachments
+import io.github.mangi.eta.data.repository.ConversationDraftRepository
 import android.content.Intent
 import android.net.Uri
 import android.text.format.DateFormat
 import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import io.github.mangi.eta.EtaApp
+import io.github.mangi.eta.agent.accessibility.textResource
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.device.AgentFileReferenceGateway
 import io.github.mangi.eta.agent.device.RootAccess
@@ -51,6 +57,8 @@ import io.github.mangi.eta.data.model.enabledModel
 import io.github.mangi.eta.data.repository.EtaBackupRepository
 import io.github.mangi.eta.data.repository.EtaFullBackupArchive
 import io.github.mangi.eta.data.repository.EtaBackupSummary
+import io.github.mangi.eta.data.repository.ConversationBranchSetupCoordinator
+import io.github.mangi.eta.data.repository.EtaBackupProgress
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.fork.conversations.ConversationExtensionRepository
@@ -98,6 +106,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -148,6 +157,14 @@ internal class AgentAppState(
     private var conversationTitles: Map<String, String> = initialConversations.titles
     private var conversationUpdatedAt: Map<String, Long> = initialConversations.updatedAt
     private var conversationPinnedIds: Set<String> = initialConversations.pinnedIds
+    private var pendingBranchDrafts: Map<String, ConversationBranchDraft> = emptyMap()
+    var isCreatingConversationBranch by mutableStateOf(false)
+        private set
+    var canCancelConversationBranch by mutableStateOf(false)
+        private set
+    var conversationBranchPhase by mutableIntStateOf(R.string.branch_stage_save_source)
+        private set
+    private var conversationBranchJob: Job? = null
     private var conversationExtensions = ConversationExtensionSnapshot()
 
     var homeState by mutableStateOf(
@@ -167,7 +184,61 @@ internal class AgentAppState(
     )
         private set
 
+    private val attachmentDrafts = ConversationAttachmentDrafts.get(appContext)
+    private val loadedAttachmentDrafts = mutableSetOf<ConversationSubject>()
+    private val attachmentLoadMutex = Mutex()
+
+    private fun attachmentSnapshot(state: AgentChatHomeUiState) = ConversationAttachments(
+        state.messageEdit?.previousImages ?: state.pendingImages,
+        state.messageEdit?.previousFileReferences ?: state.pendingFileReferences,
+    )
+
+    private fun restoreAttachmentDraft(conversationId: String? = selectedConversationId) {
+        scope.launch { ensureAttachmentDraftLoaded(ConversationSubject.chat(conversationId)) }
+    }
+
+    private suspend fun ensureAttachmentDraftLoaded(subject: ConversationSubject) = withContext(Dispatchers.Main.immediate) {
+        attachmentLoadMutex.withLock {
+            if (subject in loadedAttachmentDrafts) return@withLock
+            try {
+                val lease = attachmentDrafts.open(subject)
+                val attachments = attachmentDrafts.load(lease)
+                if (!attachmentDrafts.isValid(lease)) return@withLock
+                val id = subject.id.takeIf { subject.kind != ConversationSubject.Kind.NEW_CHAT }
+                val current = if (id == null) homeState.takeIf { selectedConversationId == null } else conversationsById[id]
+                if (current != null && current.messageEdit == null) {
+                    // Do not overwrite a live attachment accepted during startup/share handling.
+                    val images = (attachments.images + current.pendingImages).distinctBy { it.id }
+                    val files = (attachments.files + current.pendingFileReferences).distinctBy { it.reference.absolutePath }
+                    val next = current.copy(pendingImages = images, pendingFileReferences = files)
+                    saveAttachmentDraft(subject, ConversationAttachments(images, files))
+                    if (id == null) homeState = next else {
+                        conversationsById = conversationsById + (id to next)
+                        if (selectedConversationId == id) homeState = next
+                    }
+                }
+                loadedAttachmentDrafts += subject
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { Toast.makeText(appContext, R.string.attachment_draft_load_failed, Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    private fun saveAttachmentChanges(subject: ConversationSubject, before: AgentChatHomeUiState, after: AgentChatHomeUiState) {
+        val value = attachmentSnapshot(after)
+        if (attachmentSnapshot(before) == value) return
+        saveAttachmentDraft(subject, value)
+    }
+
+    private fun saveAttachmentDraft(subject: ConversationSubject, value: ConversationAttachments) {
+        attachmentDrafts.save(attachmentDrafts.open(subject), value).invokeOnCompletion { failure ->
+            if (failure != null) scope.launch(Dispatchers.Main) {
+                Toast.makeText(appContext, R.string.attachment_draft_save_failed, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     init {
+        restoreAttachmentDraft()
         refreshConversationSummaries()
         observeConversationExtensions()
         observeRuntimeSelection()
@@ -279,12 +350,19 @@ internal class AgentAppState(
         }
     }
 
-    suspend fun exportBackup(output: OutputStream, password: String? = null): EtaBackupSummary {
+    suspend fun exportBackup(
+        output: OutputStream,
+        password: String? = null,
+        onProgress: (EtaBackupProgress) -> Unit = {},
+        options: io.github.mangi.eta.data.repository.EtaBackupOptions = io.github.mangi.eta.data.repository.EtaBackupOptions(),
+    ): EtaBackupSummary = io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive {
+        io.github.mangi.eta.data.repository.EtaBackupOperations.requireIdle(appContext)
+        onProgress(EtaBackupProgress("checking_runtime"))
         val locallyBusy = withContext(Dispatchers.Main.immediate) {
             runStore.hasActiveRuns || conversationsById.values.any { it.isStreaming }
         }
         if (locallyBusy) throw IllegalStateException("请先停止正在运行的 Agent 任务再导出完整备份")
-        val activeRunQuery = withContext(Dispatchers.IO) {
+        val activeRunQuery = runInterruptible(Dispatchers.IO) {
             AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRuns()
         }
         when (val active = activeRunQuery) {
@@ -294,10 +372,15 @@ internal class AgentAppState(
             AgentRuntimeClient.ActiveRunsQuery.Unavailable ->
                 throw IllegalStateException("无法确认 Agent Runtime 状态，请稍后重试")
         }
-        return EtaFullBackupArchive.export(appContext, output, password)
+        synchronized(persistenceLock) { persistenceJob }?.join()
+        io.github.mangi.eta.data.repository.EtaBackupOperations.export(appContext, output, password, options, onProgress)
     }
 
-    suspend fun importBackup(input: InputStream, password: String? = null): EtaBackupSummary {
+    suspend fun importBackup(input: InputStream, password: String? = null,
+        onPhase: (String) -> Unit = {},
+    ): EtaBackupSummary = io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive {
+        io.github.mangi.eta.data.repository.EtaBackupOperations.requireIdle(appContext)
+        onPhase("checking_runtime")
         val locallyBusy = withContext(Dispatchers.Main.immediate) {
             runStore.hasActiveRuns || conversationsById.values.any { it.isStreaming }
         }
@@ -328,13 +411,14 @@ internal class AgentAppState(
         var reloaded = false
         try {
             pendingPersistence?.join()
-            return conversationLoadMutex.withLock {
+            conversationLoadMutex.withLock {
                 try {
                     val summary = EtaFullBackupArchive.import(
                         context = appContext,
                         input = input,
                         password = password,
                         onCommitted = { imported = true },
+                        onPhase = onPhase,
                     )
                     if (!summary.restartRequired) {
                         reloadConversationsAfterBackup()
@@ -365,9 +449,13 @@ internal class AgentAppState(
 
     private suspend fun reloadConversationsAfterBackup() {
         val snapshot = withContext(Dispatchers.IO) {
+            try { ConversationBranchSetupCoordinator.recoverPending(appContext) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { AndroidAgentLogger.warn("Imported branch settings recovery unavailable: type=${failure.safeLogType()}") }
             AgentConversationStore.load(appContext)
         }
         withContext(Dispatchers.Main.immediate) {
+            pendingBranchDrafts = emptyMap()
             conversationSelectionVersion += 1
             cancelHistoryPageLoad()
             conversationSelectionJob?.cancel()
@@ -383,6 +471,8 @@ internal class AgentAppState(
             conversationPinnedIds = snapshot.pinnedIds
             conversationPersistence = AgentConversationPersistence(snapshot)
             fileAttachmentOwnerVersion += 1
+            loadedAttachmentDrafts.clear()
+            restoreAttachmentDraft()
             homeState = selectedConversationId
                 ?.let(conversationsById::get)
                 ?: emptyChatState(defaultThinkingEnabled)
@@ -855,24 +945,26 @@ internal class AgentAppState(
         )
     }
 
-    fun createConversationFolder(name: String, onCreated: (String) -> Unit = {}) {
-        scope.launch {
-            val id = ConversationExtensionRepository.createFolder(appContext, name)
-            withContext(Dispatchers.Main.immediate) { onCreated(id) }
-        }
+    suspend fun createConversationFolder(name: String, parentId: String? = null): String = withContext(Dispatchers.IO) {
+        ConversationExtensionRepository.createFolder(appContext, name, parentId = parentId)
     }
 
-    fun renameConversationFolder(folderId: String, name: String) {
-        val folder = conversationExtensions.folders.firstOrNull { it.id == folderId } ?: return
-        scope.launch(Dispatchers.IO) {
-            ConversationExtensionRepository.renameFolder(appContext, folder, name)
-        }
+    suspend fun renameConversationFolder(folderId: String, name: String) = withContext(Dispatchers.IO) {
+        val folder = conversationExtensions.folders.firstOrNull { it.id == folderId }
+            ?: throw io.github.mangi.eta.fork.conversations.ConversationFolderException("NOT_FOUND")
+        ConversationExtensionRepository.renameFolder(appContext, folder, name)
     }
 
-    fun moveConversationToFolder(conversationId: String, folderId: String?) {
-        scope.launch(Dispatchers.IO) {
-            ConversationExtensionRepository.moveConversation(appContext, conversationId, folderId)
-        }
+    suspend fun moveConversationToFolder(conversationId: String, folderId: String?) = withContext(Dispatchers.IO) {
+        ConversationExtensionRepository.moveConversation(appContext, conversationId, folderId)
+    }
+
+    suspend fun moveConversationFolder(folderId: String, parentId: String?) = withContext(Dispatchers.IO) {
+        ConversationExtensionRepository.moveFolder(appContext, folderId, parentId)
+    }
+
+    suspend fun deleteConversationFolder(folderId: String) = withContext(Dispatchers.IO) {
+        ConversationExtensionRepository.deleteFolder(appContext, folderId)
     }
 
     fun archiveConversation(conversationId: String) {
@@ -902,6 +994,7 @@ internal class AgentAppState(
         fileAttachmentOwnerVersion += 1
         selectedConversationId = conversationId
         homeState = state
+        restoreAttachmentDraft(conversationId)
         conversationLoadFailed = false
         isLoadingConversation = !state.isConversationLoaded
         conversationPaneState = conversationPaneState.copy(selectedConversationId = conversationId)
@@ -1103,6 +1196,7 @@ internal class AgentAppState(
         fileAttachmentOwnerVersion += 1
         selectedConversationId = null
         homeState = emptyChatState(defaultThinkingEnabled)
+        restoreAttachmentDraft()
         refreshConversationModel()
         conversationPaneState = conversationPaneState.copy(
             selectedConversationId = null,
@@ -1133,7 +1227,7 @@ internal class AgentAppState(
                 greetingId to RoleplayMessageLink(greetingId),
             )),
         )
-        conversationTitles = conversationTitles + (id to binding.characterName)
+        conversationTitles = conversationTitles + (id to uniqueConversationTitle(binding.characterName, id))
         updateConversation(id, homeState)
         conversationPaneState = conversationPaneState.copy(selectedConversationId = id, searchQuery = "")
         refreshConversationSummaries()
@@ -1159,6 +1253,7 @@ internal class AgentAppState(
     }
 
     private fun deleteSettledConversation(conversationId: String) {
+        pendingBranchDrafts = pendingBranchDrafts - conversationId
         pendingConversationDeletes.remove(conversationId)
         BrowserSessionRegistry.requestRemove(conversationId)
         val wasSelected = selectedConversationId == conversationId
@@ -1166,9 +1261,6 @@ internal class AgentAppState(
         conversationTitles = conversationTitles - conversationId
         conversationUpdatedAt = conversationUpdatedAt - conversationId
         conversationPinnedIds = conversationPinnedIds - conversationId
-        scope.launch(Dispatchers.IO) {
-            ConversationExtensionRepository.deleteConversation(appContext, conversationId)
-        }
         if (wasSelected) {
             conversationSelectionVersion += 1
             cancelHistoryPageLoad()
@@ -1180,6 +1272,7 @@ internal class AgentAppState(
             if (nextId != null) {
                 selectedConversationId = nextId
                 homeState = conversationsById.getValue(nextId)
+                restoreAttachmentDraft(nextId)
             } else {
                 selectedConversationId = null
                 homeState = emptyChatState(defaultThinkingEnabled)
@@ -1188,7 +1281,17 @@ internal class AgentAppState(
         }
         conversationPaneState = conversationPaneState.copy(selectedConversationId = selectedConversationId)
         refreshConversationSummaries()
-        persistConversations()
+        val saved = persistConversations()
+        scope.launch(Dispatchers.IO) {
+            try { if (saved.await()) {
+                ConversationDraftRepository.get(appContext).remove(ConversationSubject.chat(conversationId))
+                attachmentDrafts.remove(ConversationSubject.chat(conversationId))
+                loadedAttachmentDrafts.remove(ConversationSubject.chat(conversationId))
+                ConversationBranchSetupCoordinator.cleanDeleted(appContext, conversationId)
+            } }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { AndroidAgentLogger.warn("Conversation link cleanup failed: type=${failure.safeLogType()}") }
+        }
     }
 
     private fun abortPendingConversationDelete(conversationId: String) {
@@ -1242,10 +1345,98 @@ internal class AgentAppState(
                 noticeEmptyResult = noticeText(SystemNoticeCode.EmptyResult),
                 noticeModelRetry = noticeText(SystemNoticeCode.ModelRetry),
                 noticeContextCompaction = noticeText(SystemNoticeCode.ContextCompaction),
+                noticeAccessibility = noticeText(SystemNoticeCode.AccessibilityWaiting),
+                accessibilityPhases = io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase.entries.associate {
+                    it.wireValue to appContext.getString(it.textResource())
+                },
                 noticeRuntimeFailed = noticeText(SystemNoticeCode.RuntimeFailed),
                 noticeInterrupted = noticeText(SystemNoticeCode.Interrupted),
             ),
         ) }
+    }
+
+    fun createConversationBranch(messageId: String) {
+        val sourceId = selectedConversationId ?: return
+        if (isCreatingConversationBranch) return
+        isCreatingConversationBranch = true
+        canCancelConversationBranch = true
+        conversationBranchPhase = R.string.branch_stage_save_source
+        conversationBranchJob = scope.launch {
+            try {
+                withLoadedConversations(setOf(sourceId)) {
+                    conversationLoadMutex.withLock {
+                        val source = conversationsById[sourceId] ?: error("BRANCH_SOURCE_MISSING")
+                        check(runStore.activeRunId(sourceId) == null && !source.isStreaming && !source.isCompacting && source.messageEdit == null)
+                        check(persistConversations().await()) { "BRANCH_SAVE_FAILED" }
+                        conversationBranchPhase = R.string.branch_stage_read_history
+                        val stored = AgentConversationStore.loadBranchSource(appContext, sourceId, messageId)
+                        val current = conversationsById[sourceId] ?: error("BRANCH_SOURCE_MISSING")
+                        check(runStore.activeRunId(sourceId) == null && !current.isStreaming && !current.isCompacting && current.messageEdit == null)
+                        check(source.messages == current.messages && source.history == current.history && source.journal == current.journal &&
+                            source.roleplayMessages == current.roleplayMessages && source.roleplay == current.roleplay)
+                        val full = RoleplayConversationReducer.decorate(source.copy(messages = stored.messages,
+                            messageStartIndex = 0, hasEarlierMessages = false))
+                        val planned = withContext(Dispatchers.Default) {
+                            AgentConversationBranchPlanner.create(sourceId, full, stored.positions, messageId, stored.node,
+                                verifiedPrefix = stored.verifiedPrefix)
+                        }
+                        val setup = ConversationBranchSetupCoordinator.capture(appContext, sourceId,
+                            planned.draft.node.conversationId, planned.draft.node.createdAt)
+                        val plan = planned.copy(draft = planned.draft.copy(setup = setup))
+                        // 计算期间源会话仍可能收到运行/编辑事件；提交前再次核对。
+                        val latest = conversationsById[sourceId] ?: error("BRANCH_SOURCE_MISSING")
+                        check(runStore.activeRunId(sourceId) == null && !latest.isStreaming && !latest.isCompacting && latest.messageEdit == null &&
+                            current.messages == latest.messages && current.journal == latest.journal && current.history == latest.history &&
+                            current.roleplayMessages == latest.roleplayMessages && current.roleplay == latest.roleplay)
+                        val id = plan.draft.node.conversationId
+                        canCancelConversationBranch = false
+                        conversationBranchPhase = R.string.branch_stage_save_branch
+                        conversationsById = conversationsById + (id to plan.state)
+                        conversationTitles = conversationTitles + (id to uniqueConversationTitle(
+                            appContext.getString(R.string.branch_title_from,
+                                conversationTitles[sourceId]?.takeIf(String::isNotBlank)
+                                    ?: appContext.getString(R.string.conversation_unnamed)),
+                            id,
+                        ))
+                        conversationUpdatedAt = conversationUpdatedAt + (id to plan.draft.node.createdAt)
+                        pendingBranchDrafts = pendingBranchDrafts + (id to plan.draft)
+                        refreshConversationSummaries()
+                        // 先把 child 纳入 UI 保存快照；同一事务再写消息、检查点及分支关系。
+                        check(persistConversations().await()) { "BRANCH_SAVE_FAILED" }
+                        conversationBranchPhase = R.string.branch_stage_inherit_settings
+                        val initialized = ConversationBranchSetupCoordinator.ensure(appContext, id)
+                        refreshConversationSummaries()
+                        selectConversation(id)
+                        Toast.makeText(appContext, if (!initialized) R.string.branch_setup_required
+                            else if (plan.draft.node.historyMode == "journal") R.string.branch_created
+                            else R.string.branch_created_reconstructed, Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                AndroidAgentLogger.error("Conversation branch failed: type=${failure.safeLogType()}")
+                val message = when (failure.message) {
+                    "BRANCH_HISTORY_TOO_LARGE" -> R.string.branch_prefix_too_large
+                    "BRANCH_INTERMEDIATE_REPLY" -> R.string.branch_prefix_intermediate_reply
+                    "BRANCH_SOURCE_MESSAGE_MISSING" -> R.string.branch_prefix_source_changed
+                    "BRANCH_UNFINISHED_TOOLS" -> R.string.branch_prefix_unfinished_tools
+                    else -> R.string.branch_create_failed
+                }
+                Toast.makeText(appContext, message, Toast.LENGTH_LONG).show()
+            } finally {
+                isCreatingConversationBranch = false
+                canCancelConversationBranch = false
+                conversationBranchJob = null
+            }
+        }
+    }
+
+    fun isConversationBusy(id: String): Boolean = runStore.activeRunId(id) != null ||
+        conversationsById[id]?.let { it.isStreaming || it.isCompacting || it.messageEdit != null } == true
+
+    fun cancelConversationBranch() {
+        if (canCancelConversationBranch) conversationBranchJob?.cancel()
     }
 
     private fun noticeText(code: SystemNoticeCode): String = appContext.getString(
@@ -1253,18 +1444,24 @@ internal class AgentAppState(
             SystemNoticeCode.Stopped -> R.string.system_notice_stopped
             SystemNoticeCode.EmptyResult -> R.string.system_notice_empty_result
             SystemNoticeCode.ContextCompaction -> R.string.context_compaction
+            SystemNoticeCode.AccessibilityWaiting -> R.string.accessibility_wait_title
             SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
             SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
             SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
         },
     )
 
-    fun sendCurrentMessage(submittedText: String? = null) {
+    fun sendCurrentMessage(submittedText: String? = null): Boolean =
         submitOrQueueCurrentMessage(submittedText = submittedText, immediateInterrupt = false)
-    }
 
-    fun interruptAndSendCurrentMessage(submittedText: String? = null) {
+    fun interruptAndSendCurrentMessage(submittedText: String? = null): Boolean =
         submitOrQueueCurrentMessage(submittedText = submittedText, immediateInterrupt = true)
+
+    /** External input is a one-shot handoff; local editing belongs to the draft repository. */
+    fun consumeInputSync(conversationId: String?, version: Int, text: String) {
+        if (selectedConversationId != conversationId || homeState.inputSyncVersion != version ||
+            homeState.messageEdit != null || homeState.input != text || text.isEmpty()) return
+        updateCurrentConversation(homeState.copy(input = ""), updateTimestamp = false)
     }
 
     fun steerQueuedMessage(id: String) {
@@ -1300,18 +1497,18 @@ internal class AgentAppState(
     private fun submitOrQueueCurrentMessage(
         submittedText: String?,
         immediateInterrupt: Boolean,
-    ) {
+    ): Boolean {
         if (!homeState.isConversationLoaded || homeState.isCompacting ||
-            selectedConversationId in pendingConversationDeletes) return
+            selectedConversationId in pendingConversationDeletes) return false
         val prompt = (submittedText ?: homeState.input).trim()
         val pendingImages = homeState.pendingImages
         val pendingFileReferences = homeState.pendingFileReferences
         if (prompt.isBlank() && pendingImages.isEmpty() && pendingFileReferences.isEmpty()) {
-            return
+            return false
         }
         if (!homeState.isStreaming) {
             homeState.messageEdit?.takeIf { it.preserveFollowingMessages }?.let { edit ->
-                val updated = RoleplayConversationReducer.edit(homeState, edit.targetMessageId, prompt) ?: return
+                val updated = RoleplayConversationReducer.edit(homeState, edit.targetMessageId, prompt) ?: return false
                 updateCurrentConversation(updated.copy(
                     input = edit.previousInput,
                     pendingImages = edit.previousImages,
@@ -1320,7 +1517,7 @@ internal class AgentAppState(
                 ))
                 refreshConversationSummaries()
                 persistConversations()
-                return
+                return true
             }
         }
         val fileReferences = pendingFileReferences.map { it.reference }
@@ -1335,7 +1532,7 @@ internal class AgentAppState(
                 appContext.getString(R.string.state_ui_file_path_reference_requires_opening_the_termina_deca4c),
                 Toast.LENGTH_SHORT,
             ).show()
-            return
+            return false
         }
 
         if (homeState.isStreaming) {
@@ -1353,7 +1550,7 @@ internal class AgentAppState(
             if (immediateInterrupt) {
                 requestInterruptCurrentRun()
             }
-            return
+            return true
         }
 
         val edit = homeState.messageEdit
@@ -1366,13 +1563,15 @@ internal class AgentAppState(
         }
         if (edit != null && editBoundary == null) {
             cancelMessageEdit()
-            return
+            return false
         }
 
+        val wasNew = selectedConversationId == null
         val conversationId = selectedConversationId ?: newConversationId().also {
             selectedConversationId = it
+            loadedAttachmentDrafts += ConversationSubject.chat(it)
         }
-        dispatchMessageToConversation(
+        val accepted = dispatchMessageToConversation(
             conversationId = conversationId,
             state = homeState,
             prompt = prompt,
@@ -1380,6 +1579,8 @@ internal class AgentAppState(
             pendingFileReferences = pendingFileReferences,
             editBoundary = editBoundary,
         )
+        if (accepted && wasNew) saveAttachmentDraft(ConversationSubject.chat(null), ConversationAttachments())
+        return accepted
     }
 
     private fun dispatchQueuedMessage(
@@ -1423,7 +1624,7 @@ internal class AgentAppState(
         pendingFileReferences: List<PendingFileReferenceUi>,
         editBoundary: AgentConversationRevisionReducer.Boundary?,
         preserveCurrentDraft: Boolean = false,
-    ) {
+    ): Boolean {
         val fileReferences = pendingFileReferences.map { it.reference }
         val runtimePrompt = AgentFileReferencePromptCodec.format(prompt, fileReferences)
         val runId = "run-${UUID.randomUUID()}"
@@ -1450,7 +1651,7 @@ internal class AgentAppState(
             ?.userMessage
             ?.content
             ?.defaultConversationTitleFromMessage()
-        val nextAutoTitle = defaultConversationTitle(prompt, fileReferences)
+        val nextAutoTitle = uniqueConversationTitle(defaultConversationTitle(prompt, fileReferences), conversationId)
         val title = if (
             editBoundary?.userMessageIndex == 0 &&
             (currentTitle == oldAutoTitle || currentTitle.isNullOrBlank())
@@ -1464,7 +1665,7 @@ internal class AgentAppState(
         if (selectedConversationId == conversationId) {
             conversationPaneState = conversationPaneState.copy(selectedConversationId = conversationId)
         }
-        launchConversationRun(
+        return launchConversationRun(
             conversationId = conversationId,
             runId = runId,
             prompt = runtimePrompt,
@@ -1655,7 +1856,7 @@ internal class AgentAppState(
         )
     }
 
-    fun compactCurrentContext() {
+    fun compactCurrentContext(selection: IntRange? = null) {
         val conversationId = selectedConversationId ?: return
         if (runStore.activeRunId(conversationId) != null || !homeState.canCompactContext || modelPickerState.isChanging) return
         launchConversationRun(
@@ -1664,6 +1865,7 @@ internal class AgentAppState(
             prompt = "", images = emptyList(), history = homeState.history,
             userHistoryMessage = null, messages = homeState.messages, state = homeState,
             reasoningEffort = homeState.reasoningEffort, operation = AgentRuntimeWire.OP_COMPACT,
+            compactionSelection = selection,
         )
     }
 
@@ -1679,8 +1881,9 @@ internal class AgentAppState(
         reasoningEffort: ReasoningEffort,
         operation: String = AgentRuntimeWire.OP_CHAT,
         rewriteTargetMessageId: String? = null,
-    ) {
-        if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return
+        compactionSelection: IntRange? = null,
+    ): Boolean {
+        if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return false
         // 发送即绑定：会话记住本轮实际使用的模型，回落到默认模型时也随之更新。
         val runModelId = state.effectiveModelId
         val runReasoningEffort = providers.enabledModel(runModelId)?.let { (provider, model) ->
@@ -1780,6 +1983,23 @@ internal class AgentAppState(
                 }
                 return@launch
             }
+            if (!ConversationBranchSetupCoordinator.ensure(appContext, conversationId)) {
+                withContext(Dispatchers.Main) {
+                    applyRunResult(runId, AgentRuntimeWire.RunResult(runId, false, "", appContext.getString(R.string.branch_setup_required),
+                        operation = operation, rewriteTargetMessageId = rewriteTargetMessageId))
+                }
+                return@launch
+            }
+            val conversationContextOverride = ConversationExtensionRepository.contextWindowOverride(
+                appContext,
+                conversationId,
+            )
+            val effectiveConfig = config.let { base ->
+                conversationContextOverride?.let { requested ->
+                    val ceiling = base.knownContextWindow ?: base.contextWindow
+                    base.copy(contextWindow = ceiling?.let { minOf(it, requested) } ?: requested)
+                } ?: base
+            }
             val modelImages = images.map { p ->
                 AgentModelClient.ModelImage(
                     reference = p.uri,
@@ -1794,31 +2014,48 @@ internal class AgentAppState(
                 }
                 return@launch
             }
-            val result = runInterruptible {
-                val request = AgentRuntimeWire.RunRequest(
-                        operation = operation,
-                        rewriteTargetMessageId = rewriteTargetMessageId,
-                        runId = runId,
-                        prompt = prompt,
-                        config = config.copy(supportsSearchSuggestions = true),
-                        images = modelImages,
-                        history = history,
-                        handoff = AgentRuntimeWire.EntryHandoff(
-                            id = runId,
-                            source = AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE,
-                            payload = conversationId,
-                        ),
-                    )
-                val runtimeResult = AgentExecutionPort.run(
+            val request = AgentRuntimeWire.RunRequest(
+                operation = operation,
+                rewriteTargetMessageId = rewriteTargetMessageId,
+                runId = runId,
+                prompt = prompt,
+                config = effectiveConfig.copy(supportsSearchSuggestions = true),
+                images = modelImages,
+                history = history,
+                handoff = AgentRuntimeWire.EntryHandoff(
+                    id = runId,
+                    source = AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE,
+                    payload = conversationId,
+                ),
+                compactionSelection = compactionSelection,
+            )
+            val runtimeResult = runInterruptible {
+                AgentExecutionPort.run(
                     context = appContext,
                     request = request,
                     onEvent = { event -> enqueueRunEvent(runId, event) },
                 )
-                if (state.roleplay == null && AgentRuntimeLocalFallback.shouldUse(runtimeResult.error)) {
-                    AgentRuntimeLocalFallback.run(request) { event -> enqueueRunEvent(runId, event) }
-                } else {
-                    runtimeResult
+            }
+            val result = if (state.roleplay == null && AgentRuntimeLocalFallback.shouldUse(request, runtimeResult)) {
+                val controller = io.github.mangi.eta.agent.runtime.AgentRunController()
+                withContext(Dispatchers.Main) {
+                    runStore.registerLocalCancellation(runId, controller::cancel)
                 }
+                runInterruptible {
+                    AgentRuntimeLocalFallback.run(request, controller, onTelemetry = {
+                        io.github.mangi.eta.agent.runtime.AgentRunMetricsStore.enqueue(appContext, it)
+                    }, priceResolver = { provider, model ->
+                        io.github.mangi.eta.agent.runtime.AgentTokenPriceStore.resolve(appContext, provider, model)
+                    }) { event ->
+                        // Runtime IPC events arrive on Main; the local model runs on IO.
+                        // Keep the same delivery ordering and thread ownership for both paths.
+                        runBlocking(Dispatchers.Main.immediate) {
+                            enqueueRunEvent(runId, event)
+                        }
+                    }
+                }
+            } else {
+                runtimeResult
             }
             withContext(Dispatchers.Main) {
                 applyRunResult(runId, result, acknowledgeRuntimeResult = true)
@@ -1840,19 +2077,20 @@ internal class AgentAppState(
                     content = "",
                     error = appContext.getString(R.string.capability_background_failed),
                 ))
-                return
+                return true // The user message and failure are retained for editing/retry.
             }
             preparationJob.invokeOnCompletion { AgentExecutionService.release(leaseId) }
         }
         preparationJob.start()
+        return true
     }
 
     private fun List<PendingImageUi>.toHistoryImages(): List<AgentModelClient.ModelImage> =
         map { image ->
             AgentModelClient.ModelImage(
-                reference = image.dataUrl,
+                reference = image.uri,
                 mimeType = image.mimeType,
-                bytes = image.dataUrl.length,
+                bytes = 0,
                 source = image.uri,
             )
         }
@@ -1874,6 +2112,24 @@ internal class AgentAppState(
         .titleSource(request, references)
         .defaultConversationTitle()
 
+    /** 自动标题重名时补序号；手动重命名仍保持用户输入的原文。 */
+    private fun uniqueConversationTitle(candidate: String, conversationId: String): String {
+        val base = candidate.trim().ifBlank { appContext.getString(R.string.conversation_unnamed) }
+        val existing = conversationTitles
+            .filterKeys { it != conversationId }
+            .values
+            .toSet()
+        if (base !in existing) return base
+        var index = 2
+        while (true) {
+            val suffix = " ($index)"
+            val stem = base.take((MAX_TITLE_CHARS - suffix.length).coerceAtLeast(1)).trimEnd()
+            val next = stem + suffix
+            if (next !in existing) return next
+            index++
+        }
+    }
+
     private fun String.defaultConversationTitleFromMessage(): String {
         val parsed = AgentFileReferencePromptCodec.parse(this)
         return defaultConversationTitle(parsed.request, parsed.references)
@@ -1888,6 +2144,8 @@ internal class AgentAppState(
     }
 
     fun attachImage(uri: String) {
+        val ownerVersion = fileAttachmentOwnerVersion
+        val subject = ConversationSubject.chat(selectedConversationId)
         scope.launch(Dispatchers.IO) {
             try {
                 val image = AgentImageCodec.fromReference(
@@ -1914,6 +2172,10 @@ internal class AgentAppState(
                     mimeType = image.mimeType,
                 )
                 withContext(Dispatchers.Main) {
+                    if (ownerVersion != fileAttachmentOwnerVersion) {
+                        Toast.makeText(appContext, R.string.state_ui_conversation_switched_selected_path_not_added_5bf91e, Toast.LENGTH_SHORT).show()
+                        return@withContext
+                    }
                     updateCurrentConversation(homeState.copy(pendingImages = homeState.pendingImages + pending))
                 }
             } finally {
@@ -1974,7 +2236,11 @@ internal class AgentAppState(
     }
 
     fun acceptSharedContent(request: IncomingShareRequest) {
-        val canReuseCurrentDraft = homeState.isConversationLoaded &&
+        val currentDraft = ConversationDraftRepository.get(appContext)
+            .activeDraft(ConversationSubject.chat(selectedConversationId))
+        // Only an active, restored editor can supply the true local text. A share received from
+        // settings or while loading opens a new conversation instead of replacing an unseen draft.
+        val canReuseCurrentDraft = currentDraft != null && homeState.isConversationLoaded &&
             homeState.roleplay == null &&
             selectedConversationId?.isReadOnlyExternalArchiveConversation() != true &&
             homeState.messages.isEmpty() &&
@@ -1991,6 +2257,8 @@ internal class AgentAppState(
         }
         request.text?.takeIf(String::isNotBlank)?.let { sharedText ->
             val mergedInput = when {
+                canReuseCurrentDraft && currentDraft.text.isNotBlank() ->
+                    currentDraft.text.trimEnd() + "\n" + sharedText
                 homeState.input.isBlank() -> sharedText
                 else -> homeState.input.trimEnd() + "\n" + sharedText
             }
@@ -2005,6 +2273,7 @@ internal class AgentAppState(
         }
         if (request.uris.isEmpty()) return
         val ownerVersion = fileAttachmentOwnerVersion
+        val subject = ConversationSubject.chat(selectedConversationId)
         scope.launch(Dispatchers.IO) {
             val gateway = AgentFileReferenceGateway(appContext, AndroidAgentLogger)
             val resolvedImages = mutableListOf<PendingImageUi>()
@@ -2120,7 +2389,10 @@ internal class AgentAppState(
         resolver: () -> List<AgentFileReferenceGateway.Resolution>,
     ) {
         val ownerVersion = fileAttachmentOwnerVersion
+        val subject = ConversationSubject.chat(selectedConversationId)
         scope.launch(Dispatchers.IO) {
+            ensureAttachmentDraftLoaded(subject)
+            if (withContext(Dispatchers.Main.immediate) { subject !in loadedAttachmentDrafts || ownerVersion != fileAttachmentOwnerVersion }) return@launch
             val resolutions = resolver()
             val references = resolutions.mapNotNull { resolution ->
                 (resolution as? AgentFileReferenceGateway.Resolution.Success)?.reference
@@ -2453,6 +2725,7 @@ internal class AgentAppState(
     ) {
         val conversationId = selectedConversationId
         if (conversationId == null) {
+            saveAttachmentChanges(ConversationSubject.chat(null), homeState, state)
             homeState = state
         } else {
             updateConversation(conversationId, state, updateTimestamp = updateTimestamp)
@@ -2480,6 +2753,7 @@ internal class AgentAppState(
         updateTimestamp: Boolean = true,
     ) {
         val isNewConversation = conversationId !in conversationsById
+        saveAttachmentChanges(ConversationSubject.chat(conversationId), conversationsById[conversationId] ?: emptyChatState(defaultThinkingEnabled), state)
         conversationsById = conversationsById + (conversationId to state)
         if (isNewConversation) ensureConversationExtension(conversationId)
         if (updateTimestamp) {
@@ -2568,6 +2842,7 @@ internal class AgentAppState(
                         else -> null
                     },
                     folderId = extension?.folderId,
+                    folderSortOrder = extension?.folderSortOrder ?: 0L,
                     kind = if (extension?.kind == MEETING_CONVERSATION_KIND) {
                         ConversationKindUi.Meeting
                     } else {
@@ -2596,7 +2871,7 @@ internal class AgentAppState(
                 .filter(ConversationSummaryUi::isArchived)
                 .sortedByDescending(ConversationSummaryUi::updatedAtMillis),
             folders = conversationExtensions.folders.map { folder ->
-                ConversationFolderUi(folder.id, folder.name, folder.sortOrder)
+                ConversationFolderUi(folder.id, folder.name, folder.sortOrder, folder.parentId)
             },
         )
     }
@@ -2621,6 +2896,7 @@ internal class AgentAppState(
         val titles = conversationTitles
         val timestamps = conversationUpdatedAt
         val pinned = conversationPinnedIds
+        val drafts = pendingBranchDrafts.values.toList()
         return synchronized(persistenceLock) {
             // 未保存会阻止结果回执和 write-ahead 运行，由导入后的重载或失败后的补写收尾。
             if (persistencePaused) return CompletableDeferred(false)
@@ -2630,9 +2906,14 @@ internal class AgentAppState(
                 try {
                     previous?.join()
                     persistence.save(appContext,
-                        AgentConversationStore.Snapshot(selected, conversations, titles, timestamps, pinned))
+                        AgentConversationStore.Snapshot(selected, conversations, titles, timestamps, pinned, branchDrafts = drafts))
                     onSaved?.invoke()
-                    scope.launch(Dispatchers.Main.immediate) { releaseInactiveConversations(conversations) }
+                    scope.launch(Dispatchers.Main.immediate) {
+                        drafts.forEach { draft ->
+                            if (pendingBranchDrafts[draft.node.conversationId] == draft) pendingBranchDrafts = pendingBranchDrafts - draft.node.conversationId
+                        }
+                        releaseInactiveConversations(conversations)
+                    }
                     true
                 } catch (cancelled: CancellationException) {
                     throw cancelled

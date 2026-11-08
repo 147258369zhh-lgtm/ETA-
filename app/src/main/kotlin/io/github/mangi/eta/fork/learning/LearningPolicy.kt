@@ -1,6 +1,7 @@
 package io.github.mangi.eta.fork.learning
 
 import java.security.MessageDigest
+import io.github.mangi.eta.agent.memory.MemoryAutomationPolicy
 
 internal enum class LearningKind(val wireValue: String) {
     FACT("fact"),
@@ -80,9 +81,10 @@ internal object LearningPolicy {
         val redacted = safeTitle != title.trim() || safeContent != content.trim() || safeEvidence != evidence.trim()
         val conflict = activeRules.asSequence()
             .filter { it.kind == kind.wireValue && it.title.equals(safeTitle, ignoreCase = true) }
-            .firstOrNull { it.content.normalizedForLearning() != safeContent.normalizedForLearning() }
+            .firstOrNull { !MemoryAutomationPolicy.equivalent(it.content, safeContent) }
             ?: activeRules.asSequence()
                 .filter { it.kind == kind.wireValue }
+                .filter { !MemoryAutomationPolicy.equivalent(it.content, safeContent) }
                 .map { rule -> rule to similarity(rule.content + ' ' + rule.title, safeContent + ' ' + safeTitle) }
                 .filter { (_, score) -> score >= CONFLICT_JACCARD }
                 .maxByOrNull { (_, score) -> score }
@@ -103,7 +105,7 @@ internal object LearningPolicy {
     }
 
     fun fingerprint(kind: LearningKind, title: String, content: String): String =
-        sha256(kind.wireValue + '\n' + title.normalizedForLearning() + '\n' + content.normalizedForLearning())
+        sha256("v2\n" + kind.wireValue + '\n' + MemoryAutomationPolicy.dedupKey(title) + '\n' + MemoryAutomationPolicy.dedupKey(content))
 
     fun evidenceHash(excerpt: String): String = sha256(excerpt)
 

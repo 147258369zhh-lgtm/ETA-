@@ -5,14 +5,21 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Update
 
 @Dao
 internal interface AgentTaskDao {
     @Query("SELECT * FROM agent_task_definitions ORDER BY updated_at DESC, id")
     fun observeDefinitions(): kotlinx.coroutines.flow.Flow<List<AgentTaskDefinitionEntity>>
 
+    @Query("SELECT * FROM agent_task_definitions ORDER BY updated_at DESC, id")
+    suspend fun definitionsNow(): List<AgentTaskDefinitionEntity>
+
     @Query("SELECT * FROM agent_task_schedules ORDER BY created_at DESC, id")
     fun observeSchedules(): kotlinx.coroutines.flow.Flow<List<AgentTaskScheduleEntity>>
+
+    @Query("SELECT * FROM agent_task_schedules ORDER BY created_at DESC, id")
+    suspend fun schedulesNow(): List<AgentTaskScheduleEntity>
 
     @Query("SELECT * FROM agent_task_runs ORDER BY scheduled_for DESC, created_at DESC, id LIMIT 100")
     fun observeRecentRuns(): kotlinx.coroutines.flow.Flow<List<AgentTaskRunEntity>>
@@ -23,8 +30,19 @@ internal interface AgentTaskDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertDefinition(definition: AgentTaskDefinitionEntity)
 
+    @Update suspend fun updateDefinition(definition: AgentTaskDefinitionEntity)
+
+    @Query("SELECT COUNT(*) FROM agent_task_runs WHERE definition_id = :id AND state IN ('QUEUED','LEASED','RUNNING','WAITING_INPUT','WAITING_AUTH')")
+    suspend fun activeCount(id: String): Int
+
+    @Query("SELECT COUNT(*) FROM agent_task_runs WHERE state IN ('LEASED','RUNNING')")
+    suspend fun executingCount(): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertSchedule(schedule: AgentTaskScheduleEntity)
+    @Update suspend fun updateSchedule(schedule: AgentTaskScheduleEntity)
+    @Query("DELETE FROM agent_task_schedules WHERE definition_id = :id")
+    suspend fun deleteSchedules(id: String)
 
     @Query("UPDATE agent_task_schedules SET paused = :paused, next_run_at = :nextRunAt, revision = revision + 1, updated_at = :now WHERE id = :scheduleId")
     suspend fun setSchedulePausedRow(
@@ -67,6 +85,8 @@ internal interface AgentTaskDao {
 
     @Query("SELECT * FROM agent_task_events WHERE run_id = :runId ORDER BY created_at, id")
     suspend fun events(runId: String): List<AgentTaskEventEntity>
+    @Query("SELECT * FROM agent_task_events WHERE run_id = :runId ORDER BY created_at, id")
+    fun observeEvents(runId: String): kotlinx.coroutines.flow.Flow<List<AgentTaskEventEntity>>
 
     @Query("SELECT * FROM agent_task_attention WHERE status = 'OPEN' ORDER BY created_at, id")
     suspend fun openAttention(): List<AgentTaskAttentionEntity>
@@ -89,6 +109,12 @@ internal interface AgentTaskDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertRunIfAbsent(run: AgentTaskRunEntity): Long
 
+    @Transaction
+    suspend fun enqueueManual(run: AgentTaskRunEntity): Boolean {
+        if (definition(run.definitionId)?.enabled != true || activeCount(run.definitionId) > 0) return false
+        return insertRunIfAbsent(run) >= 0
+    }
+
     @Query(
         "UPDATE agent_task_schedules SET paused = 1, updated_at = :now, revision = revision + 1 " +
             "WHERE definition_id = :definitionId AND paused = 0",
@@ -104,8 +130,22 @@ internal interface AgentTaskDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAttention(attention: AgentTaskAttentionEntity)
 
-    @Query("SELECT id FROM agent_task_runs WHERE state = 'QUEUED' AND scheduled_for <= :now ORDER BY scheduled_for, created_at, id LIMIT 1")
+    @Query("SELECT run.id FROM agent_task_runs AS run INNER JOIN agent_task_definitions AS definition ON definition.id = run.definition_id WHERE run.state = 'QUEUED' AND definition.enabled = 1 AND run.scheduled_for <= :now ORDER BY run.scheduled_for, run.created_at, run.id LIMIT 1")
     suspend fun nextClaimableRunId(now: Long): String?
+
+    @Query("SELECT MIN(run.scheduled_for) FROM agent_task_runs AS run INNER JOIN agent_task_definitions AS definition ON definition.id = run.definition_id WHERE run.state = 'QUEUED' AND definition.enabled = 1")
+    suspend fun earliestQueuedAt(): Long?
+
+    @Query("UPDATE agent_task_runs SET state = 'QUEUED', scheduled_for = :until, local_run_id = NULL, updated_at = :now WHERE id = :id AND state = 'RUNNING'")
+    suspend fun deferRow(id: String, until: Long, now: Long): Int
+
+    @Transaction
+    suspend fun defer(id: String, owner: String, until: Long, now: Long): Boolean {
+        if (lease(id)?.owner != owner || deferRow(id, until, now) == 0) return false
+        deleteLease(id)
+        appendEvent(id, "WAITING_CONDITIONS", "{}", now)
+        return true
+    }
 
     @Query(
         """
@@ -271,6 +311,7 @@ internal interface AgentTaskDao {
         leaseExpiresAt: Long,
     ): AgentTaskClaim? {
         val runId = nextClaimableRunId(now) ?: return null
+        if (executingCount() > 0) return null
         if (compareAndSetState(runId, AgentTaskState.QUEUED, AgentTaskState.LEASED, now) == 0) {
             return null
         }
@@ -545,7 +586,7 @@ internal interface AgentTaskDao {
         return AgentTaskMaterializationSummary(created, skipped, asked, exhausted)
     }
 
-    private suspend fun appendEvent(runId: String, type: String, payloadJson: String, now: Long) {
+    suspend fun appendEvent(runId: String, type: String, payloadJson: String, now: Long) {
         insertEvent(
             AgentTaskEventEntity(
                 runId = runId,
@@ -582,6 +623,7 @@ internal interface AgentTaskDao {
         localMinute = localMinute,
         weekdaysMask = weekdaysMask,
         timeZoneId = timeZoneId,
+        monthDay = monthDay,
     )
 }
 

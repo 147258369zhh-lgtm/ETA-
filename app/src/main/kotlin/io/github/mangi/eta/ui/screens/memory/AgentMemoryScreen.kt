@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.screens.memory
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
@@ -46,6 +47,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -53,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffold
+import io.github.mangi.eta.ui.components.DialogChoicePreference
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import io.github.mangi.eta.ui.markdown.MarkdownTone
 import io.github.mangi.eta.ui.markdown.StaticMarkdown
@@ -68,6 +71,7 @@ import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
@@ -80,12 +84,19 @@ private enum class MemoryViewMode { Preview, Edit }
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun AgentMemoryScreen(
+internal fun MemoryDocumentScreen(
     state: AgentMemoryUiState,
     onAction: (AgentMemoryAction) -> Unit,
+    onOpenLibrary: () -> Unit,
+    embedded: Boolean = false,
+    modifier: Modifier = Modifier,
+    moduleTabs: @Composable () -> Unit = {},
 ) {
     var showClearDialog by remember { mutableStateOf(false) }
+    var showDiscardDialog by remember { mutableStateOf(false) }
+    var pendingScope by remember { mutableStateOf<io.github.mangi.eta.data.repository.AgentMemoryScope?>(null) }
     var mode by rememberSaveable { mutableStateOf<MemoryViewMode?>(null) }
+    val useCompactTitle = LocalDensity.current.fontScale <= 1.2f
     // 首次读到内容前不决定模式：空记忆直接进入编辑，已有内容先给出可读的预览。
     LaunchedEffect(state.isLoading) {
         if (!state.isLoading && mode == null) {
@@ -93,69 +104,74 @@ internal fun AgentMemoryScreen(
         }
     }
     val currentMode = mode ?: MemoryViewMode.Preview
-    val imeVisible = WindowInsets.isImeVisible
+    val hasUnsavedChanges = state.draft != state.savedContent
+    val requestExit = {
+        if (hasUnsavedChanges) showDiscardDialog = true else onOpenLibrary()
+    }
+    // Keep the document pane's back behavior stable even when its scaffold is nested in the
+    // memory module. Unsaved edits still get the discard confirmation first.
+    BackHandler { requestExit() }
 
-    MiuixScaffold(
-        title = stringResource(R.string.ui_memory_b55ff5),
-        onBack = { onAction(AgentMemoryAction.NavigateBack) },
-        actions = {
-            IconButton(
-                onClick = { showClearDialog = true },
-                enabled = !state.isLoading && !state.isSaving && state.draft.isNotEmpty(),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.DeleteOutline,
-                    contentDescription = stringResource(R.string.ui_clear_all_memory_a43bd3),
-                    tint = if (!state.isLoading && state.draft.isNotEmpty()) {
-                        MiuixTheme.colorScheme.onSurface
-                    } else {
-                        MiuixTheme.colorScheme.disabledOnSurface
-                    },
-                )
-            }
-        },
-    ) { paddingValues, scrollBehavior, sidePadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .horizontalCutoutPadding()
-                .padding(top = paddingValues.calculateTopPadding())
-                .padding(horizontal = sidePadding)
-                .nestedScroll(scrollBehavior.nestedScrollConnection)
-                .imePadding()
-                .navigationBarsPadding(),
-        ) {
-            // 键盘弹出时收起设置区，把有限高度全部让给正在编辑的文档。
-            AnimatedVisibility(
-                visible = !imeVisible,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                MemorySettingsGroup(state = state, onAction = onAction)
-            }
-            MemoryDocumentCard(
+    if (embedded) {
+        MemoryDocumentBody(
+            state = state,
+            mode = currentMode,
+            onModeChange = { mode = it },
+            onDraftChange = { onAction(AgentMemoryAction.DraftChanged(it)) },
+            onSave = { onAction(AgentMemoryAction.Save) },
+            moduleTabs = moduleTabs,
+            onSelectScope = { scope ->
+                if (hasUnsavedChanges) pendingScope = scope else onAction(AgentMemoryAction.ScopeSelected(scope))
+            },
+            modifier = modifier,
+        )
+    } else {
+        MiuixScaffold(
+            title = "记忆与自学习",
+            onBack = requestExit,
+            compactTitle = useCompactTitle,
+            actions = {
+                IconButton(
+                    onClick = { showClearDialog = true },
+                    enabled = !state.isLoading && !state.isSaving && state.draft.isNotEmpty(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteOutline,
+                        contentDescription = "清空当前文档",
+                        tint = if (!state.isLoading && state.draft.isNotEmpty()) {
+                            MiuixTheme.colorScheme.onSurface
+                        } else {
+                            MiuixTheme.colorScheme.disabledOnSurface
+                        },
+                    )
+                }
+            },
+        ) { paddingValues, scrollBehavior, sidePadding ->
+            MemoryDocumentBody(
                 state = state,
                 mode = currentMode,
                 onModeChange = { mode = it },
                 onDraftChange = { onAction(AgentMemoryAction.DraftChanged(it)) },
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 12.dp),
-            )
-            MemorySaveBar(
-                state = state,
-                onDiscard = { onAction(AgentMemoryAction.DraftChanged(state.savedContent)) },
                 onSave = { onAction(AgentMemoryAction.Save) },
+                moduleTabs = moduleTabs,
+                onSelectScope = { scope ->
+                    if (hasUnsavedChanges) pendingScope = scope else onAction(AgentMemoryAction.ScopeSelected(scope))
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .horizontalCutoutPadding()
+                    .padding(top = paddingValues.calculateTopPadding())
+                    .padding(horizontal = sidePadding)
+                    .nestedScroll(scrollBehavior.nestedScrollConnection),
             )
-            Spacer(Modifier.height(12.dp))
         }
     }
 
     if (showClearDialog) {
         WindowDialog(
             show = true,
-            title = stringResource(R.string.ui_clear_all_memory_a43bd3),
-            summary = stringResource(R.string.ui_the_entire_contents_of_memory_md_will_be_deleted_and_83a8ac),
+            title = "清空当前文档",
+            summary = "只清空当前所选作用域的文档内容，此操作无法撤销。",
             onDismissRequest = { showClearDialog = false },
         ) {
             MiuixDialogActions(
@@ -166,6 +182,48 @@ internal fun AgentMemoryScreen(
                 onConfirm = {
                     showClearDialog = false
                     onAction(AgentMemoryAction.Clear)
+                },
+            )
+        }
+    }
+
+    if (showDiscardDialog) {
+        WindowDialog(
+            show = true,
+            title = "放弃未保存的修改？",
+            summary = "当前文档还有未保存内容。返回后这些修改会丢失。",
+            onDismissRequest = { showDiscardDialog = false },
+        ) {
+            MiuixDialogActions(
+                confirmText = "放弃并返回",
+                cancelText = "继续编辑",
+                destructive = true,
+                onCancel = { showDiscardDialog = false },
+                onConfirm = {
+                    showDiscardDialog = false
+                    onAction(AgentMemoryAction.DraftChanged(state.savedContent))
+                    onOpenLibrary()
+                },
+            )
+        }
+    }
+
+    pendingScope?.let { scope ->
+        WindowDialog(
+            show = true,
+            title = "切换记忆范围",
+            summary = "当前文档有未保存修改。切换范围会放弃这些修改。",
+            onDismissRequest = { pendingScope = null },
+        ) {
+            MiuixDialogActions(
+                confirmText = "放弃并切换",
+                cancelText = "继续编辑",
+                destructive = true,
+                onCancel = { pendingScope = null },
+                onConfirm = {
+                    pendingScope = null
+                    onAction(AgentMemoryAction.DraftChanged(state.savedContent))
+                    onAction(AgentMemoryAction.ScopeSelected(scope))
                 },
             )
         }
@@ -188,7 +246,75 @@ internal fun AgentMemoryScreen(
 }
 
 @Composable
-private fun MemorySettingsGroup(
+@OptIn(ExperimentalLayoutApi::class)
+private fun MemoryDocumentBody(
+    state: AgentMemoryUiState,
+    mode: MemoryViewMode,
+    onModeChange: (MemoryViewMode) -> Unit,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    moduleTabs: @Composable () -> Unit = {},
+    onSelectScope: (io.github.mangi.eta.data.repository.AgentMemoryScope) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val imeVisible = WindowInsets.isImeVisible
+    Column(
+        modifier = modifier
+            .imePadding()
+            .navigationBarsPadding(),
+    ) {
+        moduleTabs()
+        // 键盘弹出时收起设置区，把有限高度全部让给正在编辑的文档。
+        AnimatedVisibility(
+            visible = !imeVisible,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            MemoryDocumentScopeGroup(state = state, onSelect = onSelectScope)
+        }
+        MemoryDocumentCard(
+            state = state,
+            mode = mode,
+            onModeChange = onModeChange,
+            onDraftChange = onDraftChange,
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 12.dp),
+        )
+        MemorySaveBar(
+            state = state,
+            onDiscard = { onDraftChange(state.savedContent) },
+            onSave = onSave,
+        )
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun MemoryDocumentScopeGroup(
+    state: AgentMemoryUiState,
+    onSelect: (io.github.mangi.eta.data.repository.AgentMemoryScope) -> Unit,
+) {
+    val labels = state.scopes.map { scope -> scopeLabel(scope) }
+    val selectedIndex = state.scopes.indexOfFirst { it.key == state.selectedScope.key }.coerceAtLeast(0)
+    Card(
+        modifier = Modifier
+            .padding(horizontal = 12.dp)
+            .padding(top = 8.dp, bottom = 12.dp),
+    ) {
+        DialogChoicePreference(
+            title = "记忆范围",
+            value = labels.getOrElse(selectedIndex) { "暂无可用范围" },
+            options = labels,
+            selectedIndex = selectedIndex,
+            enabled = !state.isLoading && !state.isSaving && state.scopes.isNotEmpty(),
+            onSelectedIndexChange = { index -> state.scopes.getOrNull(index)?.let(onSelect) },
+        )
+    }
+}
+
+@Composable
+internal fun MemorySettingsGroup(
     state: AgentMemoryUiState,
     onAction: (AgentMemoryAction) -> Unit,
 ) {
@@ -204,11 +330,27 @@ private fun MemorySettingsGroup(
             enabled = !state.isLoading,
             onCheckedChange = { onAction(AgentMemoryAction.ToggleEnabled(it)) },
         )
+        OverlayDropdownPreference(
+            title = stringResource(R.string.memory_scope_label),
+            items = state.scopes.map { scope -> scopeLabel(scope) },
+            selectedIndex = state.scopes.indexOfFirst { it.key == state.selectedScope.key }.coerceAtLeast(0),
+            onSelectedIndexChange = { index -> state.scopes.getOrNull(index)?.let { onAction(AgentMemoryAction.ScopeSelected(it)) } },
+            enabled = !state.isLoading && !state.isSaving,
+        )
         BasicComponent(
             title = stringResource(R.string.ui_core_memory_injection_budget_48b5d5),
             summary = stringResource(R.string.memory_budget_summary, formatNumber(state.coreBudgetChars)),
         )
     }
+}
+
+@Composable
+private fun scopeLabel(scope: io.github.mangi.eta.data.repository.AgentMemoryScope): String = when (scope.type) {
+    io.github.mangi.eta.data.repository.AgentMemoryScopeType.GLOBAL -> stringResource(R.string.memory_scope_global)
+    io.github.mangi.eta.data.repository.AgentMemoryScopeType.PROJECT -> stringResource(R.string.memory_scope_project) + " · " + scope.id
+    io.github.mangi.eta.data.repository.AgentMemoryScopeType.CONVERSATION -> stringResource(R.string.memory_scope_conversation) + " · " + scope.id
+    io.github.mangi.eta.data.repository.AgentMemoryScopeType.MEETING -> stringResource(R.string.memory_scope_meeting) + " · " + scope.id
+    io.github.mangi.eta.data.repository.AgentMemoryScopeType.TASK -> stringResource(R.string.memory_scope_task) + " · " + scope.id
 }
 
 /** 文档卡片：标题栏承载文件名、体积与预览/编辑切换，正文区占满卡片剩余高度并独立滚动。 */
@@ -238,7 +380,7 @@ private fun MemoryDocumentCard(
             Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "MEMORY.md",
+                    text = scopeLabel(state.selectedScope),
                     style = MiuixTheme.textStyles.body2,
                     fontWeight = FontWeight.Medium,
                     color = colors.onSurface,

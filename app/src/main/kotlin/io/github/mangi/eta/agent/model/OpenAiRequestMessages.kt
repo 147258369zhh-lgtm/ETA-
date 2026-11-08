@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -28,6 +29,7 @@ internal object OpenAiRequestMessages {
                     remove("_eta_observation")
                     remove("_eta_message_id")
                     remove("_eta_character_profile")
+                    remove(PROMPT_INJECTION_MARKER)
                 })
             }
         }

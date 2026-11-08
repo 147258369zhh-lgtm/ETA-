@@ -65,11 +65,11 @@ internal object SubagentProfileCatalog {
     ): SubagentProfile {
         val normalizedName = name.trim().lowercase()
         require(isValidName(normalizedName)) {
-            "Subagent 名称必须为 2~48 位小写字母、数字与连字符（kebab-case，例如 bill-analyzer）"
+            "子 Agent 名称必须为 2~48 位小写字母、数字与连字符（kebab-case，例如 bill-analyzer）"
         }
         if (normalizedName in SubagentProfile.BUILTIN_NAMES && !overrideBuiltin) {
             throw IllegalArgumentException(
-                "不能覆盖内置 Subagent \"$normalizedName\"；请换用其他名称（例如 custom-$normalizedName）或显式开启 override",
+                "不能覆盖内置子 Agent \"$normalizedName\"；请换用其他名称（例如 custom-$normalizedName）或显式开启 override",
             )
         }
         val cleanDescription = description.trim().replace(Regex("\\s+"), " ")
@@ -92,7 +92,7 @@ internal object SubagentProfileCatalog {
         val targetFile = File(agentsDir, "$normalizedName.md")
         val canonicalTarget = targetFile.canonicalFile.toPath()
         require(canonicalTarget.startsWith(canonicalRoot) && canonicalTarget != canonicalRoot) {
-            "非法的 Subagent 文件路径"
+            "非法的子 Agent 文件路径"
         }
         require(!Files.isSymbolicLink(targetFile.toPath())) {
             "拒绝写入符号链接文件"
@@ -109,7 +109,7 @@ internal object SubagentProfileCatalog {
         )
         targetFile.writeText(markdown, Charsets.UTF_8)
         return parseProfileFile(targetFile)
-            ?: error("保存 Subagent 文件后解析失败：$normalizedName")
+            ?: error("保存子 Agent 文件后解析失败：$normalizedName")
     }
 
     fun deleteCustomProfile(

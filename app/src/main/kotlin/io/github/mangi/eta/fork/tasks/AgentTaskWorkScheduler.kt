@@ -40,7 +40,8 @@ internal object AgentTaskWorkScheduler {
 
     /** Refreshes the exact next wake-up after task definitions or schedules change. */
     suspend fun refreshNextDeadline(context: Context) {
-        val nextRunAt = AgentTaskDatabase.get(context).agentTaskDao().earliestNextRunAt()
+        val dao = AgentTaskDatabase.get(context).agentTaskDao()
+        val nextRunAt = listOfNotNull(dao.earliestNextRunAt(), dao.earliestQueuedAt()).minOrNull()
         if (nextRunAt == null) {
             WorkManager.getInstance(context.applicationContext)
                 .cancelUniqueWork(NEXT_DEADLINE_WORK_NAME)

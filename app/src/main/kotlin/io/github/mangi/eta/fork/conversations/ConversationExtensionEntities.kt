@@ -7,7 +7,7 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "conversation_folders",
-    indices = [Index(value = ["sort_order"]), Index(value = ["name"], unique = true)],
+    indices = [Index(value = ["sort_order"]), Index(value = ["parent_id", "name"], unique = true)],
 )
 internal data class ConversationFolderEntity(
     @PrimaryKey val id: String,
@@ -15,6 +15,7 @@ internal data class ConversationFolderEntity(
     @ColumnInfo(name = "sort_order") val sortOrder: Long,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(name = "parent_id") val parentId: String? = null,
 )
 
 @Entity(
@@ -30,6 +31,7 @@ internal data class ConversationExtensionEntity(
     @ColumnInfo(name = "archived_at") val archivedAt: Long? = null,
     @ColumnInfo(name = "archive_reason") val archiveReason: String? = null,
     @ColumnInfo(name = "auto_archive_exempt", defaultValue = "0") val autoArchiveExempt: Boolean = false,
+    @ColumnInfo(name = "context_window_override") val contextWindowOverride: Int? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )
@@ -69,6 +71,7 @@ internal fun ConversationFolderEntity.toModel() = ConversationFolder(
     sortOrder = sortOrder,
     createdAt = createdAt,
     updatedAt = updatedAt,
+    parentId = parentId,
 )
 
 internal fun ConversationExtensionEntity.toModel() = ConversationExtension(
@@ -80,6 +83,7 @@ internal fun ConversationExtensionEntity.toModel() = ConversationExtension(
     archivedAt = archivedAt,
     archiveReason = archiveReason,
     autoArchiveExempt = autoArchiveExempt,
+    contextWindowOverride = contextWindowOverride,
     createdAt = createdAt,
     updatedAt = updatedAt,
 )

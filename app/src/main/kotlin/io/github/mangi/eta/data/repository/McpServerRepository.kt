@@ -1,6 +1,7 @@
 package io.github.mangi.eta.data.repository
 
 import android.content.Context
+import io.github.mangi.eta.R
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.toDomain
 import io.github.mangi.eta.data.db.toEntity
@@ -46,11 +47,21 @@ internal object McpServerRepository {
         return added
     }
 
+    /** Imports non-secret configuration. Missing credentials are reported when the server is used. */
+    suspend fun addUnconfigured(server: McpServerSetting): McpServerSetting {
+        val added = server.copy(
+            id = server.id.ifBlank { UUID.randomUUID().toString() },
+            sortOrder = (servers().maxOfOrNull { it.sortOrder } ?: -1) + 1,
+        )
+        dao().insert(added.toEntity())
+        return added
+    }
+
     suspend fun update(server: McpServerSetting, bearerToken: String? = null) {
-        val previous = requireNotNull(serverById(server.id)) { "MCP 服务器不存在" }
+        requireNotNull(serverById(server.id)) { "MCP 服务器不存在" }
         val secretStore = secrets()
-        val previousToken = secretStore.bearerToken(server.id)
         val changesSecret = bearerToken != null || server.authorizationType == McpAuthorizationType.NONE
+        val previousSecret = if (changesSecret) secretStore.encryptedSnapshot(server.id) else null
         val updated = if (bearerToken != null) {
             server.copy(lastProtocolVersion = null, toolsExpireAt = null)
         } else {
@@ -61,7 +72,7 @@ internal object McpServerRepository {
             require(dao().update(updated.toEntity()) == 1) { "MCP 服务器不存在" }
         } catch (failure: Throwable) {
             if (changesSecret) runCatching {
-                updateSecret(secretStore, previous, previousToken.orEmpty())
+                secretStore.restoreEncryptedSnapshot(server.id, previousSecret)
             }
             throw failure
         }
@@ -75,19 +86,25 @@ internal object McpServerRepository {
     }
 
     suspend fun delete(serverId: String) {
-        val previous = requireNotNull(serverById(serverId)) { "MCP 服务器不存在" }
+        requireNotNull(serverById(serverId)) { "MCP 服务器不存在" }
         val secretStore = secrets()
-        val previousToken = secretStore.bearerToken(serverId)
+        val previousSecret = secretStore.encryptedSnapshot(serverId)
         secretStore.clear(serverId)
         try {
             require(dao().delete(serverId) == 1) { "MCP 服务器不存在" }
         } catch (failure: Throwable) {
-            runCatching { updateSecret(secretStore, previous, previousToken.orEmpty()) }
+            runCatching { secretStore.restoreEncryptedSnapshot(serverId, previousSecret) }
             throw failure
         }
     }
 
-    fun bearerToken(serverId: String): String? = secrets().bearerToken(serverId)
+    fun bearerToken(server: McpServerSetting): String? {
+        if (server.authorizationType == McpAuthorizationType.NONE) return null
+        return secrets().bearerToken(server.id)
+            ?: throw McpCredentialsUnavailable(context().getString(R.string.mcp_credentials_missing))
+    }
+
+    fun credentialStatus(serverId: String): McpCredentialStatus = secrets().credentialStatus(serverId)
 
     private fun updateSecret(
         secretStore: McpSecretStore,

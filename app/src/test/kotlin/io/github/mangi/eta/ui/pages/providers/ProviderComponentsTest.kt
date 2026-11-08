@@ -121,6 +121,24 @@ class ProviderComponentsTest {
     }
 
     @Test
+    fun localModelServiceDetectionCoversLoopbackAndPrivateNetworks() {
+        listOf(
+            "http://127.0.0.1:11434/v1",
+            "http://localhost:1234/v1",
+            "http://192.168.1.8:8080/v1",
+            "http://10.0.0.4/v1",
+            "http://172.20.1.3/v1",
+            "http://eta-box.local/v1",
+        ).forEach { assertEquals(it, true, isLocalModelServiceUrl(it)) }
+
+        listOf(
+            "https://api.openai.com/v1",
+            "https://example.com/v1",
+            "http://172.32.1.3/v1",
+        ).forEach { assertEquals(it, false, isLocalModelServiceUrl(it)) }
+    }
+
+    @Test
     fun modelSearchSupportsCaseInsensitiveFuzzyTokensAcrossNameAndId() {
         val models = listOf(
             model(id = "1", modelId = "openai/gpt-5", displayName = "GPT 5", sortOrder = 2),

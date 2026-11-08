@@ -1,5 +1,7 @@
 package io.github.mangi.eta.agent.virtualdisplay
 
+import io.github.mangi.eta.BuildConfig
+
 import android.view.Display
 import java.util.Locale
 
@@ -44,6 +46,31 @@ internal object CanvasRoutingPolicy {
             FLAG_OWN_FOCUS or
             FLAG_STEAL_TOP_FOCUS_DISABLED
 
+    /**
+     * Android 16/17 会按厂商策略收紧部分 trusted-display 标志。保留可交互所需的
+     * 最小组合作为第二层，避免一个可选标志导致整块后台画布创建失败。
+     */
+    const val INTERACTIVE_COMPAT_FLAGS: Int =
+        FLAG_PUBLIC or
+            FLAG_OWN_CONTENT_ONLY or
+            FLAG_SUPPORTS_TOUCH or
+            FLAG_DESTROY_CONTENT_ON_REMOVAL or
+            FLAG_TRUSTED or
+            FLAG_OWN_DISPLAY_GROUP
+
+    /** 最后一级仅负责稳定输出与取景；若 ROM 拒绝 trusted 标志，输入会明确失败而非崩溃。 */
+    const val CAPTURE_COMPAT_FLAGS: Int =
+        FLAG_PUBLIC or
+            FLAG_OWN_CONTENT_ONLY or
+            FLAG_DESTROY_CONTENT_ON_REMOVAL
+
+    /** 从完整能力到保守能力逐级尝试，顺序不可改变。 */
+    val FLAG_CANDIDATES: List<Int> = listOf(
+        TRUSTED_INTERACTIVE_FLAGS,
+        INTERACTIVE_COMPAT_FLAGS,
+        CAPTURE_COMPAT_FLAGS,
+    )
+
     private val MAIN_DISPLAY_ONLY_PACKAGES = setOf(
         "android",
         "com.android.systemui",
@@ -83,7 +110,7 @@ internal object CanvasRoutingPolicy {
         requested: RequestedDisplay = RequestedDisplay.AUTO,
         targetPackage: String? = null,
         foregroundPackageOnMainDisplay: String? = null,
-        ownPackage: String = "io.github.mangi.eta",
+        ownPackage: String = BuildConfig.APPLICATION_ID,
     ): CanvasTarget {
         if (!virtualDisplayEnabled || !backendAvailable) return CanvasTarget.MAIN_DISPLAY
         if (requested == RequestedDisplay.MAIN) return CanvasTarget.MAIN_DISPLAY

@@ -240,7 +240,7 @@ upstream  https://github.com/Mangi-11/Eta.git
 
 ## 6. A2A 集成方案文档的落地结论
 
-已审阅桌面文件 `C:\Users\29136\Desktop\A2A_App集成方案.docx`。方案采用 Headscale 控制面、tsnet 用户态数据面和现有 A2A HTTP 服务，方向合理，但当前尚未进入主构建。
+已审阅桌面文件 `[本地交付目录]/A2A_App集成方案.docx`。方案采用 Headscale 控制面、tsnet 用户态数据面和现有 A2A HTTP 服务，方向合理，但当前尚未进入主构建。
 
 实施前必须依次满足：
 

@@ -96,21 +96,26 @@ class AgentAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        AgentAccessibilityHealth.onConnected()
+        RootAccessibilityRecovery.clearPendingAfterUserConnection(this)
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        clearCurrentInstance()
+        clearCurrentInstance(AccessibilityDisconnectReason.UNBOUND)
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        clearCurrentInstance()
+        clearCurrentInstance(AccessibilityDisconnectReason.DESTROYED)
         scrollEventExecutor.shutdownNow()
         super.onDestroy()
     }
 
-    private fun clearCurrentInstance() {
-        if (instance === this) instance = null
+    private fun clearCurrentInstance(reason: AccessibilityDisconnectReason) {
+        if (instance === this) {
+            instance = null
+            AgentAccessibilityHealth.onDisconnected(reason)
+        }
         scrollEventObservationGate.clear()
         signalWindowChanged()
     }

@@ -24,6 +24,7 @@ internal data class LocalToolRequirement(
 
 /** 展示、模型目录与执行边界共同使用的本地工具能力合同。未登记的工具不能发布。 */
 internal object AgentToolRequirements {
+    fun registeredNames(): Set<String> = definitions.keys
     private val definitions = buildMap {
         fun register(root: RootRequirement, vararg names: String) {
             names.forEach { name ->
@@ -40,9 +41,14 @@ internal object AgentToolRequirements {
             "set_alarm", "set_timer", "device_status", "inspect_app", "media_control", "set_volume",
             "search_notification_history", "recent_app_activity", "app_usage_summary",
             "get_current_location", "get_device_environment", "memory_get", "memory_write",
+            "voice_synthesize",
             "character_memory_get", "character_memory_write",
             "skills_list", "skills_read", "skills_read_resource", "skills_list_curated",
             "skills_inspect_github", "skills_install_from_github",
+            "schedule_create", "schedule_list", "schedule_pause", "schedule_delete",
+            "automation_manage",
+            "eta_control",
+            "learning_feedback",
         )
         register(
             RootRequirement.PARTIAL,

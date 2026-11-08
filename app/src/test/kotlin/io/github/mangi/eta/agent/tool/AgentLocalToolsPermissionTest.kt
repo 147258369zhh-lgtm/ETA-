@@ -204,27 +204,32 @@ class AgentLocalToolsPermissionTest {
 
     @Test
     fun foregroundToolPropagatesAccessibilityGateFailure() {
-        val tools = tools(
-            beforeToolExecution = {
-                ToolExecutionDecision.Reject(
-                    code = "ACCESSIBILITY_PROTECTION_UNAVAILABLE",
-                    message = "无障碍保护后端不可用",
+        for (code in listOf("ACCESSIBILITY_PROTECTION_UNAVAILABLE", "ACCESSIBILITY_DISCONNECTED")) {
+            val tools = tools(
+                beforeToolExecution = {
+                    ToolExecutionDecision.Reject(
+                        code = code,
+                        message = "无障碍服务未连接",
+                    )
+                },
+            )
+
+            try {
+                val result = tools.execute(
+                    AgentModelClient.ToolCall(
+                        id = "call-1",
+                        name = "scroll",
+                        argumentsJson = "{\"direction\":\"down\"}",
+                    ),
                 )
-            },
-        )
+                val json = JSONObject(result.content)
 
-        val result = tools.execute(
-            AgentModelClient.ToolCall(
-                id = "call-1",
-                name = "scroll",
-                argumentsJson = "{\"direction\":\"down\"}",
-            ),
-        )
-        val json = JSONObject(result.content)
-
-        assertEquals("ACCESSIBILITY_PROTECTION_UNAVAILABLE", json.getString("code"))
-        assertEquals("无障碍保护后端不可用", json.getString("message"))
-        tools.close()
+                assertEquals(code, json.getString("code"))
+                assertEquals("无障碍服务未连接", json.getString("message"))
+            } finally {
+                tools.close()
+            }
+        }
     }
 
     @Test
@@ -393,6 +398,75 @@ class AgentLocalToolsPermissionTest {
         tools.close()
     }
 
+    @Test fun invalidOrRevokedCallsDoNotStartAccessibilityRecoveryOrAcquireGui() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("preflight", AgentRunController())
+        tools(guiControl = control, beforeGuiAcquisition = { error("Must reject before recovery") }).use { executor ->
+            listOf(
+                "tap" to "{}", "tap" to "{\"x\":1,\"y\":1}",
+                "type_text" to "{}", "tap_element" to "{\"index\":-1}",
+                "press_key" to "{\"button\":\"PASTE\"}",
+            ).forEach { (name, args) ->
+                val result = JSONObject(executor.execute(AgentModelClient.ToolCall(name, name, args)).content)
+                assertTrue(result.getString("code") in setOf("ROOT_REQUIRED", "INVALID_ARGUMENT"))
+                assertEquals(null, coordinator.state.value.ownerRunId)
+            }
+        }
+    }
+
+    @Test fun recoveryRejectionClearsPublishedObservationBeforeNextCall() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("recovered", AgentRunController())
+        val restored = AtomicBoolean(false)
+        tools(guiControl = control, screenObservationProvider = { observation("observed", false) },
+            beforeGuiAcquisition = { name ->
+                if (name == "tap" && restored.compareAndSet(true, false))
+                    ToolExecutionDecision.Reject("ACCESSIBILITY_RESTORED_REOBSERVE", "Reobserve")
+                else ToolExecutionDecision.Allow
+            }, beforeToolExecution = { name ->
+                if (name == "observe_screen") ToolExecutionDecision.Allow else ToolExecutionDecision.Reject("ACTION_REACHED", "Boundary")
+            }).use { executor ->
+            fun call(name: String, args: String = "{}") = JSONObject(executor.execute(AgentModelClient.ToolCall(name, name, args)).content)
+            assertTrue(call("observe_screen").getBoolean("ok"))
+            restored.set(true)
+            val tap = "{\"x\":1,\"y\":1,\"coordinate_space\":\"screen\"}"
+            assertEquals("ACCESSIBILITY_RESTORED_REOBSERVE", call("tap", tap).getString("code"))
+            assertEquals("NO_OBSERVATION", call("tap", tap).getString("code"))
+            assertTrue(call("observe_screen").getBoolean("ok"))
+            assertEquals("ACTION_REACHED", call("tap", tap).getString("code"))
+        }
+    }
+
+    @Test fun transientDisconnectEvenWhenReconnectedInvalidatesSameOwnerObservation() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("transient", AgentRunController())
+        val count = java.util.concurrent.atomic.AtomicInteger(0)
+        tools(guiControl = control, screenObservationProvider = { observation("observed", false) },
+            accessibilityDisconnectCount = count::get,
+            beforeToolExecution = { name -> if (name == "observe_screen") ToolExecutionDecision.Allow else ToolExecutionDecision.Reject("ACTION_REACHED", "Boundary") }
+        ).use { executor ->
+            fun call(name: String, args: String = "{}") = JSONObject(executor.execute(AgentModelClient.ToolCall(name, name, args)).content)
+            assertTrue(call("observe_screen").getBoolean("ok"))
+            count.incrementAndGet()
+            assertEquals("NO_OBSERVATION", call("type_text", "{\"text\":\"stale\"}").getString("code"))
+            assertTrue(call("observe_screen").getBoolean("ok"))
+            assertEquals("ACTION_REACHED", call("type_text", "{\"text\":\"fresh\"}").getString("code"))
+        }
+    }
+
+    @Test fun disconnectDuringObservationDoesNotPublishOrAttachStaleImage() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("observe-disconnect", AgentRunController())
+        val count = java.util.concurrent.atomic.AtomicInteger(0)
+        tools(guiControl = control, accessibilityDisconnectCount = count::get,
+            screenObservationProvider = { count.incrementAndGet(); observation("stale", false) }
+        ).use { executor ->
+            val result = executor.execute(AgentModelClient.ToolCall("observe", "observe_screen", "{}"))
+            assertEquals("ACCESSIBILITY_OBSERVATION_INTERRUPTED", JSONObject(result.content).getString("code"))
+            assertTrue(result.images.isEmpty())
+        }
+    }
+
     private fun tools(
         terminalEnabled: () -> Boolean = { false },
         browserEnabled: () -> Boolean = { false },
@@ -407,6 +481,8 @@ class AgentLocalToolsPermissionTest {
             ToolExecutionDecision.Allow
         },
         guiControl: GuiControlCoordinator.RunControl? = null,
+        beforeGuiAcquisition: (String) -> ToolExecutionDecision = { ToolExecutionDecision.Allow },
+        accessibilityDisconnectCount: () -> Int = { 0 },
     ): AgentLocalTools =
         AgentLocalTools(
             context = RuntimeEnvironment.getApplication() as Context,
@@ -421,6 +497,8 @@ class AgentLocalToolsPermissionTest {
             screenObservationProvider = screenObservationProvider,
             beforeToolExecution = beforeToolExecution,
             guiControl = guiControl,
+            beforeGuiAcquisition = beforeGuiAcquisition,
+            accessibilityDisconnectCount = accessibilityDisconnectCount,
         )
 
     private fun observation(

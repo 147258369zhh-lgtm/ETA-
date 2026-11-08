@@ -9,6 +9,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -17,6 +18,180 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiChatCompletionsProviderTest {
+    @Test
+    fun emptyStreamRetriesOnceAsNonStreamingJson() {
+        val requests = mutableListOf<JSONObject>()
+        val attempts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newSingleThreadExecutor()
+        server.createContext("/chat/completions") { exchange ->
+            val request = JSONObject(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
+            synchronized(requests) { requests += request }
+            if (attempts.getAndIncrement() == 0) {
+                exchange.responseHeaders.add("Content-Type", "text/event-stream")
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.close()
+            } else {
+                val body = JSONObject()
+                    .put(
+                        "choices",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("finish_reason", "stop")
+                                .put(
+                                    "message",
+                                    JSONObject()
+                                        .put("role", "assistant")
+                                        .put("content", "非流式兼容回复")
+                                        .put("reasoning_content", "兼容分析"),
+                                ),
+                        ),
+                    )
+                    .put(
+                        "usage",
+                        JSONObject().put("prompt_tokens", 8).put("completion_tokens", 4).put("total_tokens", 12),
+                    )
+                    .toString()
+                    .toByteArray(Charsets.UTF_8)
+                exchange.responseHeaders.add("Content-Type", "application/json")
+                exchange.sendResponseHeaders(200, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            }
+        }
+        server.start()
+        try {
+            val events = mutableListOf<ProviderEvent>()
+            val response = OpenAiChatCompletionsProvider.complete(
+                providerRequest("http://127.0.0.1:${server.address.port}"),
+                AgentRunController(),
+                events::add,
+            )
+
+            assertEquals("非流式兼容回复", response.assistantMessage.getString("content"))
+            assertEquals("兼容分析", response.assistantMessage.getString("reasoning_content"))
+            assertEquals(2, requests.size)
+            assertEquals(true, requests[0].getBoolean("stream"))
+            assertEquals(false, requests[1].getBoolean("stream"))
+            assertEquals(12, events.filterIsInstance<ProviderEvent.Usage>().single().usage.contextTokens)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun compatibilityRetryKeepsToolsWhenOnlyToolChoiceIsRejected() {
+        val requests = mutableListOf<JSONObject>()
+        val attempts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newSingleThreadExecutor()
+        server.createContext("/chat/completions") { exchange ->
+            val request = JSONObject(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
+            synchronized(requests) { requests += request }
+            if (attempts.getAndIncrement() == 0) {
+                val error = "{\"error\":{\"message\":\"tool_choice is not supported\"}}"
+                exchange.sendResponseHeaders(400, error.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(error.toByteArray()) }
+            } else {
+                val body = sseChunk(JSONObject().put("content", "ok"), finishReason = "stop") +
+                    "data: [DONE]\n\n"
+                exchange.responseHeaders.add("Content-Type", "text/event-stream")
+                exchange.sendResponseHeaders(200, body.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(body.toByteArray()) }
+            }
+        }
+        server.start()
+        try {
+            val tool = JSONObject()
+                .put("type", "function")
+                .put(
+                    "function",
+                    JSONObject()
+                        .put("name", "get_current_context")
+                        .put("parameters", JSONObject().put("type", "object").put("properties", JSONObject())),
+                )
+            OpenAiChatCompletionsProvider.complete(
+                request = providerRequest("http://127.0.0.1:${server.address.port}").copy(
+                    tools = JSONArray().put(tool),
+                ),
+                runController = AgentRunController(),
+            )
+            assertEquals(2, requests.size)
+            assertEquals(1, requests[1].getJSONArray("tools").length())
+            assertTrue(!requests[1].has("tool_choice"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun emptyToolCatalogOmitsToolsAndToolChoice() {
+        val requestBody = AtomicReference<String>()
+        val body = buildString {
+            append(sseChunk(JSONObject().put("content", "ok"), finishReason = "stop"))
+            append("data: [DONE]\n\n")
+        }
+
+        withSseServer(body, onRequest = requestBody::set) { baseUrl ->
+            OpenAiChatCompletionsProvider.complete(
+                providerRequest(baseUrl).copy(tools = JSONArray()),
+                AgentRunController(),
+            )
+        }
+
+        val request = JSONObject(requestBody.get())
+        assertTrue(!request.has("tools"))
+        assertTrue(!request.has("tool_choice"))
+    }
+
+    @Test
+    fun rejectedToolCatalogRetriesOnceInPlainTextMode() {
+        val requests = mutableListOf<JSONObject>()
+        val attempts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newSingleThreadExecutor()
+        server.createContext("/chat/completions") { exchange ->
+            val request = JSONObject(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
+            synchronized(requests) { requests += request }
+            if (attempts.getAndIncrement() < 2) {
+                val error = "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"tools are not supported\"}}"
+                exchange.responseHeaders.add("Content-Type", "application/json")
+                exchange.sendResponseHeaders(400, error.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(error.toByteArray()) }
+            } else {
+                val body = sseChunk(JSONObject().put("content", "ok"), finishReason = "stop") +
+                    "data: [DONE]\n\n"
+                exchange.responseHeaders.add("Content-Type", "text/event-stream")
+                exchange.sendResponseHeaders(200, body.toByteArray().size.toLong())
+                exchange.responseBody.use { it.write(body.toByteArray()) }
+            }
+        }
+        server.start()
+        try {
+            val tool = JSONObject()
+                .put("type", "function")
+                .put(
+                    "function",
+                    JSONObject()
+                        .put("name", "get_current_context")
+                        .put("parameters", JSONObject().put("type", "object").put("properties", JSONObject())),
+                )
+            val response = OpenAiChatCompletionsProvider.complete(
+                providerRequest("http://127.0.0.1:${server.address.port}").copy(
+                    tools = JSONArray().put(tool),
+                ),
+                AgentRunController(),
+            )
+
+            assertEquals("ok", response.assistantMessage.getString("content"))
+            assertEquals(3, requests.size)
+            assertTrue(requests[1].has("tools"))
+            assertTrue(!requests[2].has("tools"))
+            assertTrue(!requests[2].has("tool_choice"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
     @Test
     fun thinkingStreamsBeforeDoneAndClosesBeforeTheUsageTail() {
         val firstDelta = CountDownLatch(1)
@@ -445,6 +620,23 @@ class OpenAiChatCompletionsProviderTest {
             assertEquals("enabled", request.getJSONObject("thinking").getString("type"))
             assertEquals("high", request.getString("reasoning_effort"))
         }
+    }
+
+    @Test
+    fun officialDeepSeekAliasesUseStablePublicModelId() {
+        val request = OpenAiChatCompletionsProvider.buildRequestJson(
+            AgentModelClient.ModelConfig(
+                providerId = "builtin-deepseek",
+                providerSourceType = "deepseek",
+                baseUrl = "https://api.deepseek.com",
+                apiKey = "test-key",
+                model = "deepseek-flash",
+                systemPrompt = "",
+            ),
+            JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
+            JSONArray(),
+        )
+        assertEquals("deepseek-reasoner", request.getString("model"))
     }
 
     @Test

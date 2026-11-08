@@ -10,6 +10,7 @@ data class SkillIndexEntry(
     val id: String,
     val name: String,
     val description: String,
+    val dependencies: List<String> = emptyList(),
     val compatibility: String? = null,
     val metadata: Map<String, String> = emptyMap(),
     val rootPath: String,
@@ -21,6 +22,7 @@ data class SkillIndexEntry(
     val enabled: Boolean = true,
     val source: String = "user",
     val installed: Boolean = true,
+    val provenance: SkillProvenance? = null,
 )
 
 /**

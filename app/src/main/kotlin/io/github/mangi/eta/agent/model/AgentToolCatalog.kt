@@ -38,6 +38,11 @@ internal object AgentToolCatalog {
                 githubInstall = skillGitHubInstall,
             )
             if (memoryTools) AgentMemoryToolCatalog.appendTo(tools, writable = memoryWritable)
+            AgentVoiceToolCatalog.appendTo(tools)
+            AgentLearningToolCatalog.appendTo(tools)
+            AgentScheduleToolCatalog.appendTo(tools)
+            EtaAppControlToolCatalog.appendTo(tools)
+            tools.put(io.github.mangi.eta.fork.tasks.AgentAutomationTools.schema())
             if (terminalTools) {
                 AgentFileVisionToolCatalog.appendTo(tools)
                 AgentTerminalToolCatalog.appendTo(tools)

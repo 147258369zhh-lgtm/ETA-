@@ -10,9 +10,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -26,7 +29,7 @@ internal data class SpeechPlaybackState(val messageId: String? = null, val loadi
 internal class SpeechPlaybackController(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val beforePlayback: () -> Unit = {},
+    private val beforePlayback: suspend () -> Unit = {},
     private val interruptOnScreenOff: Boolean = true,
     private val afterPlayback: () -> Unit = {},
     private val synthesize: suspend (SpeechSettings, SpeechCredentials, String, (ByteArray) -> Unit) -> Unit = ::synthesizeSpeech,
@@ -55,7 +58,12 @@ internal class SpeechPlaybackController(
                 val readable = withContext(Dispatchers.Default) { SpeechText.readable(text) }
                 if (readable.isBlank()) throw SpeechFailure(SpeechErrorCode.NO_SPEECH, "这条消息没有可朗读的正文")
                 if (readable.length > 30_000) throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "正文过长，请选择较短的回答朗读")
-                lease?.requestPlaybackFocus { beforePlayback(); playbackActive = true }
+                // Android 15+ 的后台音频焦点要求服务已经成功进入前台，而不是仅发出启动 Intent。
+                // 在等待之前登记清理责任：失败、停止和宿主取消也必须释放正在启动的服务。
+                playbackActive = true
+                beforePlayback()
+                currentCoroutineContext().ensureActive()
+                lease?.requestPlaybackFocus()
                 val player = createOutput()
                 output = player
                 playChunks(config, secrets, SpeechText.chunks(readable), player) {
@@ -66,7 +74,7 @@ internal class SpeechPlaybackController(
                 player.finish()
                 withTimeout(180_000) { while (!player.drained()) delay(20) }
                 if (session == generation) stop()
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
                 if (error is CancellationException && error !is kotlinx.coroutines.TimeoutCancellationException) throw error
                 if (session == generation) {
                     val failure = error.speechFailure()
@@ -151,12 +159,49 @@ internal class SpeechPlaybackController(
 
     fun stop() {
         generation++
-        output?.close(); output = null
+        val player = output
+        output = null
         job?.cancel(); job = null
-        lease?.close(); lease = null
-        if (playbackActive) afterPlayback()
+        if (player != null) runCatching { player.close() }
+        finishStop()
+    }
+
+    /**
+     * 打断朗读：先把音轨音量在 [fadeMs] 内收到 0 再释放，听感上是“立刻停下”而不是硬切的爆音。
+     * 合成、播放与音频焦点在同一处收尾，调用后状态必然回到空闲，可安全地紧接着启动识别。
+     */
+    suspend fun stopSmoothly(fadeMs: Int = BARGE_IN_FADE_MS) {
+        generation++
+        val player = output
+        output = null
+        job?.cancel(); job = null
+        try {
+            if (player != null) {
+                val fade = fadeMs.coerceIn(0, MAX_FADE_MS)
+                if (fade > 0) {
+                    withContext(Dispatchers.IO) { runCatching { player.fadeOut(fade) } }
+                }
+            }
+        } finally {
+            // Timeout/cancellation must never strand an AudioTrack, focus request, or foreground service.
+            withContext(NonCancellable) {
+                if (player != null) runCatching { player.close() }
+                finishStop()
+            }
+        }
+    }
+
+    private fun finishStop() {
+        runCatching { lease?.close() }
+        lease = null
+        if (playbackActive) runCatching { afterPlayback() }
         playbackActive = false
         mutableState.value = SpeechPlaybackState()
+    }
+
+    private companion object {
+        /** 淡出只服务于打断；再长就不像打断了。 */
+        const val MAX_FADE_MS = 400
     }
 }
 
@@ -171,4 +216,6 @@ internal interface SpeechAudioOutput : Closeable {
     fun write(bytes: ByteArray)
     fun finish()
     fun drained(): Boolean
+    /** 收尾前把音量线性降到 0；实现可以忽略。 */
+    fun fadeOut(durationMs: Int) {}
 }

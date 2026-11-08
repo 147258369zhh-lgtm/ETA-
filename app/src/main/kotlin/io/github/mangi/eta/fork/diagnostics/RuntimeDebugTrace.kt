@@ -1,5 +1,6 @@
 package io.github.mangi.eta.fork.diagnostics
 
+import io.github.mangi.eta.agent.runtime.AgentEvent
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -23,6 +24,10 @@ internal data class RuntimeDebugSnapshot(
     val backgroundRunCount: Long = 0,
     val timeoutCount: Long = 0,
     val taskFailureCount: Long = 0,
+    val agentToolCallCount: Long = 0,
+    val agentFailedToolCount: Long = 0,
+    val agentInputTokens: Long = 0,
+    val agentOutputTokens: Long = 0,
     val recentEvents: List<RuntimeDebugEvent> = emptyList(),
 )
 
@@ -79,6 +84,22 @@ internal object RuntimeDebugTrace {
 
     fun taskFailure(type: String) = record("task_failure", type.take(120)) {
         copy(taskFailureCount = taskFailureCount + 1)
+    }
+
+    fun agentEvent(event: AgentEvent) {
+        mutableSnapshot.update { current ->
+            when (event) {
+                is AgentEvent.ToolStarted -> current.copy(agentToolCallCount = current.agentToolCallCount + 1)
+                is AgentEvent.ToolFinished -> current.copy(
+                    agentFailedToolCount = current.agentFailedToolCount + if (event.success == false) 1 else 0,
+                )
+                is AgentEvent.UsageReceived -> current.copy(
+                    agentInputTokens = current.agentInputTokens + (event.usage.inputTokens ?: 0),
+                    agentOutputTokens = current.agentOutputTokens + (event.usage.outputTokens ?: 0),
+                )
+                else -> current
+            }
+        }
     }
 
     private inline fun record(

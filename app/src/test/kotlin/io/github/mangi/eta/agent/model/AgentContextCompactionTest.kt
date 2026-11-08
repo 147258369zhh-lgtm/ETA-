@@ -291,7 +291,7 @@ class AgentContextCompactionTest {
     }
 
     @Test
-    fun summaryRequestIncludesAllCompletedHistoryInOneRequest() {
+    fun summaryChunksIncludeAllCompletedHistory() {
         var requests = 0
         val seen = mutableListOf<String>()
         val result = AgentContextCompactor(config, provider { request, _ ->
@@ -300,7 +300,7 @@ class AgentContextCompactionTest {
             seen += historyText
             response("之前的工作已完成。")
         }, AgentRunController()).compact(jsonHistory(), 1, emptySet())
-        assertEquals(1, requests)
+        assertTrue(requests >= 1)
         for (turn in 1..4) assertTrue(seen.any { it.contains("问题 $turn") })
         assertTrue(result.toString().contains("问题 6"))
     }

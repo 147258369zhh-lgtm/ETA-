@@ -8,6 +8,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SpeechProtocolTest {
+    @Test fun nativeLinkageAndMemoryFailuresBecomeActionableSpeechErrors() {
+        val linkage = NoSuchMethodError("AudioChunk.<init>").speechFailure()
+        assertEquals(SpeechErrorCode.AUDIO, linkage.code)
+        assertTrue(linkage.userMessage.contains("Release"))
+
+        val memory = OutOfMemoryError("model load").speechFailure()
+        assertEquals(SpeechErrorCode.AUDIO, memory.code)
+        assertTrue(memory.userMessage.contains("内存"))
+    }
+
     @Test fun qwenRevisionsReplaceDraftAndLatePreviewCannotReplaceFinal() {
         val transcript = QwenTranscript()
         fun event(id: String, suffix: String, text: String, stash: String = "") = JSONObject()

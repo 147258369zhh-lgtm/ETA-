@@ -1,9 +1,12 @@
 package io.github.mangi.eta.agent.voice
 
 import android.app.Activity
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.service.voice.VoiceInteractionService
 import io.github.mangi.eta.core.AssistantContextFlags
 
@@ -35,6 +38,16 @@ class EtaVoiceInteractionService : VoiceInteractionService() {
     companion object {
         @Volatile
         private var activeService: EtaVoiceInteractionService? = null
+
+        /** Secure 设置中的默认助手才是真实注册状态；仅开启本地唤醒词配置不代表系统会分发唤醒。 */
+        internal fun isDefaultAssistant(context: Context): Boolean {
+            val expected = ComponentName(context, EtaVoiceInteractionService::class.java)
+            return listOf("voice_interaction_service", "assistant").any { key ->
+                val configured = Settings.Secure.getString(context.contentResolver, key)
+                    ?: return@any false
+                ComponentName.unflattenFromString(configured) == expected
+            }
+        }
 
         internal fun requestSession(): Boolean {
             val service = activeService ?: return false

@@ -2,12 +2,17 @@ package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentProviderClient
+import io.github.mangi.eta.agent.model.ProviderClientFactory
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
+import io.github.mangi.eta.agent.runtime.AgentRunTelemetry
+import io.github.mangi.eta.agent.runtime.AgentRunTelemetrySnapshot
+import io.github.mangi.eta.agent.runtime.AgentTokenPrice
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
-import java.util.UUID
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -15,17 +20,27 @@ import org.json.JSONObject
  * Model/provider failures intentionally do not enter this path.
  */
 internal object AgentRuntimeLocalFallback {
-    fun shouldUse(error: String?): Boolean {
-        val value = error.orEmpty()
-        return value.contains("Agent Runtime 服务绑定失败") ||
-            value.contains("无法启动后台执行服务") ||
-            value.contains("Agent Runtime 服务连接已断开") ||
-            value.contains("Agent Runtime 无法准备请求") ||
-            value.contains("Agent Runtime 请求发送失败")
-    }
+    fun shouldUse(request: AgentRuntimeWire.RunRequest, result: AgentRuntimeWire.RunResult): Boolean =
+        request.operation == AgentRuntimeWire.OP_CHAT &&
+            result.operation == AgentRuntimeWire.OP_CHAT &&
+            result.runId == request.runId &&
+            !result.ok && result.content.isEmpty() && result.reasoningContent.isEmpty() &&
+            result.transcript.isEmpty() && result.contextSnapshot == null &&
+            result.contextSnapshotRef.isBlank() &&
+            // Only these failures prove that model/tool execution never started. A disconnected
+            // Binder or failed send has an unknown outcome and must use result recovery instead.
+            result.error in setOf(
+                "Agent Runtime 服务绑定失败",
+                "无法启动后台执行服务，请返回 Eta 后重试",
+                "Agent Runtime 无法准备请求",
+            )
 
     fun run(
         request: AgentRuntimeWire.RunRequest,
+        runController: AgentRunController,
+        provider: AgentProviderClient? = null,
+        onTelemetry: (AgentRunTelemetrySnapshot) -> Unit = {},
+        priceResolver: (String, String) -> AgentTokenPrice? = { _, _ -> null },
         onEvent: (AgentEvent) -> Unit,
     ): AgentRuntimeWire.RunResult {
         val safeConfig = request.config.copy(
@@ -40,8 +55,12 @@ internal object AgentRuntimeLocalFallback {
             deviceSensitiveActionTools = false,
             subagentTools = false,
             supportsSearchSuggestions = false,
+            hostedWebSearchEnabled = false,
+            extraBodyJson = "",
+            customBody = emptyList(),
         )
-        return runCatching {
+        val telemetry = AgentRunTelemetry(request, onSnapshot = onTelemetry, recordId = "${request.runId}:local-reply", priceResolver = priceResolver)
+        val result = runCatching {
             val response = AgentModelClient.complete(
                 config = safeConfig,
                 prompt = request.prompt,
@@ -56,14 +75,19 @@ internal object AgentRuntimeLocalFallback {
                             .toString(),
                     )
                 },
-                runController = AgentRunController(),
+                provider = provider ?: ProviderClientFactory.getClient(safeConfig),
+                runController = runController,
                 skillContext = SkillContext.EMPTY,
                 memoryContext = AgentMemoryContext.DISABLED,
                 capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
+                // Some discovery schemas are independent of the config toggles. Never advertise
+                // any tool during fallback, including newly added built-in or remote schemas.
+                toolFilter = { JSONArray() },
                 sessionId = request.effectiveModelSessionId,
                 operationId = request.runId,
                 initialUserMessageId = "user-${request.runId}",
-                onEvent = onEvent,
+                textOnlyFallback = true,
+                onEvent = { telemetry.accept(it); onEvent(it) },
             )
             AgentRuntimeWire.RunResult(
                 runId = request.runId,
@@ -85,5 +109,7 @@ internal object AgentRuntimeLocalFallback {
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         }
+        telemetry.finish(result.ok, runController.isCancelled)
+        return result
     }
 }

@@ -27,6 +27,36 @@ internal class McpHttpClient(
         val cacheTtlMs: Long?,
     )
 
+    data class ResourceSummary(
+        val uri: String,
+        val name: String,
+        val description: String,
+        val mimeType: String,
+    )
+
+    data class PromptSummary(
+        val name: String,
+        val title: String,
+        val description: String,
+        val arguments: List<String>,
+        val argumentDefinitions: List<PromptArgument> = emptyList(),
+    )
+
+    data class PromptArgument(val name: String, val description: String, val required: Boolean)
+
+    data class ContentPreview(val text: String, val truncated: Boolean, val omittedItems: Int)
+
+    data class Catalog(
+        val resources: List<ResourceSummary>,
+        val prompts: List<PromptSummary>,
+        val resourcesSupported: Boolean = true,
+        val promptsSupported: Boolean = true,
+        val resourcesTruncated: Boolean = false,
+        val promptsTruncated: Boolean = false,
+    )
+
+    private data class CatalogPageList<T>(val values: List<T>, val truncated: Boolean)
+
     private data class ToolList(
         val tools: List<McpToolDefinition>,
         val cacheTtlMs: Long?,
@@ -47,6 +77,7 @@ internal class McpHttpClient(
     private var negotiatedVersion: String? = null
     @Volatile
     private var legacySessionId: String? = null
+    private var serverCapabilities: JSONObject? = null
 
     fun discoverTools(): Discovery {
         val requestedMode = server.protocolMode
@@ -92,6 +123,56 @@ internal class McpHttpClient(
         } else {
             invoke(sessionId = null)
         }
+    }
+
+    /** Optional MCP resources and prompt templates are browsed separately from model tools. */
+    fun discoverCatalog(): Catalog {
+        initializeForCatalog()
+        val resources = optionalCatalog("resources") {
+            listResources()
+        }
+        val prompts = optionalCatalog("prompts") {
+            listPrompts()
+        }
+        return Catalog(
+            resources = resources?.values.orEmpty(),
+            prompts = prompts?.values.orEmpty(),
+            resourcesSupported = resources != null,
+            promptsSupported = prompts != null,
+            resourcesTruncated = resources?.truncated ?: false,
+            promptsTruncated = prompts?.truncated ?: false,
+        )
+    }
+
+    fun readResource(uri: String): String {
+        return readResourcePreview(uri).text
+    }
+
+    fun readResourcePreview(uri: String): ContentPreview {
+        require(uri.isNotBlank() && uri.length <= MAX_URI_CHARS) { "MCP 资源地址无效" }
+        val result = catalogRequest(
+            method = "resources/read",
+            params = JSONObject().put("uri", uri),
+        )
+        val contents = result.optJSONArray("contents") ?: error("MCP 资源响应缺少 contents")
+        return McpContentPreview.fromResources(contents, MAX_RESOURCE_READ_BYTES)
+    }
+
+    fun getPrompt(prompt: PromptSummary, arguments: Map<String, String>): ContentPreview {
+        require(prompt.name.isNotBlank() && prompt.name.length <= MAX_TITLE_CHARS) { "MCP 提示模板名称无效" }
+        val declared = prompt.argumentDefinitions.map { it.name }.ifEmpty { prompt.arguments }.toSet()
+        require(arguments.keys.all { it in declared }) { "MCP 提示模板参数未声明" }
+        require(prompt.argumentDefinitions.none { it.required && arguments[it.name].isNullOrBlank() }) {
+            "请填写提示模板的必填参数"
+        }
+        require(arguments.values.sumOf { it.toByteArray().size.toLong() } <= MAX_RESOURCE_READ_BYTES) { "MCP 提示模板参数过长" }
+        val result = catalogRequest(
+            "prompts/get",
+            JSONObject().put("name", prompt.name).put("arguments", JSONObject(arguments)),
+            prompt.name,
+        )
+        val messages = result.optJSONArray("messages") ?: error("MCP 提示模板响应缺少 messages")
+        return McpContentPreview.fromPrompt(messages, MAX_RESOURCE_READ_BYTES)
     }
 
     override fun close() {
@@ -141,6 +222,129 @@ internal class McpHttpClient(
         return Discovery(requireNotNull(negotiatedVersion), listed.tools, cacheTtlMs = null)
     }
 
+    private fun initializeForCatalog(): String {
+        negotiatedVersion?.let { return it }
+        return when (server.protocolMode) {
+            McpProtocolMode.LEGACY -> initializeLegacy()
+            McpProtocolMode.LATEST -> McpProtocolMode.LATEST.also { negotiatedVersion = it }
+            else -> if (server.lastProtocolVersion in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) initializeLegacy()
+                else McpProtocolMode.LATEST.also { negotiatedVersion = it }
+        }
+    }
+
+    private fun <T> optionalCatalog(capability: String, block: () -> T): T? {
+        if (serverCapabilities?.has(capability) == false) return null
+        return try {
+            block()
+        } catch (failure: McpJsonRpcException) {
+            if (failure.code == -32601) null else throw failure
+        } catch (failure: McpHttpStatusException) {
+            if (failure.jsonRpcCode == -32601) null else throw failure
+        }
+    }
+
+    private fun catalogRequest(method: String, params: JSONObject, name: String? = null): JSONObject {
+        var version = initializeForCatalog()
+        fun invoke(sessionId: String?): JSONObject {
+            val response = request(method, params, version, sessionId, name).json
+                ?: error("MCP $method 返回为空")
+            val result = unwrapResult(response)
+            if (version == McpProtocolMode.LATEST) {
+                if (!result.has("resultType") || result.isNull("resultType")) {
+                    throw McpProtocolCompatibilityException(IOException("MCP $method 返回了旧协议结果"))
+                }
+                require(result.optString("resultType") == "complete") { "MCP $method 返回了不支持的结果类型" }
+            }
+            return result
+        }
+        if (version in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) return withLegacySessionRetry(::invoke)
+        return try {
+            invoke(null)
+        } catch (failure: Exception) {
+            val compatible = when (failure) {
+                is McpProtocolCompatibilityException -> true
+                is McpHttpStatusException -> failure.code in setOf(400, 404, 405) &&
+                    failure.jsonRpcCode !in MODERN_JSON_RPC_ERRORS
+                is McpJsonRpcException -> failure.code == -32600
+                else -> false
+            }
+            if (server.protocolMode != McpProtocolMode.AUTO || !compatible) throw failure
+            negotiatedVersion = null
+            version = initializeLegacy()
+            withLegacySessionRetry(::invoke)
+        }
+    }
+
+    private fun listResources(): CatalogPageList<ResourceSummary> =
+        listCatalogPages("resources/list", "resources", MAX_DISCOVERED_RESOURCES) { item ->
+            val uri = item.opt("uri") as? String
+            require(uri != null && uri.isNotBlank() && uri.length <= MAX_URI_CHARS) { "MCP 资源地址无效" }
+            ResourceSummary(
+                uri = uri,
+                name = item.optString("name").ifBlank { item.optString("title") }.take(MAX_TITLE_CHARS),
+                description = item.optString("description").take(MAX_DESCRIPTION_CHARS),
+                mimeType = item.optString("mimeType").take(MAX_MIME_CHARS),
+            )
+        }
+
+    private fun listPrompts(): CatalogPageList<PromptSummary> =
+        listCatalogPages("prompts/list", "prompts", MAX_DISCOVERED_PROMPTS) { item ->
+            val arguments = item.optJSONArray("arguments") ?: JSONArray()
+            val promptName = item.opt("name") as? String
+            require(promptName != null && promptName.isNotBlank() && promptName.length <= MAX_TITLE_CHARS) { "MCP 提示模板名称无效" }
+            require(arguments.length() <= MAX_PROMPT_ARGUMENTS) { "MCP 提示模板参数过多" }
+            val definitions = (0 until arguments.length()).map { index ->
+                val argument = arguments.getJSONObject(index)
+                val name = argument.opt("name") as? String
+                require(name != null && name.isNotBlank() && name.length <= MAX_TITLE_CHARS) { "MCP 提示模板参数名称无效" }
+                require(!argument.has("required") || argument.opt("required") is Boolean) { "MCP 提示模板必填标记无效" }
+                PromptArgument(name, argument.optString("description").take(MAX_DESCRIPTION_CHARS), argument.optBoolean("required"))
+            }
+            require(definitions.map { it.name }.distinct().size == definitions.size) { "MCP 提示模板参数名称重复" }
+            PromptSummary(
+                name = promptName,
+                title = item.optString("title").ifBlank { item.optString("name") }.take(MAX_TITLE_CHARS),
+                description = item.optString("description").take(MAX_DESCRIPTION_CHARS),
+                arguments = definitions.map { it.name },
+                argumentDefinitions = definitions,
+            )
+        }
+
+    private fun <T> listCatalogPages(
+        method: String,
+        key: String,
+        maxItems: Int,
+        parse: (JSONObject) -> T,
+    ): CatalogPageList<T> {
+        val values = mutableListOf<T>()
+        var cursor: String? = null
+        val visitedCursors = mutableSetOf<String>()
+        repeat(MAX_LIST_PAGES) {
+            val params = JSONObject()
+            cursor?.let { params.put("cursor", it) }
+            val result = catalogRequest(method, params)
+            val page = result.optJSONArray(key) ?: error("MCP $method 响应缺少 $key")
+            var pageTruncated = false
+            for (index in 0 until page.length()) {
+                if (values.size >= maxItems) {
+                    pageTruncated = true
+                    break
+                }
+                values += parse(page.getJSONObject(index))
+            }
+            val next = result.opt("nextCursor")
+            require(next == null || next == JSONObject.NULL || next is String) { "MCP 分页游标无效" }
+            cursor = (next as? String)?.takeIf(String::isNotBlank)
+            cursor?.let {
+                require(it.length <= MAX_URI_CHARS && visitedCursors.add(it)) { "MCP 分页游标重复或无效" }
+            }
+            if (cursor == null || values.size >= maxItems) {
+                return CatalogPageList(values, pageTruncated || cursor != null)
+            }
+        }
+        return CatalogPageList(values, truncated = true)
+    }
+
     private fun <T> withLegacySessionRetry(block: (String?) -> T): T {
         initializeLegacy()
         val sessionId = legacySessionId
@@ -157,7 +361,7 @@ internal class McpHttpClient(
 
     private fun initializeLegacy(): String {
         val currentVersion = negotiatedVersion
-        if (currentVersion in SUPPORTED_LEGACY_PROTOCOL_VERSIONS && legacySessionId != null) {
+        if (currentVersion in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) {
             return requireNotNull(currentVersion)
         }
         val initialized = request(
@@ -175,6 +379,7 @@ internal class McpHttpClient(
         val initializeResult = unwrapResult(
             requireNotNull(initialized.json) { "MCP initialize 返回为空" }
         )
+        serverCapabilities = initializeResult.optJSONObject("capabilities") ?: JSONObject()
         val protocolVersion = initializeResult.optString("protocolVersion")
         require(protocolVersion in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) {
             "MCP 服务器返回了不支持的协议版本"
@@ -494,6 +699,12 @@ internal class McpHttpClient(
         const val MAX_TITLE_CHARS = 160
         const val MAX_DESCRIPTION_CHARS = 2_000
         const val MAX_DISCOVERED_TOOLS = 128
+        const val MAX_DISCOVERED_RESOURCES = 128
+        const val MAX_DISCOVERED_PROMPTS = 128
+        const val MAX_PROMPT_ARGUMENTS = 32
+        const val MAX_URI_CHARS = 4_096
+        const val MAX_MIME_CHARS = 128
+        const val MAX_RESOURCE_READ_BYTES = 128 * 1024
         const val MAX_LIST_PAGES = 8
         val SUPPORTED_LEGACY_PROTOCOL_VERSIONS = setOf(
             "2024-11-05",

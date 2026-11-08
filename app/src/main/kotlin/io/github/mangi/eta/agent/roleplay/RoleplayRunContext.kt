@@ -101,6 +101,7 @@ internal data class RoleplayRunContext(
             if (memory.coreContent.isNotBlank()) appendLine("<character_memory_core>\n${memory.coreContent}\n</character_memory_core>")
             if (memory.coreTruncated) appendLine("[剧情核心记忆超出预算，按需读取其余内容]")
             if (memory.headingIndex.isNotBlank()) appendLine("<character_memory_headings>\n${memory.headingIndex}\n</character_memory_headings>")
+            if (memory.supportingContent.isNotBlank()) appendLine("<character_memory_layers>\n${memory.supportingContent}\n</character_memory_layers>")
         }
     }.trim()
 

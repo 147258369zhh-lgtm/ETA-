@@ -56,6 +56,26 @@ internal class SpeechPcmOutput : SpeechAudioOutput {
         finished && (it.playbackHeadPosition.toLong() and 0xffffffffL) >= frames
     } ?: true
 
+    /**
+     * 打断用的音量斜坡。AudioTrack 的音量按缓冲区生效，线性收 8 档就足够听不出台阶；
+     * 方法会在调用线程上停留 [durationMs]，调用方负责放到 IO 线程。
+     */
+    override fun fadeOut(durationMs: Int) {
+        val started = synchronized(this) { started && !finished && track != null }
+        if (!started) return
+        val total = durationMs.coerceIn(MIN_FADE_MS, MAX_FADE_MS)
+        val stepMs = (total / FADE_STEPS).coerceAtLeast(1)
+        for (step in FADE_STEPS - 1 downTo 0) {
+            setVolume(step / FADE_STEPS.toFloat())
+            Thread.sleep(stepMs.toLong())
+        }
+        setVolume(0f)
+    }
+
+    @Synchronized private fun setVolume(volume: Float) {
+        track?.setVolume(volume.coerceIn(0f, 1f))
+    }
+
     @Synchronized override fun close() {
         track?.let { it.pause(); it.flush(); it.release() }
         track = null
@@ -64,5 +84,8 @@ internal class SpeechPcmOutput : SpeechAudioOutput {
     private companion object {
         const val SAMPLE_RATE = 24_000
         const val BYTES_PER_FRAME = 2
+        const val FADE_STEPS = 8
+        const val MIN_FADE_MS = 40
+        const val MAX_FADE_MS = 400
     }
 }

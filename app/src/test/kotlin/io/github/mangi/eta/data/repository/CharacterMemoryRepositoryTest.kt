@@ -59,6 +59,25 @@ class CharacterMemoryRepositoryTest {
         assertFalse(File(context.filesDir, "roleplay").exists())
     }
 
+    @Test
+    fun layeredAppendWritesTheRequestedStoryLayer() {
+        val context = context()
+        CharacterMemoryRepository.replaceAll(context, "character-a", "# 核心记忆\n主角住在城里")
+        val revision = CharacterMemoryRepository.snapshot(context, "character-a").revision
+        val result = CharacterMemoryTools(context, "character-a") { true }.execute(
+            AgentModelClient.ToolCall(
+                "call", CharacterMemoryTools.WRITE,
+                JSONObject().put("revision", revision).put("mode", "append")
+                    .put("layer", "project").put("content", "本章目标是寻找古书").toString(),
+            ),
+        )
+        assertTrue(JSONObject(result.content).getBoolean("ok"))
+        assertEquals(
+            "# 核心记忆\n主角住在城里\n\n# 项目记忆\n本章目标是寻找古书",
+            CharacterMemoryRepository.snapshot(context, "character-a").content,
+        )
+    }
+
     private fun context(): Context {
         val files = temporaryFolder.newFolder()
         return object : ContextWrapper(RuntimeEnvironment.getApplication()) {

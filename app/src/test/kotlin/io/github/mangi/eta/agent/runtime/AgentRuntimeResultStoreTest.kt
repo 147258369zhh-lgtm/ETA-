@@ -12,11 +12,14 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.SQLiteMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class AgentRuntimeResultStoreTest {
     @Test
+    // Legacy SQLite uses an in-memory backend on Windows; reopening it cannot verify persistence.
+    @SQLiteMode(SQLiteMode.Mode.NATIVE)
     fun rewriteTargetSurvivesDatabaseReopenInResultHeaderArchiveAndCheckpoint() {
         val runId = "rewrite-storage-${System.nanoTime()}"
         val target = "assistant-original-1-0"

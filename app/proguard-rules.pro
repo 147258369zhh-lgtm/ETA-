@@ -35,6 +35,56 @@
 # libxposed service 通过静态调用和 manifest provider 接入，交给 R8/Android 默认规则保留可达代码。
 -dontwarn io.github.libxposed.service.**
 
+# WorkManager resolves the input merger from the serialized class name. Older
+# WorkManager releases do not ship a complete R8 consumer rule for this path,
+# and release builds then enqueue a job whose no-argument constructor has been
+# removed. Keep the tiny reflective surface instead of disabling shrinking.
+-keep class * extends androidx.work.InputMerger { public <init>(); }
+
+# LiteRT-LM 的 Java/Kotlin objects cross the JNI boundary by exact class, method and getter
+# names. Its 0.19.1 AAR does not ship a complete consumer rule for SamplerConfig,
+# ThinkingConfig and ConversationConfig, so narrowing this to benchmark members is unsafe:
+# nativeCreateConversation aborts with `mid == null` after R8 renames those getters.
+-keep class com.google.ai.edge.litertlm.** { *; }
+-keepclassmembers class com.google.ai.edge.litertlm.Conversation {
+    public com.google.ai.edge.litertlm.BenchmarkInfo getBenchmarkInfo();
+    public int getTokenCount();
+}
+-keepclassmembers class com.google.ai.edge.litertlm.BenchmarkInfo {
+    public int getLastDecodeTokenCount();
+    public double getLastDecodeTokensPerSecond();
+}
+
+# MediaPipe Task Core encodes file-backed model options through generated Protobuf Lite
+# messages. GeneratedMessageLite resolves these fields by their `*_` names at runtime, but
+# the tasks AAR does not ship consumer rules. Release R8 otherwise strips fields that only
+# participate in that reflective path (for example `ExternalFile.fileContent_`), which
+# makes every local ASR/TTS model fail before the native engine is created.
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+    <fields>;
+}
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite$Builder {
+    <fields>;
+}
+
+# MediaPipe audio's JNI callback constructs Java result objects by their exact class and
+# constructor signatures. Keeping only referenced Kotlin/Java members is insufficient: R8 can
+# rewrite a constructor that is only called from native code, producing a process crash in the
+# first TTS audio chunk. Preserve the small Java/Kotlin bridge surface used by ASR and TTS.
+-keep class com.google.mediapipe.tasks.audio.** { *; }
+
+# llama.cpp resolves its JNI methods and callback descriptors by exact Java names.
+# Keep this frozen compatibility surface even after future refactors of Eta's adapter.
+-keep class com.iris.localai.engine.llama.LlamaNative { *; }
+-keep interface com.iris.localai.engine.llama.PieceSink { *; }
+-keep interface com.iris.localai.engine.llama.LoadProgressListener { *; }
+
+# MNN resolves nativeCreate/nativeLoad/nativeGenerate by their exact JVM names and invokes the
+# callback interface by class/method lookup. The bundled runtime is IRIDIS 2.4.5 (Apache-2.0).
+-keep class com.iris.localai.engine.mnn.MnnNative { *; }
+-keep interface com.iris.localai.engine.mnn.MnnPieceSink { *; }
+-keep class com.iris.localai.engine.mnn.MnnSink { *; }
+
 # 配置 key 是字符串常量并通过静态调用访问，不需要保留类名或成员名。
 
 # ── Release 日志策略 ────────────────────────────────────────────────────────
@@ -69,4 +119,12 @@
 }
 -keep class io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayCommandMain {
     public static void main(java.lang.String[]);
+}
+-keep class io.github.mangi.eta.agent.accessibility.AccessibilityRecoveryCommandMain {
+    public static void main(java.lang.String[]);
+}
+# Plugin runtime is called from WebView through reflection by Android's
+# @JavascriptInterface bridge. Keep the bridge and its annotated members.
+-keepclassmembers class io.github.mangi.eta.agent.capability.ToolPackageWebBridge {
+    @android.webkit.JavascriptInterface <methods>;
 }

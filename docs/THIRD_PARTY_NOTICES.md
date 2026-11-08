@@ -6,6 +6,12 @@ Eta 的免 Root Linux 后端以独立进程运行 [PRoot](https://github.com/ter
 
 APK 的 `assets/native-sources` 附带校验过的原始源码，以及从实际构建入口自动生成的脚本、PTY 源码和补丁包；`assets/licenses` 附带许可证全文。构建脚本与说明位于 [终端原生组件](TERMINAL_NATIVE.md)。这些独立第三方程序保持其开源许可权利，不受 Eta 主项目非商业许可证的附加限制。
 
+## llama.cpp、MNN 与 IRIDIS 端侧引擎
+
+Eta 的 GGUF 和 MNN 内置推理复用 [IRIDIS](https://github.com/WWRJ3321/IRIDIS) 2.4.5 的 `libiris_llama.so`、`libiris_mnn.so`（commit `c9186f8`，Apache-2.0，分别基于 llama.cpp / ggml 与 MNN 静态构建）及其 JNI 契约。原生库为 Android arm64 构建，采用 16 KiB 页对齐，并包含 CPU 指令集及 OpenCL 路径。工程集成、GPU 回退、单实例模型持有、KV 公共前缀复用、一次 token 预热、取消、CPU 亲和/加载策略和空闲卸载生命周期参考 IRIDIS；Eta 的 Provider 路由、下载管理、MNN 目录/压缩包导入、统一崩溃与内存保护、会话/会议室接入属于本项目实现。Eta 未复制 IRIDIS 前端页面或应用壳。
+
+IRIDIS 的 Apache License 2.0 与 NOTICE 全文随 APK 保存在 [`assets/licenses/IRIDIS-Apache-2.0.txt`](../app/src/main/assets/licenses/IRIDIS-Apache-2.0.txt) 和 [`assets/licenses/IRIDIS-NOTICE.txt`](../app/src/main/assets/licenses/IRIDIS-NOTICE.txt)。llama.cpp / ggml 采用 MIT License，许可全文随 APK 保存在 [`assets/licenses/llama.cpp-MIT.txt`](../app/src/main/assets/licenses/llama.cpp-MIT.txt)。
+
 ## models.dev 模型目录
 
 Eta 的离线模型目录快照来自 [models.dev](https://models.dev/api.json)，由 `scripts/update-models-dev-catalog.py` 获取原始 JSON 并压缩后随 APK 分发。models.dev 的目录数据和源码采用 [MIT License](https://github.com/anomalyco/models.dev/blob/dev/LICENSE)，版权归 © 2025 models.dev。版权与许可全文随 APK 保存在 [`assets/licenses/models-dev-MIT.txt`](../app/src/main/assets/licenses/models-dev-MIT.txt)。
@@ -158,6 +164,16 @@ SOFTWARE.
 ```
 
 OpenAI、Anthropic、Claude、阿里云百炼、Qwen、DeepSeek、Kimi、Xiaomi MiMo、MiniMax、StepFun、Z.ai、ChatGLM、Gemini、Gemma、Grok、Meta、Mistral、豆包、混元、Yi、硅基流动和 OpenRouter 的名称、图标及其他品牌标识归各自权利人所有。Eta 展示这些图标仅用于准确标识用户正在配置的模型服务，不表示这些厂商对 Eta 的赞助、认可或合作关系。OpenAI 图标的使用还应遵循其[品牌规范](https://openai.com/brand/)。
+
+## Operit 默认沙盒包
+
+能力中心的“插件与沙盒”兼容 Operit ToolPkg 容器和 JavaScript 包格式。应用随附的 31 个默认沙盒包来源固定为
+[AAswordman/Operit](https://github.com/AAswordman/Operit) 的提交
+`16cffb98f52a11dc77bd0a789ffa0b01ed398ee4`，对应源目录
+`app/src/main/assets/packages/`。这些文件作为独立运行时资产随应用分发，声明中保留原始包名称、版本和来源。
+
+Operit 项目采用 GNU Lesser General Public License v3.0；完整许可证随资产保存在
+`app/src/main/assets/operit-sandbox-packages/LICENSE-Operit.txt`。Eta 对宿主执行层、权限映射和管理界面的实现独立于这些脚本；未复制 AGPLv3 许可的 Operit2 源码。
 
 ## 可选语言运行时
 

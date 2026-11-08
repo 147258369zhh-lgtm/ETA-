@@ -10,6 +10,10 @@ internal data class AgentMemoryContext(
     val coreTruncated: Boolean,
     val headingIndex: String,
     val coreBudgetChars: Int,
+    val supportingContent: String = "",
+    val scopedContent: String = "",
+    val reviewedContent: String = "",
+    val learnedContent: String = "",
 ) {
     companion object {
         val DISABLED = AgentMemoryContext(
@@ -20,6 +24,7 @@ internal data class AgentMemoryContext(
             coreTruncated = false,
             headingIndex = "",
             coreBudgetChars = 0,
+            supportingContent = "",
         )
     }
 }
@@ -41,6 +46,7 @@ internal object AgentMemoryContextBuilder {
     ): AgentMemoryContext {
         val coreBudget = coreBudgetChars(contextWindow)
         val core = extractCore(snapshot.content)
+        val layered = LayeredMemoryDocument.fromLegacy(snapshot.content)
         val headings = snapshot.content.lineSequence()
             .filter { line -> HEADING.matches(line.trimEnd()) }
             .joinToString("\n")
@@ -53,6 +59,7 @@ internal object AgentMemoryContextBuilder {
             coreTruncated = core.length > coreBudget,
             headingIndex = headings,
             coreBudgetChars = coreBudget,
+            supportingContent = layered.supportingContent((coreBudget / 2).coerceAtLeast(1_000)),
         )
     }
 

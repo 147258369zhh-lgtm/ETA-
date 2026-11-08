@@ -2,6 +2,9 @@ package io.github.mangi.eta.fork.learning
 
 import android.content.Context
 import androidx.room.withTransaction
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import java.util.UUID
 
 internal data class LearningProposalInput(
@@ -31,7 +34,10 @@ internal data class LearningCandidateView(
     val updatedAt: Long,
     val promotedRuleId: String?,
     val evidence: List<LearningEvidenceView>,
+    val conflicts: List<LearningConflictView> = emptyList(),
 )
+
+internal data class LearningConflictView(val id: String, val title: String, val content: String, val version: Int)
 
 internal data class LearningRuleVersionView(
     val id: String,
@@ -76,7 +82,7 @@ internal class LearningRepository(
 ) {
     private val dao = database.learningDao()
 
-    suspend fun propose(input: LearningProposalInput): LearningProposalResult {
+    suspend fun propose(input: LearningProposalInput): LearningProposalResult = database.withTransaction {
         val now = clock()
         val activeRules = dao.activeRules()
         val policy = when (
@@ -88,8 +94,8 @@ internal class LearningRepository(
                 activeRules = activeRules,
             )
         ) {
-            LearningPolicyResult.Blocked -> return LearningProposalResult.BlockedByPolicy
-            LearningPolicyResult.Empty -> return LearningProposalResult.Empty
+            LearningPolicyResult.Blocked -> return@withTransaction LearningProposalResult.BlockedByPolicy
+            LearningPolicyResult.Empty -> return@withTransaction LearningProposalResult.Empty
             is LearningPolicyResult.Accepted -> result
         }
         val hash = LearningPolicy.fingerprint(input.kind, policy.title, policy.content)
@@ -103,10 +109,12 @@ internal class LearningRepository(
             excerpt = policy.evidence,
             observedAt = now,
         )
-        dao.candidateByHash(hash)?.let { existing ->
+        (dao.candidateByHash(hash) ?: dao.candidates(1000).firstOrNull {
+            it.kind == input.kind.wireValue && io.github.mangi.eta.agent.memory.MemoryAutomationPolicy.equivalent(it.content, policy.content)
+        })?.let { existing ->
             dao.insertEvidence(evidence.copy(id = "${existing.id}:$evidenceHash", candidateId = existing.id))
             dao.touchCandidate(existing.id, now)
-            return LearningProposalResult.Existing(candidateView(checkNotNull(dao.candidate(existing.id))))
+            return@withTransaction LearningProposalResult.Existing(candidateView(checkNotNull(dao.candidate(existing.id))))
         }
         val candidateId = ids()
         val status = if (policy.conflict == null) LearningStatus.PENDING else LearningStatus.CONFLICT
@@ -131,10 +139,10 @@ internal class LearningRepository(
                 ),
             )
         }
-        return LearningProposalResult.Created(candidateView(candidate))
+        LearningProposalResult.Created(candidateView(candidate))
     }
 
-    suspend fun confirm(candidateId: String, overrideConflict: Boolean = false): LearningMutationResult {
+    suspend fun confirm(candidateId: String, overrideConflict: Boolean = false, expectedConflict: String? = null): LearningMutationResult {
         val now = clock()
         val outcome = database.withTransaction {
             val candidate = dao.candidate(candidateId)
@@ -149,7 +157,11 @@ internal class LearningRepository(
             ) {
                 return@withTransaction Rejected("该候选已结束，不能再次确认")
             }
-            if (status == LearningStatus.CONFLICT && !overrideConflict) {
+            val currentConflicts = conflictsFor(candidate)
+            val signature = conflictSignature(currentConflicts)
+            if (expectedConflict != null && expectedConflict != signature)
+                return@withTransaction Rejected("冲突规则已更新，请重新对照")
+            if (currentConflicts.isNotEmpty() && !overrideConflict) {
                 return@withTransaction Rejected("该候选与现有规则冲突，必须由用户显式覆盖后才能确认")
             }
             val transitioned = dao.transitionCandidateState(
@@ -165,7 +177,7 @@ internal class LearningRepository(
                     id = ids(),
                     candidateId = candidateId,
                     action = "confirm",
-                    note = if (overrideConflict) "explicit-conflict-override" else "user-confirmed",
+                    note = if (overrideConflict && currentConflicts.isNotEmpty()) "override:$signature" else "user-confirmed",
                     createdAt = now,
                 ),
             )
@@ -219,7 +231,15 @@ internal class LearningRepository(
             }
             val kind = LearningKind.fromWire(candidate.kind)
                 ?: return@withTransaction Rejected("学习类型无效")
-            val existing = dao.ruleByKey(kind.wireValue, candidate.title)
+            val currentConflicts = conflictsFor(candidate)
+            if (currentConflicts.isNotEmpty()) {
+                val approved = dao.feedback(candidateId).lastOrNull { it.action == "confirm" }?.note
+                if (approved != "override:${conflictSignature(currentConflicts)}") {
+                    dao.updateCandidateState(candidateId, "conflict", now)
+                    return@withTransaction Rejected("现有规则已变化，请重新审阅冲突后确认")
+                }
+            }
+            val existing = dao.ruleByKey(kind.wireValue, candidate.title) ?: currentConflicts.firstOrNull()
             val ruleId: String
             if (existing == null) {
                 ruleId = ids()
@@ -267,6 +287,9 @@ internal class LearningRepository(
             if (transitioned == 0) {
                 return@withTransaction Rejected("候选已被其他操作晋升，请刷新后重试")
             }
+            currentConflicts.filter { it.id != ruleId }.forEach {
+                dao.updateRule(it.copy(status = LearningRuleStatus.ARCHIVED.wireValue, updatedAt = now))
+            }
             dao.insertFeedback(LearningFeedbackEntity(
                 id = ids(), candidateId = candidateId, action = "promote", note = ruleId, createdAt = now,
             ))
@@ -303,13 +326,49 @@ internal class LearningRepository(
         return success()
     }
 
-    suspend fun archiveRule(ruleId: String): LearningMutationResult {
-        val rule = dao.rule(ruleId) ?: return rejected("学习规则不存在")
+    suspend fun archiveRule(ruleId: String): LearningMutationResult = database.withTransaction {
+        val rule = dao.rule(ruleId) ?: return@withTransaction rejected("学习规则不存在")
         dao.updateRule(rule.copy(status = LearningRuleStatus.ARCHIVED.wireValue, updatedAt = clock()))
-        return success()
+        success()
     }
 
-    suspend fun snapshot(): LearningSnapshot {
+    suspend fun pinRule(ruleId: String, pinned: Boolean): LearningMutationResult = database.withTransaction {
+        val rule = dao.rule(ruleId) ?: return@withTransaction rejected("学习规则不存在")
+        dao.updateRule(rule.copy(pinned = pinned, updatedAt = clock()))
+        success()
+    }
+
+    suspend fun editCandidate(id: String, content: String): LearningMutationResult = database.withTransaction {
+        val candidate = dao.candidate(id) ?: return@withTransaction rejected("候选不存在")
+        if (candidate.status !in setOf("pending", "conflict")) return@withTransaction rejected("该候选不能修改")
+        val kind = LearningKind.fromWire(candidate.kind) ?: return@withTransaction rejected("类型无效")
+        val policy = LearningPolicy.evaluate(kind, candidate.title, content, candidateView(candidate).evidence.firstOrNull()?.excerpt.orEmpty(), dao.activeRules())
+        if (policy !is LearningPolicyResult.Accepted) return@withTransaction rejected("内容无效或用户禁止保存")
+        val hash = LearningPolicy.fingerprint(kind, policy.title, policy.content)
+        if (dao.candidateByHash(hash)?.id?.let { it != id } == true) return@withTransaction rejected("已存在相同候选")
+        dao.updateCandidate(candidate.copy(content = policy.content, contentHash = hash, status = if (policy.conflict == null) "pending" else "conflict", updatedAt = clock()))
+        success()
+    }
+
+    private suspend fun conflictsFor(candidate: LearningCandidateEntity): List<LearningRuleEntity> {
+        val kind = LearningKind.fromWire(candidate.kind) ?: LearningKind.FACT
+        return dao.activeRules().filter { rule ->
+            (LearningPolicy.evaluate(kind, candidate.title, candidate.content, "", listOf(rule)) as? LearningPolicyResult.Accepted)?.conflict != null
+        }
+    }
+
+    private fun conflictSignature(rules: List<LearningRuleEntity>): String = rules.sortedBy { it.id }
+        .joinToString(",") { "${it.id}:${it.currentVersion}" }
+
+    suspend fun context(maxChars: Int = 2400): String = dao.activeRules()
+        .sortedByDescending { it.pinned }
+        .joinToString("\n") { "${it.title}: ${it.content}" }.take(maxChars.coerceAtLeast(0))
+
+    fun observe() = database.invalidationTracker.createFlow(
+        "learning_candidates", "learning_rules", "learning_evidence", "learning_rule_versions",
+    ).map { snapshot() }.flowOn(Dispatchers.IO)
+
+    suspend fun snapshot(): LearningSnapshot = database.withTransaction {
         val candidates = dao.candidates().map { candidate ->
             candidateView(candidate, dao.evidence(candidate.id).map { evidence ->
                 LearningEvidenceView(evidence.id, evidence.sourceRef, evidence.excerpt, evidence.observedAt)
@@ -329,7 +388,7 @@ internal class LearningRepository(
                 },
             )
         }
-        return LearningSnapshot(candidates, rules)
+        LearningSnapshot(candidates, rules)
     }
 
     suspend fun search(query: String, limit: Int = 12): List<LearningRuleView> {
@@ -392,6 +451,7 @@ internal class LearningRepository(
         updatedAt = candidate.updatedAt,
         promotedRuleId = candidate.promotedRuleId,
             evidence = actualEvidence,
+            conflicts = conflictsFor(candidate).map { LearningConflictView(it.id, it.title, it.content, it.currentVersion) },
         )
     }
 

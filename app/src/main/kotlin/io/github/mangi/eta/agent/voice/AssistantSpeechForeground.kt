@@ -7,12 +7,87 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Handler
+import android.os.Looper
 import io.github.mangi.eta.R
 
 /** Overlay 不等同于前台 Activity；只在可见浮窗采集或播放音频期间提升服务类型。 */
 internal class AssistantSpeechForeground(private val service: Service) {
-    fun recording() = start(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE, "Eta 正在聆听")
-    fun playback() = start(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK, "Eta 正在朗读")
+    private val handler = Handler(Looper.getMainLooper())
+    private var recordingActive = false
+    private var monitorActive = false
+    private var playbackActive = false
+
+    @Synchronized
+    fun recording() {
+        recordingActive = true
+        promote()
+    }
+
+    /** 朗读期间为打断而开麦：与识别共用麦克风前台类型。 */
+    @Synchronized
+    fun monitoring() {
+        monitorActive = true
+        promote()
+    }
+
+    @Synchronized
+    fun playback() {
+        playbackActive = true
+        promote()
+    }
+
+    @Synchronized
+    fun recordingStopped() {
+        recordingActive = false
+        releaseIfUnused()
+    }
+
+    @Synchronized
+    fun monitoringStopped() {
+        monitorActive = false
+        releaseIfUnused()
+    }
+
+    @Synchronized
+    fun playbackStopped() {
+        playbackActive = false
+        releaseIfUnused()
+    }
+
+    @Synchronized
+    fun stop() {
+        handler.removeCallbacks(demote)
+        recordingActive = false
+        monitorActive = false
+        playbackActive = false
+        runCatching { service.stopForeground(Service.STOP_FOREGROUND_REMOVE) }
+    }
+
+    private fun promote() {
+        val capturing = recordingActive || monitorActive
+        val type = (if (capturing) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0) or
+            (if (playbackActive) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0)
+        val title = if (capturing && playbackActive) "Eta 正在语音对话"
+        else if (capturing) "Eta 正在聆听" else "Eta 正在朗读"
+        start(type, title)
+    }
+
+    private fun releaseIfUnused() {
+        handler.removeCallbacks(demote)
+        if (!recordingActive && !monitorActive && !playbackActive) {
+            // 打断的换手是连续的：监测麦克风先关、识别紧接着开，延迟一步撤销前台避免通知闪烁。
+            handler.postDelayed(demote, DEMOTE_DELAY_MS)
+        } else {
+            promote()
+        }
+    }
+
+    private val demote = Runnable {
+        if (!recordingActive && !monitorActive && !playbackActive) {
+            runCatching { service.stopForeground(Service.STOP_FOREGROUND_REMOVE) }
+        }
+    }
 
     private fun start(type: Int, title: String) {
         service.getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -36,11 +111,10 @@ internal class AssistantSpeechForeground(private val service: Service) {
         }
     }
 
-    fun stop() { service.stopForeground(Service.STOP_FOREGROUND_REMOVE) }
-
     companion object {
         const val ACTION_STOP = "io.github.mangi.eta.STOP_ASSISTANT_SPEECH"
         private const val CHANNEL = "eta_assistant_speech"
         private const val NOTIFICATION_ID = 4203
+        private const val DEMOTE_DELAY_MS = 400L
     }
 }

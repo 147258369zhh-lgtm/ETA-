@@ -45,6 +45,10 @@ internal data class EtaSpeechState(
     val feedbackIsError: Boolean = true,
     /** 用户正按住麦克风说话：松手才结束，界面保持输入栏而不切到语音态。 */
     val holdToTalk: Boolean = false,
+    /** 助手正在朗读：此时麦克风默认闭合，界面入口变成“打断”。 */
+    val speaking: Boolean = false,
+    /** 朗读期间回声消除可用，说一句话就能打断。 */
+    val bargeInArmed: Boolean = false,
 ) {
     val active: Boolean get() = phase != EtaSpeechPhase.IDLE
     val hasFeedback: Boolean get() = !message.isNullOrBlank() || errorRes != null

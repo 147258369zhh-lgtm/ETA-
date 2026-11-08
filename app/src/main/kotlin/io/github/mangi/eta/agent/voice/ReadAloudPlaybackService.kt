@@ -13,28 +13,64 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.ui.MainActivity
+import java.io.Closeable
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 聊天朗读的前台播放服务：只在实际出声期间存在，让 App 退到后台或锁屏后朗读不被系统冻结。
- * 播放本身仍由聊天页的控制器持有；通知上的“停止”经 [onStopRequested] 交回控制器。
+ * 聊天朗读会话的前台播放服务，让 App 退到后台或锁屏后能继续播放。
+ * 播放本身仍由聊天页的控制器持有；通知上的“停止”按所属会话交回控制器。
  */
-internal class ReadAloudPlaybackService : Service() {
+internal open class ReadAloudPlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            onStopRequested?.invoke()
-            stopSelf()
+            active?.takeIf { it.id == intent.getLongExtra(EXTRA_SESSION, -1) }?.let { request ->
+                release(this, request)
+                request.onStop()
+            }
+            if (active == null) stopSelfResult(startId)
             return START_NOT_STICKY
         }
         try {
-            startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            // 已取消请求的 Intent 也可能迟到；仍先满足 startForegroundService 的系统时限。
+            // 它不能确认或结束一个后来建立的新会话。
+            promotePlayback()
         } catch (failure: RuntimeException) {
-            // 前台资格被拒时朗读仍在前台继续，只是退到后台可能被系统暂停。
             AndroidAgentLogger.warn("Read-aloud foreground failed: type=${failure.safeLogType()}")
+            active?.let { request ->
+                active = null
+                request.ready.completeExceptionally(foregroundFailure(this))
+                if (request.service != null) request.onStop()
+            }
             stopSelf()
+            return START_NOT_STICKY
+        }
+        val request = active
+        if (request == null) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelfResult(startId)
+        } else if (request.id == intent?.getLongExtra(EXTRA_SESSION, -1)) {
+            request.service = this
+            request.ready.complete(Unit)
         }
         return START_NOT_STICKY
+    }
+
+    internal open fun promotePlayback() {
+        startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+    }
+
+    override fun onDestroy() {
+        active?.takeIf { it.service === this }?.let { request ->
+            active = null
+            request.ready.cancel()
+            request.onStop()
+        }
+        super.onDestroy()
     }
 
     private fun notification(): Notification {
@@ -47,8 +83,9 @@ internal class ReadAloudPlaybackService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val stop = PendingIntent.getService(
-            this, 0,
-            Intent(this, ReadAloudPlaybackService::class.java).setAction(ACTION_STOP),
+            this, active?.id?.toInt() ?: 0,
+            Intent(this, ReadAloudPlaybackService::class.java).setAction(ACTION_STOP)
+                .putExtra(EXTRA_SESSION, active?.id ?: -1L),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CHANNEL)
@@ -66,23 +103,53 @@ internal class ReadAloudPlaybackService : Service() {
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_READ_ALOUD"
         private const val CHANNEL = "eta_read_aloud"
         private const val NOTIFICATION_ID = 4204
+        private const val EXTRA_SESSION = "read_aloud_session"
+        private const val START_TIMEOUT_MS = 5_000L
 
-        /** 当前朗读的停止入口；同一时间只有一个朗读，后开始的会替换前一个。 */
-        @Volatile private var onStopRequested: (() -> Unit)? = null
+        // 启动、服务回调、控制器和句柄关闭都在主线程；旧句柄不能关闭新会话。
+        private class Request(val id: Long, val onStop: () -> Unit) {
+            val ready = CompletableDeferred<Unit>()
+            var service: ReadAloudPlaybackService? = null
+        }
+        private var nextSession = 0L
+        private var active: Request? = null
 
-        /** 在用户点击朗读后的出声时刻调用，此时 App 仍在前台，可以启动前台服务。 */
-        fun start(context: Context, onStop: () -> Unit) {
-            onStopRequested = onStop
+        /** 只在服务确认 startForeground 成功后返回；调用者随后才能申请音频焦点。 */
+        suspend fun start(context: Context, onStop: () -> Unit): Closeable = withContext(Dispatchers.Main.immediate) {
+            active?.let { previous ->
+                active = null
+                previous.ready.cancel()
+                previous.onStop()
+            }
+            val request = Request(++nextSession, onStop)
+            active = request
             try {
-                context.startForegroundService(Intent(context, ReadAloudPlaybackService::class.java))
-            } catch (failure: RuntimeException) {
-                AndroidAgentLogger.warn("Read-aloud service start rejected: type=${failure.safeLogType()}")
+                try {
+                    context.startForegroundService(Intent(context, ReadAloudPlaybackService::class.java)
+                        .putExtra(EXTRA_SESSION, request.id))
+                } catch (failure: RuntimeException) {
+                    AndroidAgentLogger.warn("Read-aloud service start rejected: type=${failure.safeLogType()}")
+                    throw foregroundFailure(context)
+                }
+                withTimeoutOrNull(START_TIMEOUT_MS) { request.ready.await() }
+                    ?: throw SpeechFailure(SpeechErrorCode.TIMEOUT, context.getString(R.string.read_aloud_start_timeout))
+                Closeable { release(context, request) }
+            } catch (failure: Throwable) {
+                release(context, request)
+                throw failure
             }
         }
 
-        fun stop(context: Context) {
-            onStopRequested = null
+        private fun release(context: Context, request: Request) {
+            if (active !== request) return
+            active = null
+            request.ready.cancel()
+            request.service?.stopForeground(STOP_FOREGROUND_REMOVE)
             context.stopService(Intent(context, ReadAloudPlaybackService::class.java))
         }
+
+        private fun foregroundFailure(context: Context) = SpeechFailure(
+            SpeechErrorCode.PERMISSION, context.getString(R.string.read_aloud_start_denied),
+        )
     }
 }

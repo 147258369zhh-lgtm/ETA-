@@ -22,7 +22,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [33, 36, 37], application = Application::class)
 class SpeechPlaybackTest {
     private val context get() = RuntimeEnvironment.getApplication()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -103,6 +103,34 @@ class SpeechPlaybackTest {
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue(outputs.single().closed)
         assertNull(playback.state.value.messageId)
+    }
+
+    @Test fun smoothStopAlwaysClosesAudioAndReleasesState() {
+        val output = object : SpeechAudioOutput {
+            @Volatile var closed = false
+            override fun write(bytes: ByteArray) = Unit
+            override fun finish() = Unit
+            override fun drained() = true
+            override fun fadeOut(durationMs: Int) = throw IllegalStateException("fade failed")
+            override fun close() { closed = true }
+        }
+        val controller = SpeechPlaybackController(context, scope,
+            streamSynthesize = null,
+            synthesize = { _, _, _, audio -> audio(byteArrayOf(1, 2)); awaitCancellation() },
+            createOutput = { output },
+        )
+        try {
+            controller.speak("smooth", "回答正文", SpeechSettings(tts = TtsProvider.QWEN), SpeechCredentials(qwenTts = "test-key"))
+            val deadline = System.nanoTime() + 3_000_000_000
+            while (controller.state.value.loading && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idle()
+                Thread.sleep(1)
+            }
+            kotlinx.coroutines.runBlocking { controller.stopSmoothly(0) }
+            assertTrue(output.closed)
+            assertNull(controller.state.value.messageId)
+            assertFalse(controller.state.value.loading)
+        } finally { controller.stop() }
     }
 
     @Test fun successfulSynthesisFinishesInputBeforeWaitingForPlayback() {

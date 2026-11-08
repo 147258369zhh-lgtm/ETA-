@@ -8,6 +8,7 @@ import io.github.mangi.eta.R
 
 /** 浮窗只保存语义状态，文案在渲染时根据当前系统语言解析。 */
 internal sealed interface AgentOverlayStatus {
+    data object WaitingAccessibility : AgentOverlayStatus
     data object Reasoning : AgentOverlayStatus
     data object SupplementReceived : AgentOverlayStatus
     data class RunningTool(val name: String) : AgentOverlayStatus
@@ -28,6 +29,7 @@ internal fun AgentOverlayStatus.localizedText(): String = localizedText(LocalRes
 
 /** 通知等非 Compose 表面与浮层共用同一套状态文案。 */
 internal fun AgentOverlayStatus.localizedText(resources: Resources): String = when (this) {
+    AgentOverlayStatus.WaitingAccessibility -> resources.getString(R.string.accessibility_wait_title)
     AgentOverlayStatus.Reasoning -> resources.getString(R.string.overlay_reasoning)
     AgentOverlayStatus.SupplementReceived -> resources.getString(R.string.overlay_supplement_received)
     // 工具名本身就是动作（点击元素、读取文件），不再加"执行："前缀。

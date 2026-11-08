@@ -53,6 +53,7 @@ internal class SpeechAudioLease(
     fun requestPlaybackFocus(beforeFocus: () -> Unit = {}) {
         if (current !== this) throw CancellationException("Speech owner replaced")
         beforeFocus()
+        if (current !== this) throw CancellationException("Speech owner replaced")
         focused = manager.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         if (!focused) throw SpeechFailure(SpeechErrorCode.AUDIO, "当前无法获得音频焦点，请稍后重试")
     }

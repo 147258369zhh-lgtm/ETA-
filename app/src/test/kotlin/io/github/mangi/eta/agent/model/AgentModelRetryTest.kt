@@ -18,6 +18,19 @@ import javax.net.ssl.SSLHandshakeException
 
 class AgentModelRetryTest {
     @Test
+    fun missingLanPermissionStopsModelRetriesUntilTheUserCanGrantIt() {
+        val noRetry = AgentModelRetry { _, _ -> fail("Permission failures must not retry") }
+        var calls = 0
+        val source = io.github.mangi.eta.agent.device.LocalNetworkAccessException("Grant LAN permission")
+        val result = assertThrows(AgentModelFailure::class.java) {
+            complete(noRetry, provider { _, _ -> calls++; throw source })
+        }
+        assertEquals(1, calls)
+        assertEquals("LOCAL_NETWORK_PERMISSION_REQUIRED", result.code)
+        assertFalse(result.retryable)
+        assertEquals(source.message, result.message)
+    }
+    @Test
     fun retriesAreBoundedAndBackoffIsPerModelRound() {
         val delays = mutableListOf<Long>()
         val retry = AgentModelRetry { _, delay -> delays += delay }
@@ -25,9 +38,9 @@ class AgentModelRetryTest {
         val failure = assertThrows(AgentModelFailure::class.java) {
             complete(retry, provider { _, _ -> calls++; throw SocketTimeoutException("timeout") })
         }
-        assertEquals(4, calls)
-        assertEquals(listOf(2_000L, 4_000L, 8_000L), delays)
-        assertTrue(failure.message.orEmpty().contains("已重试 3 次"))
+        assertEquals(2, calls)
+        assertEquals(listOf(2_000L), delays)
+        assertTrue(failure.message.orEmpty().contains("已重试 1 次"))
         delays.clear()
         calls = 0
         val result = complete(retry, provider { _, _ ->

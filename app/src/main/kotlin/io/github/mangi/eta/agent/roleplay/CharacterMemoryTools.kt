@@ -7,6 +7,8 @@ import io.github.mangi.eta.data.repository.AgentMemoryException
 import io.github.mangi.eta.data.repository.AgentMemoryMutation
 import io.github.mangi.eta.data.repository.AgentMemoryWriteResult
 import io.github.mangi.eta.data.repository.CharacterMemoryRepository
+import io.github.mangi.eta.agent.memory.LayeredMemoryDocument
+import io.github.mangi.eta.agent.memory.MemoryLayer
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -38,11 +40,23 @@ internal class CharacterMemoryTools(
                 }
                 WRITE -> {
                     val revision = args.getString("revision")
+                    val layer = args.optString("layer").trim().takeIf { it.isNotBlank() }
                     val mutation = when (args.getString("mode")) {
                         "replace_range" -> AgentMemoryMutation.ReplaceRange(
                             revision, args.getInt("start_line"), args.getInt("end_line"), args.getString("content"),
                         )
-                        "append" -> AgentMemoryMutation.Append(revision, args.getString("content"))
+                        "append" -> if (layer == null) {
+                            AgentMemoryMutation.Append(revision, args.getString("content"))
+                        } else {
+                            val current = CharacterMemoryRepository.snapshot(context, characterId)
+                            val target = layerMemoryLayer(layer)
+                            val parsed = LayeredMemoryDocument.fromLegacy(current.content)
+                            val merged = listOf(parsed.sections[target].orEmpty().trim(), args.getString("content").trim())
+                                .filter { it.isNotBlank() }.joinToString("\n\n")
+                            val next = LayeredMemoryDocument(parsed.sections + (target to merged)).render()
+                            if (current.lineCount == 0) AgentMemoryMutation.Append(revision, next)
+                            else AgentMemoryMutation.ReplaceRange(revision, 1, current.lineCount, next)
+                        }
                         "clear" -> AgentMemoryMutation.Clear(revision)
                         else -> return result(error("INVALID_MEMORY_MODE", "角色记忆写入模式无效"))
                     }
@@ -69,6 +83,16 @@ internal class CharacterMemoryTools(
 
     private fun error(code: String, message: String) =
         JSONObject().put("ok", false).put("code", code).put("message", message)
+
+    private fun layerMemoryLayer(value: String): MemoryLayer = when (value.lowercase()) {
+        "core" -> MemoryLayer.CORE
+        "project" -> MemoryLayer.PROJECT
+        "task" -> MemoryLayer.TASK
+        "long_term", "long-term" -> MemoryLayer.LONG_TERM
+        "working" -> MemoryLayer.WORKING
+        "other" -> MemoryLayer.OTHER
+        else -> throw IllegalArgumentException("未知记忆层：$value")
+    }
 
     companion object {
         const val GET = "character_memory_get"

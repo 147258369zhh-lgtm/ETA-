@@ -25,6 +25,11 @@ class AgentCompactionProviderTest {
     }
 
     @Test
+    fun allProtocolsDisableToolsAndIgnoreCustomInputOverridesForMemoryExtraction() {
+        assertIsolatedRequests(ProviderRequestPurpose.MEMORY_EXTRACTION)
+    }
+
+    @Test
     fun anthropicPreservesDialogueDepthAndCollectsSystemDepth() {
         val captured = AtomicReference<JSONObject>()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)

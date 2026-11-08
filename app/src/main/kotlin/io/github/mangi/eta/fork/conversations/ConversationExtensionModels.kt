@@ -12,6 +12,7 @@ internal data class ConversationFolder(
     val sortOrder: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    val parentId: String? = null,
 )
 
 internal data class ConversationExtension(
@@ -23,6 +24,7 @@ internal data class ConversationExtension(
     val archivedAt: Long? = null,
     val archiveReason: String? = null,
     val autoArchiveExempt: Boolean = false,
+    val contextWindowOverride: Int? = null,
     val createdAt: Long,
     val updatedAt: Long,
 )

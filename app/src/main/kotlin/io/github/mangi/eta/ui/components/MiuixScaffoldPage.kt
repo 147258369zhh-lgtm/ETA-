@@ -1,12 +1,15 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
@@ -38,6 +41,7 @@ fun MiuixScaffoldPage(
     overlay: @Composable () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
     compactTitle: Boolean = false,
+    aboveContent: @Composable () -> Unit = {},
     content: LazyListScope.() -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -69,26 +73,32 @@ fun MiuixScaffoldPage(
             }
         },
     ) { innerPadding ->
-        WidePageContent { sidePadding ->
-            // 保留 MiuixTheme 注入的默认越界工厂，让短内容页也能回弹到顶栏采样区。
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .horizontalCutoutPadding()
-                    .captureForTopBar(backdrop)
-                    .scrollEndHaptic()
-                    .overScrollVertical()
-                    .nestedScroll(scrollBehavior.nestedScrollConnection),
-                contentPadding = PaddingValues(
-                    start = sidePadding,
-                    top = innerPadding.calculateTopPadding(),
-                    end = sidePadding,
-                ),
-            ) {
-                content()
-                item(key = "bottom_spacer") {
-                    MiuixPageBottomSpacer()
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(top = innerPadding.calculateTopPadding()),
+        ) {
+            Box(Modifier.fillMaxWidth().horizontalCutoutPadding()) { aboveContent() }
+            WidePageContent(modifier = Modifier.weight(1f)) { sidePadding ->
+                // 保留 MiuixTheme 注入的默认越界工厂，让短内容页也能回弹到顶栏采样区。
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .horizontalCutoutPadding()
+                        .captureForTopBar(backdrop)
+                        .scrollEndHaptic()
+                        .overScrollVertical()
+                        .nestedScroll(scrollBehavior.nestedScrollConnection),
+                    contentPadding = PaddingValues(
+                        start = sidePadding,
+                        end = sidePadding,
+                    ),
+                ) {
+                    content()
+                    item(key = "bottom_spacer") {
+                        MiuixPageBottomSpacer()
+                    }
                 }
             }
         }
@@ -106,6 +116,7 @@ fun MiuixScaffold(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     actions: @Composable RowScope.() -> Unit = {},
+    compactTitle: Boolean = false,
     content: @Composable (
         paddingValues: PaddingValues,
         scrollBehavior: ScrollBehavior,
@@ -120,13 +131,23 @@ fun MiuixScaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
             TopBarBackdrop(backdrop) {
-                AdaptiveTopAppBar(
-                    title = title,
-                    color = topBarColor,
-                    navigationIcon = { MiuixBackButton(onClick = onBack) },
-                    actions = actions,
-                    scrollBehavior = scrollBehavior,
-                )
+                if (compactTitle) {
+                    SmallTopAppBar(
+                        title = title,
+                        color = topBarColor,
+                        navigationIcon = { MiuixBackButton(onClick = onBack) },
+                        actions = actions,
+                        scrollBehavior = scrollBehavior,
+                    )
+                } else {
+                    AdaptiveTopAppBar(
+                        title = title,
+                        color = topBarColor,
+                        navigationIcon = { MiuixBackButton(onClick = onBack) },
+                        actions = actions,
+                        scrollBehavior = scrollBehavior,
+                    )
+                }
             }
         },
     ) { paddingValues ->

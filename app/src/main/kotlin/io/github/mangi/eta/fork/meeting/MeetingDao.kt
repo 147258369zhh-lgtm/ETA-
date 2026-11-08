@@ -9,17 +9,17 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 internal interface MeetingDao {
-    @Query("SELECT * FROM meeting_rooms ORDER BY updated_at DESC")
+    @Query("SELECT * FROM meeting_rooms ORDER BY (pinned_at IS NULL), pinned_at DESC, updated_at DESC")
     fun roomsFlow(): Flow<List<MeetingRoomEntity>>
 
     @Query(
         "SELECT meeting_rooms.id, meeting_rooms.title, meeting_rooms.host_profile, " +
             "meeting_rooms.status, meeting_rooms.created_at, meeting_rooms.updated_at, " +
-            "meeting_rooms.archived_at, " +
+            "meeting_rooms.archived_at, meeting_rooms.pinned_at, meeting_rooms.context_window_override, " +
             "COUNT(meeting_participants.profile_name) AS participant_count " +
             "FROM meeting_rooms LEFT JOIN meeting_participants " +
             "ON meeting_participants.room_id = meeting_rooms.id AND meeting_participants.enabled = 1 " +
-            "GROUP BY meeting_rooms.id ORDER BY meeting_rooms.updated_at DESC"
+            "GROUP BY meeting_rooms.id ORDER BY (meeting_rooms.pinned_at IS NULL), meeting_rooms.pinned_at DESC, meeting_rooms.updated_at DESC"
     )
     fun roomSummariesFlow(): Flow<List<MeetingRoomSummaryRow>>
 
@@ -46,8 +46,45 @@ internal interface MeetingDao {
     @Query("SELECT * FROM meeting_messages WHERE room_id = :roomId ORDER BY sort_index ASC")
     fun messagesFlow(roomId: String): Flow<List<MeetingMessageEntity>>
 
+    @Query("SELECT * FROM meeting_messages WHERE room_id = :roomId ORDER BY sort_index ASC")
+    suspend fun messages(roomId: String): List<MeetingMessageEntity>
+
+    @Query("SELECT * FROM meeting_messages WHERE id = :messageId")
+    suspend fun message(messageId: String): MeetingMessageEntity?
+
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type = :type ORDER BY id DESC LIMIT 1")
+    suspend fun latestEvent(roomId: String, type: String): MeetingEventEntity?
+
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type LIKE 'accessibility_wait:%' ORDER BY id ASC")
+    suspend fun accessibilityWaitEvents(roomId: String): List<MeetingEventEntity>
+
+    // Only the most recent phase for each visible card; do not load the whole event journal into the UI.
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId " +
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') " +
+        "AND id IN (SELECT MAX(id) FROM meeting_events WHERE room_id = :roomId " +
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') GROUP BY type) ORDER BY id")
+    fun timelineEventsFlow(roomId: String): Flow<List<MeetingEventEntity>>
+
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId " +
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') " +
+        "AND id IN (SELECT MAX(id) FROM meeting_events WHERE room_id = :roomId " +
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') GROUP BY type) ORDER BY id")
+    suspend fun timelineEvents(roomId: String): List<MeetingEventEntity>
+
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type LIKE 'tool_activity:%' ORDER BY id")
+    suspend fun toolActivityEvents(roomId: String): List<MeetingEventEntity>
+
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type LIKE 'stream_activity:%' ORDER BY id")
+    suspend fun streamActivityEvents(roomId: String): List<MeetingEventEntity>
+
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type LIKE 'message_attachments:%' ORDER BY id")
+    suspend fun messageAttachmentEvents(roomId: String): List<MeetingEventEntity>
+
     @Query("SELECT * FROM meeting_tasks WHERE room_id = :roomId ORDER BY created_at ASC")
     fun tasksFlow(roomId: String): Flow<List<MeetingTaskEntity>>
+
+    @Query("SELECT * FROM meeting_tasks WHERE room_id = :roomId ORDER BY created_at ASC")
+    suspend fun tasks(roomId: String): List<MeetingTaskEntity>
 
     @Query("SELECT COALESCE(MAX(sort_index), -1) FROM meeting_messages WHERE room_id = :roomId")
     suspend fun maxMessageSortIndex(roomId: String): Int
@@ -66,6 +103,9 @@ internal interface MeetingDao {
 
     @Insert
     suspend fun insertEvent(event: MeetingEventEntity)
+
+    @Update
+    suspend fun updateEvent(event: MeetingEventEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertParticipantContext(context: MeetingParticipantContextEntity)

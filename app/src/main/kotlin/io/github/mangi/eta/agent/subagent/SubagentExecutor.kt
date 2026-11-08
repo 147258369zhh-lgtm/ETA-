@@ -4,6 +4,7 @@ import android.os.SystemClock
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
+import io.github.mangi.eta.agent.prompt.PromptRunScope
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
@@ -23,6 +24,7 @@ import org.json.JSONObject
 internal class SubagentExecutor(
     private val conversationKey: String,
     private val parentController: AgentRunController,
+    private val promptScope: PromptRunScope = PromptRunScope(),
     private val configProvider: (
         profileName: String,
         explicitProviderId: String?,
@@ -37,6 +39,9 @@ internal class SubagentExecutor(
     private val executionContext: TerminalExecutionContext?,
     private val onProgress: (AgentEvent.SubagentProgress) -> Unit,
     private val nanoTime: () -> Long = System::nanoTime,
+    private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
+    private val inheritedToolPolicy: io.github.mangi.eta.agent.runtime.AgentToolPolicy = io.github.mangi.eta.agent.runtime.AgentToolPolicy.UNRESTRICTED,
+    private val currentToolPolicy: () -> io.github.mangi.eta.agent.runtime.AgentToolPolicy = { inheritedToolPolicy },
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
@@ -189,7 +194,7 @@ internal class SubagentExecutor(
         val usedToolCalls = AtomicInteger(0)
         val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
             childController.throwIfCancelled()
-            if (!profile.isToolAllowed(subCall.name)) {
+            if (!profile.isToolAllowed(subCall.name) || !currentToolPolicy().isAllowed(subCall.name)) {
                 AgentModelClient.ToolResult(
                     content = JSONObject()
                         .put("ok", false)
@@ -225,6 +230,7 @@ internal class SubagentExecutor(
             supportsSearchSuggestions = false,
         )
 
+        val metric = metricsScope?.child("subagent", subagentConfig, parentRound, toolCall.id)
         return try {
             val response = AgentModelClient.complete(
                 config = subagentConfig,
@@ -239,12 +245,17 @@ internal class SubagentExecutor(
                 capabilitiesProvider = capabilitiesProvider,
                 sessionId = "$conversationKey-$subagentId",
                 operationId = "${toolCall.id}-$subagentId",
-                toolFilter = profile::filterTools,
+                toolFilter = { currentToolPolicy().filterSchemas(profile.filterTools(it)) },
+                metricsScope = metric,
+                // 子 Agent 继承父作用域对象，再叠加自己的 Profile 名；模型维度由本次 complete 的配置决定。
+                promptScope = promptScope.forSubagent(profile.name),
                 onEvent = { childEvent ->
+                    metric?.accept(childEvent)
                     val force = tracker.onChildEvent(childEvent)
                     publishSnapshot(force = force)
                 },
             )
+            metric?.finish(true)
             val updatedHistory = priorHistory +
                 AgentModelClient.buildUserHistoryMessage(prompt, emptyList()) +
                 response.transcript
@@ -348,6 +359,7 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             )
         } finally {
+            metric?.finish(false, parentController.isCancelled || childController.isCancelled)
             controllerBinding.close()
         }
     }

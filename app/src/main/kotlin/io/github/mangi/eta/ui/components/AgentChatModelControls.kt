@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
@@ -31,6 +33,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal fun AgentContextUsageButton(
     usage: AgentContextUsageUi,
     onCompact: () -> Unit = {},
+    onConfigure: () -> Unit = {},
     canCompact: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -106,6 +109,9 @@ internal fun AgentContextUsageButton(
             onClick = { scope.launch { tooltipState.show() } },
             minWidth = ChatInputActionSize,
             minHeight = ChatInputActionSize,
+            modifier = Modifier.pointerInput(onConfigure) {
+                detectTapGestures(onLongPress = { onConfigure() })
+            },
         ) {
             CircularProgressIndicator(
                 progress = progress ?: 0f,

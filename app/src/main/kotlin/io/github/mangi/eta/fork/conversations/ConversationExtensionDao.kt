@@ -4,15 +4,31 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 internal interface ConversationExtensionDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM branch_setup_receipts WHERE setup_id = :id)")
+    suspend fun hasBranchSetupReceipt(id: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertBranchSetupReceipt(receipt: io.github.mangi.eta.data.db.BranchSetupReceiptEntity)
+
+    @Query("DELETE FROM branch_setup_receipts WHERE conversation_id = :id")
+    suspend fun deleteBranchSetupReceipts(id: String)
+
     @Query("SELECT * FROM conversation_folders ORDER BY sort_order ASC, name COLLATE NOCASE ASC")
     fun foldersFlow(): Flow<List<ConversationFolderEntity>>
 
     @Query("SELECT * FROM conversation_folders ORDER BY sort_order ASC, name COLLATE NOCASE ASC")
     suspend fun folders(): List<ConversationFolderEntity>
+
+    @Query("SELECT * FROM conversation_folders WHERE id = :id")
+    suspend fun folder(id: String): ConversationFolderEntity?
+
+    @Query("SELECT * FROM conversation_extensions WHERE folder_id = :folderId ORDER BY folder_sort_order, last_active_at DESC")
+    suspend fun folderMembers(folderId: String): List<ConversationExtensionEntity>
 
     @Query("SELECT * FROM conversation_extensions ORDER BY last_active_at DESC")
     fun extensionsFlow(): Flow<List<ConversationExtensionEntity>>
@@ -44,8 +60,11 @@ internal interface ConversationExtensionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertExtension(extension: ConversationExtensionEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertFolder(folder: ConversationFolderEntity)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertFolder(folder: ConversationFolderEntity)
+
+    @Update(onConflict = OnConflictStrategy.ABORT)
+    suspend fun updateFolderEntity(folder: ConversationFolderEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArchiveSettings(settings: ConversationArchiveSettingsEntity)
@@ -70,6 +89,9 @@ internal interface ConversationExtensionDao {
 
     @Query("UPDATE conversation_extensions SET kind = :kind, updated_at = :now WHERE conversation_id = :conversationId")
     suspend fun setKind(conversationId: String, kind: String, now: Long)
+
+    @Query("UPDATE conversation_extensions SET context_window_override = :contextWindow, updated_at = :now WHERE conversation_id = :conversationId")
+    suspend fun setContextWindowOverride(conversationId: String, contextWindow: Int?, now: Long): Int
 
     @Query("UPDATE conversation_extensions SET folder_id = NULL, folder_sort_order = 0, updated_at = :now WHERE folder_id = :folderId")
     suspend fun clearFolderMembers(folderId: String, now: Long)

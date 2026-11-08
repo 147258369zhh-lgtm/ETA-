@@ -13,6 +13,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SpeechHttpTest {
+    @Test fun missingLanPermissionKeepsItsGuideInsteadOfBecomingAGenericNetworkError() {
+        val mapped = io.github.mangi.eta.agent.device.LocalNetworkAccessException("Grant LAN permission").speechFailure()
+        assertEquals(SpeechErrorCode.PERMISSION, mapped.code)
+        assertEquals("Grant LAN permission", mapped.userMessage)
+    }
     @Test fun cancellationClosesConnectionWhileBodyIsStillArriving() = runBlocking {
         val executor = Executors.newSingleThreadExecutor()
         ServerSocket(0).use { server ->

@@ -1,14 +1,17 @@
 package io.github.mangi.eta.ui.model
 
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.data.repository.AgentMemoryScope
 
 sealed interface AgentHomeAction {
     data object LoadEarlierMessages : AgentHomeAction
     data class HistoryViewportChanged(val atLatest: Boolean) : AgentHomeAction
     data object RetryConversationLoad : AgentHomeAction
     data object CompactContext : AgentHomeAction
+    data object ConfigureContextBudget : AgentHomeAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentHomeAction
     data class ModelSelected(val modelId: String) : AgentHomeAction
+    data class InputSyncApplied(val conversationId: String?, val version: Int, val text: String) : AgentHomeAction
     data class SubmitMessage(val text: String) : AgentHomeAction
     data class InterruptAndSubmitMessage(val text: String) : AgentHomeAction
     data class SteerQueuedMessage(val id: String) : AgentHomeAction
@@ -25,6 +28,7 @@ sealed interface AgentHomeAction {
     data object CancelMessageEdit : AgentHomeAction
     data class DeleteMessage(val id: String) : AgentHomeAction
     data class RegenerateMessage(val id: String) : AgentHomeAction
+    data class ForkMessage(val id: String) : AgentHomeAction
     data class SelectReplyCandidate(val id: String, val index: Int) : AgentHomeAction
     data object OpenTools : AgentHomeAction
     data object OpenSkills : AgentHomeAction
@@ -37,6 +41,8 @@ sealed interface AgentHomeAction {
 
 sealed interface PermissionHealthAction {
     data class OpenItemAction(val itemId: String) : PermissionHealthAction
+    data class SetRootAccessibilityRecovery(val enabled: Boolean) : PermissionHealthAction
+    data object RetryRootAccessibilityRecovery : PermissionHealthAction
     data object NavigateBack : PermissionHealthAction
 }
 
@@ -49,6 +55,7 @@ sealed interface AgentToolsAction {
 }
 
 sealed interface AgentSkillsAction {
+    data object Refresh : AgentSkillsAction
     data object NavigateBack : AgentSkillsAction
     data class ImportZip(val uri: String) : AgentSkillsAction
     data object ConfirmZipReplacement : AgentSkillsAction
@@ -57,6 +64,7 @@ sealed interface AgentSkillsAction {
     data class ToggleSkill(val skillId: String, val enabled: Boolean) : AgentSkillsAction
     data class DeleteSkill(val skillId: String) : AgentSkillsAction
     data class ReinstallBuiltin(val skillId: String) : AgentSkillsAction
+    data class RestoreSkillVersion(val skillId: String, val backupId: String) : AgentSkillsAction
 }
 
 sealed interface AgentSystemEnhanceAction {
@@ -72,4 +80,5 @@ sealed interface AgentMemoryAction {
     data object Save : AgentMemoryAction
     data object Clear : AgentMemoryAction
     data object DismissNotice : AgentMemoryAction
+    data class ScopeSelected(val scope: AgentMemoryScope) : AgentMemoryAction
 }

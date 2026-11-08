@@ -20,7 +20,11 @@ internal enum class GuiControlStatus(val wireValue: String) {
 
 /** 手机界面只有一个操作所有者；锁只保护所有权，模型推理和工具执行不在锁内运行。 */
 internal class GuiControlCoordinator {
-    data class State(val ownerRunId: String? = null, val userPaused: Boolean = false)
+    data class State(
+        val ownerRunId: String? = null,
+        val userPaused: Boolean = false,
+        val accessibilityWaiting: Boolean = false,
+    )
 
     private val lock = ReentrantLock()
     private val changed = lock.newCondition()
@@ -29,6 +33,8 @@ internal class GuiControlCoordinator {
     private var userPauseRequested = false
     private var pausedController: AgentRunController? = null
     private var generation = 0L
+    private var userActions = 0
+    private val accessibilityInterventions = mutableSetOf<Any>()
     private val mutableState = MutableStateFlow(State())
     val state: StateFlow<State> = mutableState.asStateFlow()
 
@@ -49,7 +55,7 @@ internal class GuiControlCoordinator {
             generation++
             current.controller.pause()
             if (current.activeActions == 0) {
-                mutableState.value = State(current.runId, userPaused = true)
+                mutableState.value = snapshotState(current.runId, userPaused = true)
                 current
             } else {
                 null
@@ -67,13 +73,32 @@ internal class GuiControlCoordinator {
             val current = owner?.takeUnless { it.closed }
             pausedController?.resume()
             pausedController = null
-            mutableState.value = State(current?.runId)
+            mutableState.value = snapshotState(current?.runId)
             changed.signalAll()
             current
         }
         resumed?.notifyStatus(GuiControlStatus.Acquired)
         return true
     }
+
+    fun withUserAction(runId: String?, timeoutMs: Long = 3000, block: () -> Unit) {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        lock.withLock {
+            while ((owner?.activeActions ?: 0) > 0) {
+                if (!userPauseRequested || owner?.runId != runId) return
+                val remaining = deadline - System.nanoTime()
+                if (remaining <= 0) return
+                changed.awaitNanos(remaining)
+            }
+            if (!userPauseRequested || owner?.runId != runId) return
+            userActions++
+            generation++
+        }
+        try { block() } finally { lock.withLock { userActions--; generation++; changed.signalAll() } }
+    }
+
+    private fun snapshotState(ownerRunId: String? = owner?.runId, userPaused: Boolean = userPauseRequested) =
+        State(ownerRunId, userPaused, accessibilityInterventions.isNotEmpty())
 
     internal inner class RunControl internal constructor(
         val runId: String,
@@ -95,7 +120,7 @@ internal class GuiControlCoordinator {
                 checkOpen()
                 if (owner !== this && !waiting.contains(this)) {
                     waiting.addLast(this)
-                    owner != null || userPauseRequested || waiting.first() !== this
+                    owner != null || userPauseRequested || accessibilityInterventions.isNotEmpty() || waiting.first() !== this
                 } else {
                     false
                 }
@@ -105,13 +130,13 @@ internal class GuiControlCoordinator {
             val actionGeneration = lock.withLock {
                 while (true) {
                     checkOpen()
-                    if (owner === this && !userPauseRequested) break
-                    if (owner == null && !userPauseRequested && waiting.peekFirst() === this) {
+                    if (owner === this && !userPauseRequested && userActions == 0 && accessibilityInterventions.isEmpty()) break
+                    if (owner == null && !userPauseRequested && userActions == 0 && accessibilityInterventions.isEmpty() && waiting.peekFirst() === this) {
                         waiting.removeFirst()
                         owner = this
                         generation++
                         acquired = true
-                        mutableState.value = State(runId)
+                        mutableState.value = snapshotState(runId)
                         break
                     }
                     try {
@@ -133,17 +158,60 @@ internal class GuiControlCoordinator {
             } finally {
                 val status = lock.withLock {
                     activeActions--
+                    changed.signalAll()
                     when {
                         activeActions != 0 -> null
                         releaseRequested || closed -> releaseLocked()
                         userPauseRequested -> {
-                            mutableState.value = State(runId, userPaused = true)
+                            mutableState.value = snapshotState(runId, userPaused = true)
                             GuiControlStatus.UserPaused
                         }
                         else -> null
                     }
                 }
                 status?.let(::notifyStatus)
+            }
+        }
+
+        /**
+         * 系统设置恢复期间阻止所有 run 取得新 GUI action。独立于用户手动暂停，结束不会恢复它。
+         * 在 action 外调用；先让已开始的原子动作结束，再展示恢复引导和请求恢复。
+         */
+        fun <T> withAccessibilityIntervention(timeoutMs: Long, block: () -> T): T {
+            val token = Any()
+            val deadline = System.nanoTime() + timeoutMs * 1_000_000L
+            val released = lock.withLock {
+                checkOpen()
+                accessibilityInterventions.add(token)
+                generation++
+                waiting.remove(this)
+                val status = if (owner === this) {
+                    releaseRequested = true
+                    if (activeActions == 0) releaseLocked() else null
+                } else null
+                mutableState.value = snapshotState()
+                changed.signalAll()
+                status
+            }
+            try {
+                released?.let(::notifyStatus)
+                lock.withLock {
+                    while ((owner?.activeActions ?: 0) > 0) {
+                        checkOpen()
+                        val remaining = deadline - System.nanoTime()
+                        if (remaining <= 0L) throw GuiInterventionTimeoutException()
+                        changed.awaitNanos(remaining)
+                    }
+                    checkOpen()
+                }
+                return block()
+            } finally {
+                lock.withLock {
+                    accessibilityInterventions.remove(token)
+                    generation++
+                    mutableState.value = snapshotState()
+                    changed.signalAll()
+                }
             }
         }
 
@@ -181,7 +249,7 @@ internal class GuiControlCoordinator {
             if (owner !== this) return null
             owner = null
             releaseRequested = false
-            mutableState.value = State(userPaused = userPauseRequested)
+            mutableState.value = snapshotState(userPaused = userPauseRequested)
             changed.signalAll()
             return GuiControlStatus.Released
         }
@@ -189,3 +257,5 @@ internal class GuiControlCoordinator {
         internal fun notifyStatus(status: GuiControlStatus) = onStatusChanged(status)
     }
 }
+
+internal class GuiInterventionTimeoutException : RuntimeException()

@@ -15,9 +15,25 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RuntimeConfigRepositoryTest {
+    @Test
+    fun mapsExplicitModelToolCapabilityIntoRuntimeConfig() {
+        val provider = OpenAiCompatibleProviderSetting(
+            id = "tool-provider", name = "测试", baseUrl = "https://example.invalid/v1",
+        )
+        fun config(toolCall: Boolean?) = RuntimeConfigRepository.buildRuntimeConfig(
+            provider,
+            Model(id = "model-$toolCall", modelId = "fixture", displayName = "测试", toolCall = toolCall),
+        )
+
+        assertFalse(config(false).supportsTools)
+        assertTrue(config(true).supportsTools)
+        assertTrue(config(null).supportsTools)
+    }
+
     @Test
     fun emptyProviderPromptStaysEmptyAcrossRuntimeSerialization() {
         val provider = OpenAiCompatibleProviderSetting(

@@ -29,7 +29,7 @@ class ContextBudgetPolicyTest {
     @Test
     fun estimateFallbackAndChunkingAreBoundedAndOrderStable() {
         val messages = (1..8).map { index ->
-            AgentModelClient.ConversationMessage("user", "块 $index " + "内容".repeat(2_000))
+            AgentModelClient.ConversationMessage("user", "块 $index " + "内容".repeat(700))
         }
         val chunks = ContextBudgetPolicy.chunk(messages, 2_000)
         assertTrue(chunks.size > 1)
@@ -59,5 +59,18 @@ class ContextBudgetPolicyTest {
         val estimate = ContextBudgetPolicy.estimateMessages(messages)
         assertTrue(estimate > 120)
         assertTrue(ContextBudgetPolicy.estimateTextTokens("abc" + "中".repeat(9)) >= 4)
+    }
+
+    @Test
+    fun chineseTextDoesNotUseTheFormerThreeCharactersPerTokenEstimate() {
+        assertEquals(301, ContextBudgetPolicy.estimateTextTokens("中".repeat(300)))
+    }
+
+    @Test
+    fun smallWindowSummaryBudgetFitsInsideTheWindow() {
+        val budget = checkNotNull(ContextBudgetPolicy.of(4_096))
+        assertTrue(budget.summaryInputTokens < budget.usableInputTokens)
+        assertTrue(budget.summaryInputTokens >= 768)
+        assertTrue(AgentContextSummarizer.summaryCharLimit(4_096) < 1_500)
     }
 }

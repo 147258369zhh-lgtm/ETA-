@@ -9,12 +9,15 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.core.safeStackTrace
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.agent.runtime.AgentMetricsDatabase
+import io.github.mangi.eta.agent.runtime.AgentRunMetricsStore
 import io.github.mangi.eta.fork.a2a.A2ADatabase
 import io.github.mangi.eta.fork.a2a.A2AInboundConfigStore
 import io.github.mangi.eta.fork.a2a.A2ASecretStore
 import io.github.mangi.eta.fork.conversations.ConversationExtensionDatabase
 import io.github.mangi.eta.fork.learning.LearningDatabase
 import io.github.mangi.eta.fork.meeting.MeetingDatabase
+import io.github.mangi.eta.fork.projects.ProjectDatabase
 import io.github.mangi.eta.fork.tasks.AgentTaskDatabase
 import io.github.mangi.eta.data.model.SpeechCredentials
 import java.io.BufferedInputStream
@@ -29,9 +32,11 @@ import java.nio.ByteOrder
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -58,7 +63,7 @@ import kotlinx.serialization.encodeToString
 internal object EtaFullBackupArchive {
     const val SUFFIX = ".eta-backup"
     const val FORMAT = "eta-full-backup"
-    const val SCHEMA_VERSION = 2
+    const val SCHEMA_VERSION = 3
 
     private const val JSON_ENTRY = "eta-backup.json"
     private const val MANIFEST_ENTRY = "manifest.json"
@@ -73,8 +78,19 @@ internal object EtaFullBackupArchive {
         "files/eta-restore-staging",
         "files/eta-restore-rollback",
         "no_backup/eta-portable-secrets.json",
+        "shared_prefs/eta_auto_backup_secret.xml",
+        "no_backup/androidx.work.workdb",
+        "no_backup/androidx.work.workdb-wal",
+        "no_backup/androidx.work.workdb-shm",
+        "no_backup/androidx.work.workdb-journal",
+        "databases/androidx.work.workdb",
+        "databases/androidx.work.workdb-wal",
+        "databases/androidx.work.workdb-shm",
+        "databases/androidx.work.workdb-journal",
     )
     private const val PORTABLE_SECRETS_ENTRY = "data/no_backup/eta-portable-secrets.json"
+    private val guestLinkPath = Regex("^data/files/terminal(?:-user)?/proot/[^/]+/.+")
+    private val drivePrefix = Regex("^[A-Za-z]:")
 
     private val json = EtaBackupJsonStreams.json
 
@@ -84,56 +100,96 @@ internal object EtaFullBackupArchive {
         output: OutputStream,
         password: String? = null,
         onPhase: (String) -> Unit = {},
+        onProgress: (EtaBackupProgress) -> Unit = {},
+        includeAppFiles: Boolean = true,
+        compression: EtaBackupCompression = EtaBackupCompression.COMPACT,
     ): EtaBackupSummary = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
         val secret = password?.takeIf(String::isNotEmpty)
         var phase = "checkpoint_databases"
+        var privateBytes = 0L
+        var privateFiles = 0
+        var logicalRecords = 0L
+        var lastUpdate = 0L
+        fun progress(force: Boolean = false) {
+            val now = System.nanoTime()
+            if (force || now - lastUpdate >= 200_000_000L) {
+                onProgress(EtaBackupProgress(phase, privateFiles, logicalRecords, privateBytes))
+                lastUpdate = now
+            }
+        }
         try {
             onPhase(phase)
+            progress(true)
             checkpointDatabases(appContext)
             val recordCounts = collectRecordCounts(appContext)
             val jsonFile = File(appContext.cacheDir, "eta-backup-${UUID.randomUUID()}.json")
             val secretsFile = File(appContext.cacheDir, "eta-secrets-${UUID.randomUUID()}.json")
             val entries = mutableListOf<EtaBackupEntryManifest>()
-            var privateBytes = 0L
-            var privateFiles = 0
+            val links = mutableListOf<EtaBackupLinkManifest>()
+            val directories = mutableListOf<EtaBackupDirectoryManifest>()
             try {
                 phase = "logical_snapshot"
                 onPhase(phase)
+                progress(true)
                 val logical = jsonFile.outputStream().buffered().use {
-                    EtaBackupRepository.export(appContext, it)
+                    EtaBackupRepository.export(appContext, it) { progressValue ->
+                        phase = progressValue.phase
+                        logicalRecords = progressValue.records
+                        progress()
+                    }
                 }
                 val sink = if (secret == null) output else EtaBackupEncryptedOutputStream(output, secret)
-                val zip = ZipOutputStream(sink, Charsets.UTF_8)
-                try {
+                // Buffer ZIP headers and deflater output; remote document streams are not byte sinks.
+                val borrowed = object : OutputStream() {
+                    override fun write(value: Int) = sink.write(value)
+                    override fun write(buffer: ByteArray, offset: Int, length: Int) = sink.write(buffer, offset, length)
+                    override fun flush() = sink.flush()
+                    override fun close() = flush()
+                }
+                ZipOutputStream(borrowed.buffered(256 * 1024), Charsets.UTF_8).use { zip ->
+                    zip.setLevel(
+                        if (compression == EtaBackupCompression.FAST) Deflater.NO_COMPRESSION
+                        else Deflater.BEST_SPEED,
+                    )
                     phase = "logical_snapshot"
                     entries += writeFileEntry(zip, JSON_ENTRY, jsonFile, "core", logical.conversationCount)
 
-                    roots.map { File(appContext.dataDir, it) }
-                        .filter(File::isDirectory)
-                        .forEach { root ->
-                            zip.putNextEntry(ZipEntry("$DATA_PREFIX${root.name}/"))
-                            zip.closeEntry()
-                        }
-
                     phase = "private_data"
                     onPhase(phase)
-                    collectBackupFiles(appContext).forEach { file ->
+                    progress(true)
+                    val exportRoots = if (includeAppFiles) roots else roots - "files"
+                    EtaBackupFileTree.walk(appContext.dataDir, exportRoots, excludedPaths, MAX_ENTRIES - 3) { file, attributes ->
                         currentCoroutineContext().ensureActive()
                         val relative = file.relativeTo(appContext.dataDir).invariantSeparatorsPath
-                        val entry = writeFileEntry(
-                            zip = zip,
-                            archivePath = DATA_PREFIX + relative,
-                            file = file,
-                            section = sectionFor(relative),
-                        )
-                        entries += entry
-                        privateFiles++
-                        privateBytes += entry.size
+                        val path = normalizeEntry(DATA_PREFIX + relative)
+                        when {
+                            attributes.isSymbolicLink -> {
+                                links += EtaBackupLinkManifest(path, Files.readSymbolicLink(file.toPath()).toString())
+                                privateFiles++
+                            }
+                            attributes.isDirectory -> {
+                                directories += EtaBackupDirectoryManifest(path, EtaBackupFileTree.mode(file.toPath()))
+                                zip.putNextEntry(ZipEntry("$path/"))
+                                zip.closeEntry()
+                            }
+                            else -> {
+                                if (attributes.size() > MAX_ARCHIVE_BYTES - privateBytes - jsonFile.length()) {
+                                    throw EtaBackupException("备份内容超过 8 GiB 限制，请清理后重试")
+                                }
+                                entries += writeFileEntry(zip, path, file, sectionFor(relative), maxBytes = attributes.size()) { count ->
+                                    privateBytes += count
+                                    progress()
+                                }
+                                privateFiles++
+                            }
+                        }
+                        progress()
                     }
 
                     phase = "portable_secrets"
                     onPhase(phase)
+                    progress(true)
                     capturePortableSecrets(appContext).let { secrets ->
                         secretsFile.outputStream().buffered().use { output ->
                             output.write(json.encodeToString(secrets).toByteArray(Charsets.UTF_8))
@@ -151,28 +207,34 @@ internal object EtaFullBackupArchive {
 
                     phase = "manifest"
                     onPhase(phase)
+                    progress(true)
                     val manifest = createManifest(
                         context = appContext,
                         logical = logical,
                         entries = entries,
                         recordCounts = recordCounts,
                         encrypted = secret != null,
+                        links = links,
+                        directories = directories,
                     )
+                    validateFileMetadata(manifest)
+                    val manifestBytes = json.encodeToString(manifest).toByteArray(Charsets.UTF_8)
+                    if (manifestBytes.size > MAX_MANIFEST_BYTES) throw EtaBackupException("备份清单超过大小限制")
+                    if (manifest.totalBytes > MAX_ARCHIVE_BYTES - manifestBytes.size) throw EtaBackupException("备份内容超过 8 GiB 限制")
                     zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
-                    zip.write(json.encodeToString(manifest).toByteArray(Charsets.UTF_8))
+                    zip.write(manifestBytes)
                     zip.closeEntry()
                     zip.finish()
                     zip.flush()
-                    if (sink is EtaBackupEncryptedOutputStream) sink.finish()
-                    output.flush()
-                } finally {
-                    // Closing ZipOutputStream would close a caller-owned SAF stream.
-                    runCatching { zip.finish() }
                 }
+                if (sink is EtaBackupEncryptedOutputStream) sink.finish()
+                output.flush()
+                progress(true)
                 logical.copy(
                     privateFileCount = privateFiles,
                     privateBytes = privateBytes,
                     encrypted = secret != null,
+                    fullArchive = true,
                 )
             } finally {
                 jsonFile.delete()
@@ -197,6 +259,11 @@ internal object EtaFullBackupArchive {
         secrets.providerCredentials.forEach(providerStorage::write)
         val mcpStorage = McpSecretStore(appContext)
         secrets.mcpBearerTokens.forEach(mcpStorage::setBearerToken)
+        ApiConnectorCredentialTransfer.restore(
+            context = appContext,
+            credentials = secrets.apiConnectorCredentials,
+            storage = mcpStorage,
+        )
         val a2aStorage = A2ASecretStore(appContext)
         secrets.a2aBearerTokens.forEach { (alias, token) ->
             if (token.isNotBlank()) a2aStorage.save(alias, token)
@@ -231,12 +298,17 @@ internal object EtaFullBackupArchive {
                 input = probe,
                 onCommitted = onCommitted,
                 forgetCredentials = forgetCredentials,
+                onPhase = onPhase,
             )
             EtaBackupEncryptedInputStream.hasMagic(prefix) -> {
                 val secret = password?.takeIf(String::isNotEmpty)
                     ?: throw EtaBackupException("此备份已加密，请输入备份密码")
                 EtaBackupEncryptedInputStream(probe, secret).use { decrypted ->
-                    stage(appContext, decrypted, encrypted = true, onPhase = onPhase)
+                    val decoded = PushbackInputStream(BufferedInputStream(decrypted), 64)
+                    val header = readPrefix(decoded, 64)
+                    decoded.unread(header)
+                    if (isJson(header)) EtaBackupRepository.import(appContext, decoded, onCommitted, forgetCredentials, onPhase).copy(encrypted = true)
+                    else stage(appContext, decoded, encrypted = true, onPhase = onPhase)
                 }
             }
             isZip(prefix) -> stage(appContext, probe, encrypted = false, onPhase = onPhase)
@@ -248,24 +320,41 @@ internal object EtaFullBackupArchive {
         context: Context,
         input: InputStream,
         password: String? = null,
+        onPhase: (String) -> Unit = {},
     ): EtaBackupSummary = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
+        onPhase("verify_file")
         val probe = PushbackInputStream(BufferedInputStream(input), 64)
         val prefix = readPrefix(probe, 64)
         probe.unread(prefix)
         when {
-            isJson(prefix) -> EtaBackupRepository.inspect(appContext, probe)
+            isJson(prefix) -> EtaBackupRepository.inspect(appContext, probe).also {
+                onPhase("inspect_complete")
+            }
             EtaBackupEncryptedInputStream.hasMagic(prefix) -> {
                 val secret = password?.takeIf(String::isNotEmpty)
                     ?: throw EtaBackupException("此备份已加密，请输入备份密码")
                 EtaBackupEncryptedInputStream(probe, secret).use { decrypted ->
-                    inspectArchive(appContext, decrypted, encrypted = true)
+                    val decoded = PushbackInputStream(BufferedInputStream(decrypted), 64)
+                    val header = readPrefix(decoded, 64)
+                    decoded.unread(header)
+                    if (isJson(header)) EtaBackupRepository.inspect(appContext, decoded).copy(encrypted = true).also {
+                        onPhase("inspect_complete")
+                    } else {
+                        inspectArchive(appContext, decoded, encrypted = true, onPhase = onPhase)
+                    }
                 }
             }
-            isZip(prefix) -> inspectArchive(appContext, probe, encrypted = false)
+            isZip(prefix) -> inspectArchive(appContext, probe, encrypted = false, onPhase = onPhase)
             else -> throw EtaBackupException("无法识别备份格式")
         }
     }
+
+    fun hasPendingRestore(context: Context): Boolean =
+        File(context.applicationContext.dataDir, "$CONTROL_DIR/state").takeIf { it.isFile }?.readText()?.trim() == "pending"
+
+    fun restoreResult(context: Context): String? =
+        File(context.applicationContext.dataDir, "$CONTROL_DIR/result").takeIf { it.isFile }?.readText()
 
     /** Must be called from Application.onCreate before any Room/DataStore consumer is initialized. */
     fun applyPendingRestore(context: Context): Boolean {
@@ -278,9 +367,10 @@ internal object EtaFullBackupArchive {
         if (state == "applying") {
             return runCatching {
                 restoreRoots(appContext, rollback)
-                staged.deleteRecursively()
-                rollback.deleteRecursively()
+                EtaBackupFileTree.delete(staged)
+                EtaBackupFileTree.delete(rollback)
                 stateFile.delete()
+                File(control, "result").writeText("上次恢复被中断，已回退到恢复前的数据")
                 false
             }.getOrElse {
                 AndroidAgentLogger.error("Interrupted full restore could not roll back: type=${it.safeLogType()}\n${it.safeStackTrace()}")
@@ -288,17 +378,19 @@ internal object EtaFullBackupArchive {
             }
         }
         if (state == "committed") {
-            staged.deleteRecursively()
-            rollback.deleteRecursively()
+            EtaBackupFileTree.delete(staged)
+            EtaBackupFileTree.delete(rollback)
             stateFile.delete()
+            File(control, "result").writeText("完整备份已恢复")
             return true
         }
-        if (!staged.isDirectory) return false
+        if (state != "pending" || !staged.isDirectory) return false
 
         val stagedManifest = runCatching { readAndVerifyManifest(staged, expectedEncrypted = null) }
             .getOrElse { failure ->
-                staged.deleteRecursively()
+                EtaBackupFileTree.delete(staged)
                 stateFile.delete()
+                File(control, "result").writeText("备份校验未通过，现有数据已保留")
                 AndroidAgentLogger.error(
                     "Pending full restore failed validation: type=${failure.safeLogType()}",
                 )
@@ -308,28 +400,42 @@ internal object EtaFullBackupArchive {
 
         stateFile.writeText("applying")
         return try {
-            rollback.deleteRecursively()
+            EtaBackupFileTree.delete(rollback)
             check(rollback.mkdirs()) { "无法创建恢复快照目录" }
-            roots.forEach { root ->
+            val selectedRoots = stagedManifest.roots.filter { it.present }.map { it.name }.ifEmpty { roots }
+            selectedRoots.forEach { root ->
                 val source = File(appContext.dataDir, root)
                 if (source.exists()) movePath(source, File(rollback, root))
             }
-            roots.forEach { root ->
+            selectedRoots.forEach { root ->
                 val source = File(staged, DATA_PREFIX + root)
                 if (source.exists()) movePath(source, File(appContext.dataDir, root))
             }
+            restoreFileMetadata(appContext, stagedManifest)
+            // WorkManager jobs belong to this installation. Rebuild schedules from restored settings.
+            listOf(appContext.noBackupFilesDir, File(appContext.dataDir, "databases")).forEach { parent ->
+                listOf("", "-wal", "-shm", "-journal").forEach { suffix ->
+                    Files.deleteIfExists(File(parent, "androidx.work.workdb$suffix").toPath())
+                }
+            }
             stateFile.writeText("committed")
-            staged.deleteRecursively()
-            rollback.deleteRecursively()
-            stateFile.delete()
+            // A cleanup failure after commit must never roll back the restored data.
+            runCatching {
+                EtaBackupFileTree.delete(staged)
+                EtaBackupFileTree.delete(rollback)
+                stateFile.delete()
+            }
             AndroidAgentLogger.info("Eta full backup restore applied before database initialization")
+            runCatching { File(control, "result").writeText("完整备份已恢复") }
             true
         } catch (failure: Throwable) {
-            runCatching { restoreRoots(appContext, rollback) }
-                .onFailure(failure::addSuppressed)
-            staged.deleteRecursively()
-            stateFile.delete()
+            val rolledBack = runCatching { restoreRoots(appContext, rollback) }.onFailure(failure::addSuppressed).isSuccess
+            if (rolledBack) {
+                EtaBackupFileTree.delete(staged)
+                stateFile.delete()
+            }
             AndroidAgentLogger.error("Eta full backup restore failed: type=${failure.safeLogType()}\n${failure.safeStackTrace()}")
+            runCatching { File(control, "result").writeText("恢复失败，已尝试回退，请检查数据或使用恢复前快照") }
             throw failure
         }
     }
@@ -348,11 +454,13 @@ internal object EtaFullBackupArchive {
             extract(input, temp)
             onPhase("verify_manifest")
             val manifest = readAndVerifyManifest(temp, encrypted)
-            onPhase("validate_logical_data")
+            validateRestorableDatabases(temp)
+            onPhase("validate_database")
             val jsonEntry = File(temp, JSON_ENTRY)
             if (!jsonEntry.isFile) throw EtaBackupException("完整备份缺少逻辑数据")
-            val logical = EtaBackupJsonStreams.stage(context, jsonEntry.inputStream()).use {
-                EtaBackupValidation.validate(it)
+            onPhase("validate_logical_data")
+            val logical = jsonEntry.inputStream().use { input ->
+                EtaBackupJsonStreams.stage(context, input).use { EtaBackupValidation.validate(it) }
             }
 
             val control = File(context.dataDir, CONTROL_DIR)
@@ -361,37 +469,50 @@ internal object EtaFullBackupArchive {
             val safety = File(control, "pre-restore${SUFFIX}")
             val safetyTemp = File(control, "pre-restore.tmp")
             safetyTemp.delete()
-            safetyTemp.outputStream().buffered().use { export(context, it, password = null) }
+            val selectedRoots = manifest.roots.filter { it.present }.map { it.name }.ifEmpty { roots }
+            safetyTemp.outputStream().buffered().use {
+                export(
+                    context = context,
+                    output = it,
+                    password = null,
+                    includeAppFiles = "files" in selectedRoots,
+                    compression = EtaBackupCompression.FAST,
+                )
+            }
             movePath(safetyTemp, safety)
 
             onPhase("stage_restore")
+            currentCoroutineContext().ensureActive()
             val staged = File(control, "staged")
             val stagedNew = File(control, "staged.new")
-            stagedNew.deleteRecursively()
+            EtaBackupFileTree.delete(stagedNew)
             if (!stagedNew.mkdirs()) throw IOException("无法创建恢复暂存目录")
             File(temp, DATA_PREFIX.trimEnd('/')).takeIf(File::exists)?.let {
                 movePath(it, File(stagedNew, DATA_PREFIX.trimEnd('/')))
             }
             File(temp, MANIFEST_ENTRY).copyTo(File(stagedNew, MANIFEST_ENTRY), overwrite = true)
             File(temp, JSON_ENTRY).copyTo(File(stagedNew, JSON_ENTRY), overwrite = true)
-            staged.deleteRecursively()
+            EtaBackupFileTree.delete(staged)
             movePath(stagedNew, staged)
+            // A previous successful restore must not be shown as the result of this staged restore.
+            File(control, "result").delete()
             File(control, "state").writeText("pending")
             AndroidAgentLogger.info(
                 "Eta full backup staged: sections=${manifest.sections.size} entries=${manifest.entries.size}",
             )
             return logical.copy(
-                privateFileCount = manifest.entries.count { it.path.startsWith(DATA_PREFIX) },
+                privateFileCount = manifest.entries.count { it.path.startsWith(DATA_PREFIX) } + manifest.links.size,
                 privateBytes = manifest.entries.sumOf { it.size },
                 encrypted = encrypted,
                 restartRequired = true,
+                fullArchive = true,
             )
         } catch (failure: Throwable) {
             if (failure is CancellationException || failure is Error) throw failure
             if (failure is EtaBackupException) throw failure
             throw EtaBackupException("完整备份导入失败，现有数据未替换", failure)
         } finally {
-            temp.deleteRecursively()
+            EtaBackupFileTree.delete(temp)
         }
     }
 
@@ -399,28 +520,62 @@ internal object EtaFullBackupArchive {
         context: Context,
         input: InputStream,
         encrypted: Boolean,
+        onPhase: (String) -> Unit,
     ): EtaBackupSummary {
         val temp = File(context.cacheDir, "eta-full-inspect-${UUID.randomUUID()}").apply {
             if (!mkdirs()) throw IOException("无法创建备份校验目录")
         }
         try {
+            onPhase("extract")
             extract(input, temp)
+            onPhase("verify_manifest")
             val manifest = readAndVerifyManifest(temp, encrypted)
+            onPhase("validate_database")
+            validateRestorableDatabases(temp)
+            onPhase("validate_logical_data")
             val jsonEntry = File(temp, JSON_ENTRY)
-            val summary = EtaBackupJsonStreams.stage(context, jsonEntry.inputStream()).use {
-                EtaBackupValidation.validate(it)
+            val summary = jsonEntry.inputStream().use { input ->
+                EtaBackupJsonStreams.stage(context, input).use { EtaBackupValidation.validate(it) }
             }
             return summary.copy(
-                privateFileCount = manifest.entries.count { it.path != JSON_ENTRY },
+                privateFileCount = manifest.entries.count { it.path != JSON_ENTRY } + manifest.links.size,
                 privateBytes = manifest.entries.sumOf { it.size },
                 encrypted = encrypted,
-            )
+                fullArchive = true,
+            ).also { onPhase("inspect_complete") }
         } finally {
-            temp.deleteRecursively()
+            EtaBackupFileTree.delete(temp)
+        }
+    }
+
+    private fun validateRestorableDatabases(directory: File) {
+        EtaMigrationPlan.entries.distinctBy { it.databaseName }.forEach { entry ->
+            val file = File(directory, "data/databases/${entry.databaseName}")
+            if (!file.isFile) return@forEach
+            val validation = File(directory.parentFile, "db-${UUID.randomUUID().toString().take(8)}").apply { mkdirs() }
+            try {
+                listOf("", "-wal", "-shm").forEach { suffix ->
+                    File(file.parentFile, file.name + suffix).takeIf { it.isFile }?.copyTo(File(validation, file.name + suffix), overwrite = true)
+                }
+                SQLiteDatabase.openDatabase(File(validation, file.name).path, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { database ->
+                    if (database.version > entry.currentVersion || database.version < 1) {
+                        throw EtaBackupException("${entry.name} 数据库版本不兼容，请使用同版或更新版 Eta 恢复")
+                    }
+                    database.rawQuery("PRAGMA quick_check", null).use { result ->
+                        if (!result.moveToFirst() || result.getString(0) != "ok") throw EtaBackupException("${entry.name} 数据库完整性校验失败")
+                    }
+                }
+            } catch (failure: Exception) {
+                if (failure is EtaBackupException) throw failure
+                throw EtaBackupException("${entry.name} 数据库无法读取，现有数据未替换", failure)
+            } finally { EtaBackupFileTree.delete(validation) }
         }
     }
 
     private suspend fun checkpointDatabases(context: Context) {
+        ConversationDraftRepository.get(context).flush()
+        ConversationAttachmentDrafts.get(context).flush()
+        AgentRunMetricsStore.flush()
         listOf(
             EtaDatabase.get(context),
             MeetingDatabase.get(context),
@@ -428,6 +583,8 @@ internal object EtaFullBackupArchive {
             LearningDatabase.get(context),
             AgentTaskDatabase.get(context),
             A2ADatabase.get(context),
+            ProjectDatabase.get(context),
+            AgentMetricsDatabase.get(context),
         ).forEach { database ->
             currentCoroutineContext().ensureActive()
             database.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use { cursor ->
@@ -458,6 +615,8 @@ internal object EtaFullBackupArchive {
             "learning" to LearningDatabase.get(context),
             "tasks" to AgentTaskDatabase.get(context),
             "a2a" to A2ADatabase.get(context),
+            "projects" to ProjectDatabase.get(context),
+            "runtime" to AgentMetricsDatabase.get(context),
         ).forEach { (section, database) ->
             countTables(database) { section }.forEach { (_, count) ->
                 counts[section] = counts.getValue(section) + count
@@ -504,18 +663,6 @@ internal object EtaFullBackupArchive {
         return counts
     }
 
-    private fun collectBackupFiles(context: Context): List<File> = roots.asSequence()
-        .map { File(context.dataDir, it) }
-        .filter(File::isDirectory)
-        .flatMap { root ->
-            root.walkTopDown().filter(File::isFile).filter { file ->
-                val relative = file.relativeTo(context.dataDir).invariantSeparatorsPath
-                excludedPaths.none { relative == it || relative.startsWith("$it/") }
-            }
-        }
-        .sortedBy { it.relativeTo(context.dataDir).invariantSeparatorsPath }
-        .toList()
-
     /**
      * Android Keystore keys do not travel with app data. Capture the decrypted values in a temporary
      * migration payload so [restorePortableSecretsAfterStartup] can re-encrypt them with the key of
@@ -537,9 +684,17 @@ internal object EtaFullBackupArchive {
 
         val mcpBearerTokens = linkedMapOf<String, String>()
         val mcpStorage = McpSecretStore(context)
+        var unreadableMcpTokens = 0
         EtaDatabase.get(context).mcpServerDao().servers().forEach { server ->
-            mcpStorage.bearerToken(server.id)?.let { token -> mcpBearerTokens[server.id] = token }
+            try {
+                mcpStorage.bearerToken(server.id)?.let { token -> mcpBearerTokens[server.id] = token }
+            } catch (_: McpCredentialsUnavailable) {
+                unreadableMcpTokens++
+            }
         }
+
+        val apiCredentials = ApiConnectorCredentialTransfer.capture(context, mcpStorage)
+        val unreadableApiTokens = apiCredentials.unreadable
 
         val a2aBearerTokens = linkedMapOf<String, String>()
         val a2aStorage = A2ASecretStore(context)
@@ -565,15 +720,19 @@ internal object EtaFullBackupArchive {
             }
             .getOrNull()
 
-        if (unreadableProviderCredentials > 0 || unreadableA2ATokens > 0) {
+        if (unreadableProviderCredentials > 0 || unreadableA2ATokens > 0 ||
+            unreadableMcpTokens > 0 || unreadableApiTokens > 0
+        ) {
             AndroidAgentLogger.warn(
                 "Eta backup skipped unreadable portable credentials: " +
-                    "providers=$unreadableProviderCredentials a2a=$unreadableA2ATokens",
+                    "providers=$unreadableProviderCredentials a2a=$unreadableA2ATokens " +
+                    "mcp=$unreadableMcpTokens api=$unreadableApiTokens",
             )
         }
         return EtaPortableSecrets(
             providerCredentials = providerCredentials,
             mcpBearerTokens = mcpBearerTokens,
+            apiConnectorCredentials = apiCredentials.credentials,
             a2aBearerTokens = a2aBearerTokens,
             a2aInboundToken = A2AInboundConfigStore(context).loadToken(),
             speechCredentials = speechCredentials,
@@ -586,19 +745,23 @@ internal object EtaFullBackupArchive {
         file: File,
         section: String,
         recordCount: Int = 0,
+        maxBytes: Long = MAX_ARCHIVE_BYTES,
+        onBytes: (Int) -> Unit = {},
     ): EtaBackupEntryManifest {
         zip.putNextEntry(ZipEntry(archivePath).apply { time = file.lastModified() })
         val digest = MessageDigest.getInstance("SHA-256")
         var size = 0L
-        file.inputStream().buffered().use { input ->
+        Files.newInputStream(file.toPath(), NOFOLLOW_LINKS).buffered().use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE * 4)
             while (true) {
                 currentCoroutineContext().ensureActive()
                 val count = input.read(buffer)
                 if (count < 0) break
+                if (count > maxBytes - size) throw EtaBackupException("备份期间文件大小发生变化，请稍后重试")
                 zip.write(buffer, 0, count)
                 digest.update(buffer, 0, count)
                 size += count
+                onBytes(count)
             }
         }
         zip.closeEntry()
@@ -608,6 +771,7 @@ internal object EtaFullBackupArchive {
             size = size,
             sha256 = digest.digest().hex(),
             recordCount = recordCount,
+            mode = EtaBackupFileTree.mode(file.toPath()),
         )
     }
 
@@ -617,6 +781,8 @@ internal object EtaFullBackupArchive {
         entries: List<EtaBackupEntryManifest>,
         recordCounts: Map<String, Int>,
         encrypted: Boolean,
+        links: List<EtaBackupLinkManifest>,
+        directories: List<EtaBackupDirectoryManifest>,
     ): EtaFullBackupManifest {
         val sectionNames = SECTION_NAMES
         val sections = sectionNames.map { name ->
@@ -638,6 +804,11 @@ internal object EtaFullBackupArchive {
                 recordCount = recordCounts[name] ?: 0,
             )
         }
+        val archivedPaths = entries.mapTo(mutableSetOf()) { normalizeEntry(it.path) }
+            .apply {
+                addAll(directories.map { normalizeEntry(it.path) })
+                addAll(links.map { normalizeEntry(it.path) })
+            }
         return EtaFullBackupManifest(
             format = FORMAT,
             schemaVersion = SCHEMA_VERSION,
@@ -646,9 +817,13 @@ internal object EtaFullBackupArchive {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
             }.getOrElse { "" },
             encrypted = encrypted,
-            roots = roots.map { EtaBackupRootManifest(it, File(context.dataDir, it).exists()) },
+            roots = roots.map { name ->
+                EtaBackupRootManifest(name, DATA_PREFIX + name in archivedPaths)
+            },
             sections = sections,
             entries = entries,
+            links = links,
+            directories = directories,
             totalEntries = entries.size,
             totalBytes = entries.sumOf { it.size },
             providerCount = logical.providerCount,
@@ -666,8 +841,11 @@ internal object EtaFullBackupArchive {
             while (true) {
                 currentCoroutineContext().ensureActive()
                 val entry = zip.nextEntry ?: break
+                count++
+                if (count > MAX_ENTRIES) throw EtaBackupException("备份条目过多")
                 if (entry.isDirectory) {
-                    val path = normalizeEntry(entry.name).trimEnd('/')
+                    val path = normalizeEntry(entry.name.trimEnd('/'))
+                    if (!seen.add(path)) throw EtaBackupException("备份包含重复条目")
                     if (path.startsWith(DATA_PREFIX) &&
                         path.removePrefix(DATA_PREFIX).substringBefore('/') in roots
                     ) {
@@ -676,8 +854,6 @@ internal object EtaFullBackupArchive {
                     zip.closeEntry()
                     continue
                 }
-                count++
-                if (count > MAX_ENTRIES) throw EtaBackupException("备份条目过多")
                 val path = normalizeEntry(entry.name)
                 if (path != JSON_ENTRY && path != MANIFEST_ENTRY && !path.startsWith(DATA_PREFIX)) {
                     throw EtaBackupException("备份包含不支持的条目")
@@ -723,6 +899,7 @@ internal object EtaFullBackupArchive {
         if (manifest.format != FORMAT || manifest.schemaVersion !in 1..SCHEMA_VERSION) {
             throw EtaBackupException("不支持的完整备份版本")
         }
+        validateFileMetadata(manifest)
         if (expectedEncrypted != null && manifest.encrypted != expectedEncrypted) {
             throw EtaBackupException("备份加密状态与清单不一致")
         }
@@ -740,8 +917,13 @@ internal object EtaFullBackupArchive {
             throw EtaBackupException("备份清单缺少必要数据根目录")
         }
         manifest.roots.forEach { root ->
-            val present = File(directory, DATA_PREFIX + root.name).exists()
-            if (root.present != present) throw EtaBackupException("备份数据根目录状态不一致")
+            val present = Files.exists(
+                File(directory, DATA_PREFIX + root.name).toPath(),
+                NOFOLLOW_LINKS,
+            )
+            if (root.present != present) {
+                throw EtaBackupException("备份数据根目录状态不一致：${root.name}")
+            }
         }
         if (manifest.entries.any { it.section !in SECTION_NAMES || it.recordCount < 0 }) {
             throw EtaBackupException("备份清单包含无效分区")
@@ -758,16 +940,26 @@ internal object EtaFullBackupArchive {
                 throw EtaBackupException("备份清单包含不支持的文件")
             }
             val target = File(directory, path)
-            if (!target.isFile) throw EtaBackupException("备份文件缺少 ${entry.path}")
+            if (!Files.isRegularFile(target.toPath(), NOFOLLOW_LINKS)) throw EtaBackupException("备份文件缺少 ${entry.path}")
             if (target.length() != entry.size) throw EtaBackupException("备份文件大小校验失败")
             if (sha256(target) != entry.sha256) throw EtaBackupException("备份文件哈希校验失败")
         }
         val listed = manifest.entries.mapTo(mutableSetOf()) { normalizeEntry(it.path) }
-        directory.walkTopDown().filter(File::isFile).forEach { file ->
-            val relative = file.relativeTo(directory).invariantSeparatorsPath
-            if (relative != MANIFEST_ENTRY && relative !in listed) {
-                throw EtaBackupException("备份包含清单外文件")
+        Files.walkFileTree(directory.toPath(), object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+            override fun visitFile(file: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                val relative = directory.toPath().relativize(file).toString().replace(File.separatorChar, '/')
+                if (!attrs.isRegularFile || (relative != MANIFEST_ENTRY && relative !in listed)) {
+                    throw EtaBackupException("备份包含清单外文件或链接")
+                }
+                return java.nio.file.FileVisitResult.CONTINUE
             }
+        })
+        manifest.directories.forEach {
+            if (!Files.isDirectory(File(directory, it.path).toPath(), NOFOLLOW_LINKS)) throw EtaBackupException("备份缺少目录")
+        }
+        manifest.links.forEach {
+            if (Files.exists(File(directory, it.path).toPath(), NOFOLLOW_LINKS)) throw EtaBackupException("备份链接与已有文件冲突")
+            if (!Files.isDirectory(File(directory, it.path).parentFile!!.toPath(), NOFOLLOW_LINKS)) throw EtaBackupException("备份链接缺少父目录")
         }
         validateSections(directory, manifest)
         return manifest
@@ -796,13 +988,75 @@ internal object EtaFullBackupArchive {
         }
     }
 
+    private fun validateFileMetadata(manifest: EtaFullBackupManifest) {
+        if (manifest.schemaVersion < 3 && (manifest.links.isNotEmpty() || manifest.directories.isNotEmpty())) {
+            throw EtaBackupException("旧版本清单不能包含链接元数据")
+        }
+        val paths = hashSetOf<String>()
+        val linkPaths = manifest.links.mapTo(hashSetOf()) { it.path }
+        val filePaths = manifest.entries.mapTo(hashSetOf()) { it.path }
+        fun validatePath(path: String, directory: Boolean = false) {
+            normalizeEntry(path)
+            if (!paths.add(path)) throw EtaBackupException("备份文件、目录与链接路径冲突")
+            if (path != JSON_ENTRY) {
+                val relative = path.removePrefix(DATA_PREFIX)
+                if (!path.startsWith(DATA_PREFIX) || relative.substringBefore('/') !in roots ||
+                    (!directory && '/' !in relative)
+                ) throw EtaBackupException("备份元数据路径无效")
+            }
+            var parent = path.substringBeforeLast('/', "")
+            while (parent.isNotEmpty()) {
+                if (parent in linkPaths || parent in filePaths) throw EtaBackupException("备份条目不能位于文件或链接之下")
+                parent = parent.substringBeforeLast('/', "")
+            }
+        }
+        manifest.entries.forEach {
+            validatePath(it.path)
+            if (it.size < 0 || (it.mode != null && it.mode !in 0..511)) throw EtaBackupException("备份文件元数据无效")
+        }
+        manifest.directories.forEach {
+            validatePath(it.path, directory = true)
+            if (it.path == JSON_ENTRY || (it.mode != null && it.mode !in 0..511)) throw EtaBackupException("备份目录元数据无效")
+        }
+        manifest.links.forEach { link ->
+            validatePath(link.path)
+            if (!link.path.startsWith("data/files/") || link.target.isEmpty() || link.target.length > 4096 || '\u0000' in link.target) {
+                throw EtaBackupException("备份链接元数据无效")
+            }
+            val guestLink = guestLinkPath.matches(link.path)
+            if (!guestLink) {
+                val target = File(link.target).toPath()
+                val resolved = File(link.path).toPath().parent.resolve(target).normalize()
+                if (target.isAbsolute || '\\' in link.target || drivePrefix.containsMatchIn(link.target) ||
+                    !resolved.startsWith(File("data/files").toPath())
+                ) throw EtaBackupException("工作区链接指向备份范围之外")
+            }
+        }
+        if (paths.size.toLong() + 1 > MAX_ENTRIES) throw EtaBackupException("备份条目过多")
+    }
+
+    /** Link creation is deferred until validation is complete and all regular files have moved. */
+    private fun restoreFileMetadata(context: Context, manifest: EtaFullBackupManifest) {
+        fun live(path: String) = File(context.dataDir, path.removePrefix(DATA_PREFIX)).toPath()
+        manifest.links.forEach { link ->
+            val destination = live(link.path)
+            Files.createSymbolicLink(destination, File(link.target).toPath())
+        }
+        manifest.entries.filter { it.path.startsWith(DATA_PREFIX) }.forEach {
+            EtaBackupFileTree.setMode(live(it.path), it.mode)
+        }
+        manifest.directories.sortedByDescending { it.path.count { char -> char == '/' } }.forEach {
+            EtaBackupFileTree.setMode(live(it.path), it.mode)
+        }
+    }
+
     private fun restoreRoots(context: Context, rollback: File) {
         roots.forEach { root ->
             val target = File(context.dataDir, root)
             val previous = File(rollback, root)
             // A crash may happen before a root has been moved. Leave that original root intact.
             if (previous.exists()) {
-                target.deleteRecursively()
+                EtaBackupFileTree.delete(target)
                 movePath(previous, target)
             }
         }
@@ -810,7 +1064,7 @@ internal object EtaFullBackupArchive {
 
     private fun movePath(source: File, target: File) {
         target.parentFile?.mkdirs()
-        target.deleteRecursively()
+        EtaBackupFileTree.delete(target)
         try {
             Files.move(
                 source.toPath(),
@@ -829,6 +1083,7 @@ internal object EtaFullBackupArchive {
         relative.startsWith("databases/eta_learning.db") -> "learning"
         relative.startsWith("databases/eta_task.db") -> "tasks"
         relative.startsWith("databases/eta_a2a.db") -> "a2a"
+        relative.startsWith("databases/eta_projects.db") -> "projects"
         relative.startsWith("databases/eta.db") -> "core"
         relative.startsWith("databases/eta_notification_history.db") -> "notifications"
         relative.startsWith("databases/") -> "runtime"
@@ -836,13 +1091,17 @@ internal object EtaFullBackupArchive {
             relative.startsWith("shared_prefs/eta_speech_secrets") || relative.startsWith("no_backup/provider_credentials") -> "secrets"
         relative.startsWith("files/datastore/") || relative.startsWith("shared_prefs/") -> "settings"
         relative.startsWith("files/meeting") -> "meeting_artifacts"
-        relative.contains("skill", ignoreCase = true) || relative.contains("mcp", ignoreCase = true) -> "mcp_skills"
+        relative.startsWith("files/learning/") -> "learning"
+        relative.startsWith("files/capability-center/") ||
+            relative.contains("skill", ignoreCase = true) || relative.contains("mcp", ignoreCase = true) -> "mcp_skills"
         else -> "workspace"
     }
 
     private fun normalizeEntry(raw: String): String {
-        val path = raw.replace('\\', '/').trimStart('/')
-        if (path.isBlank() || path.contains('\u0000') || path.split('/').any { it == ".." || it == "." }) {
+        val path = raw
+        if (path.isBlank() || path.startsWith('/') || '\\' in path || path.contains('\u0000') ||
+            drivePrefix.containsMatchIn(path) || path.split('/').any { it.isEmpty() || it == ".." || it == "." }
+        ) {
             throw EtaBackupException("备份条目路径无效")
         }
         return path
@@ -898,6 +1157,7 @@ internal object EtaFullBackupArchive {
         "learning",
         "tasks",
         "a2a",
+        "projects",
         "notifications",
         "mcp_skills",
         "settings",
@@ -916,6 +1176,8 @@ internal data class EtaFullBackupManifest(
     val roots: List<EtaBackupRootManifest>,
     val sections: List<EtaBackupSectionManifest>,
     val entries: List<EtaBackupEntryManifest>,
+    val links: List<EtaBackupLinkManifest> = emptyList(),
+    val directories: List<EtaBackupDirectoryManifest> = emptyList(),
     val totalEntries: Int = 0,
     val totalBytes: Long = 0,
     val providerCount: Int,
@@ -945,6 +1207,7 @@ internal data class EtaBackupEntryManifest(
     val size: Long,
     val sha256: String,
     val recordCount: Int = 0,
+    val mode: Int? = null,
 )
 
 /** Decrypted credentials are held only in memory, the temporary export file, or the backup ZIP. */
@@ -952,6 +1215,7 @@ internal data class EtaBackupEntryManifest(
 internal data class EtaPortableSecrets(
     val providerCredentials: Map<String, ProviderCredential> = emptyMap(),
     val mcpBearerTokens: Map<String, String> = emptyMap(),
+    val apiConnectorCredentials: Map<String, String> = emptyMap(),
     val a2aBearerTokens: Map<String, String> = emptyMap(),
     val a2aInboundToken: String? = null,
     val speechCredentials: SpeechCredentials? = null,
@@ -968,6 +1232,8 @@ internal class EtaBackupEncryptedOutputStream(
     private val key: ByteArray
     private var frame = 0
     private var finished = false
+    private val pending = ByteArray(FRAME_BYTES)
+    private var pendingBytes = 0
 
     init {
         val header = ByteBuffer.allocate(MAGIC.size + 4 + 4 + 1 + salt.size + noncePrefix.size)
@@ -982,20 +1248,40 @@ internal class EtaBackupEncryptedOutputStream(
         key = deriveKey(password, salt, ITERATIONS)
     }
 
-    override fun write(value: Int) = write(byteArrayOf(value.toByte()))
+    override fun write(value: Int) {
+        check(!finished) { "Encrypted backup stream is finished" }
+        pending[pendingBytes++] = value.toByte()
+        if (pendingBytes == pending.size) flushFrame()
+    }
 
     override fun write(buffer: ByteArray, offset: Int, length: Int) {
         check(!finished) { "Encrypted backup stream is finished" }
+        require(offset >= 0 && length >= 0 && offset <= buffer.size - length)
         var consumed = 0
         while (consumed < length) {
-            val count = minOf(FRAME_BYTES, length - consumed)
-            writeFrame(buffer.copyOfRange(offset + consumed, offset + consumed + count), final = false)
+            val count = minOf(pending.size - pendingBytes, length - consumed)
+            buffer.copyInto(pending, pendingBytes, offset + consumed, offset + consumed + count)
+            pendingBytes += count
             consumed += count
+            if (pendingBytes == pending.size) flushFrame()
         }
+    }
+
+    private fun flushFrame() {
+        if (pendingBytes == 0) return
+        writeFrame(pending.copyOf(pendingBytes), final = false)
+        pending.fill(0, 0, pendingBytes)
+        pendingBytes = 0
+    }
+
+    override fun flush() {
+        if (!finished) flushFrame()
+        out.flush()
     }
 
     fun finish() {
         if (finished) return
+        flushFrame()
         writeFrame(ByteArray(0), final = true)
         out.writeInt(END_MARKER)
         out.flush()

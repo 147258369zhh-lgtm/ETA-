@@ -2,12 +2,20 @@ package io.github.mangi.eta.ui.screens.a2a
 
 import android.Manifest
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.os.PersistableBundle
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -15,7 +23,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CloudQueue
+import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -34,6 +44,7 @@ import io.github.mangi.eta.fork.a2a.A2AAgentEntity
 import io.github.mangi.eta.fork.a2a.A2AAgentRepository
 import io.github.mangi.eta.fork.a2a.A2AInboundConfigStore
 import io.github.mangi.eta.fork.a2a.A2AInboundService
+import io.github.mangi.eta.fork.a2a.A2APairingCode
 import io.github.mangi.eta.fork.a2a.A2AArtifactEntity
 import io.github.mangi.eta.fork.a2a.A2AArtifactQuarantineState
 import io.github.mangi.eta.fork.a2a.A2AHttpClient
@@ -80,6 +91,7 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
     var cardUrl by remember { mutableStateOf("") }
     var bearerToken by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var pairingNotice by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var showInboundToken by remember { mutableStateOf(false) }
     var inboundPermissionError by remember { mutableStateOf<String?>(null) }
@@ -99,6 +111,29 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
             inboundPermissionError = "需要“本地网络”权限，其他设备才能访问 Eta。"
         }
     }
+    fun importPairingFromClipboard() {
+        val raw = readClipboardText(context)
+        if (raw.isNullOrBlank()) {
+            pairingNotice = null
+            error = "剪贴板中没有可导入的 A2A 连接信息"
+            showAddDialog = true
+            return
+        }
+        runCatching { A2APairingCode.decode(raw) }
+            .onSuccess { pairing ->
+                displayName = pairing.displayName
+                cardUrl = pairing.agentCardUrl
+                bearerToken = pairing.bearerToken.orEmpty()
+                error = null
+                pairingNotice = "已从剪贴板填入连接信息，请核对后添加。"
+                showAddDialog = true
+            }
+            .onFailure { failure ->
+                pairingNotice = null
+                error = failure.message ?: "A2A 连接信息格式不正确"
+                showAddDialog = true
+            }
+    }
 
     MiuixScaffoldPage(
         title = "A2A Agent",
@@ -106,8 +141,15 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
         actions = {
             IconButton(
                 enabled = !busy,
+                onClick = ::importPairingFromClipboard,
+            ) {
+                Icon(Icons.Rounded.ContentPaste, contentDescription = "从剪贴板导入 A2A 配对信息")
+            }
+            IconButton(
+                enabled = !busy,
                 onClick = {
                     error = null
+                    pairingNotice = null
                     showAddDialog = true
                 },
             ) {
@@ -120,41 +162,60 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                 title = "添加 A2A Agent",
                 onDismissRequest = { if (!busy) showAddDialog = false },
             ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    TextField(
-                        value = displayName,
-                        onValueChange = { displayName = it },
-                        label = "显示名称（可留空，使用 Agent Card 名称）",
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    TextField(
-                        value = cardUrl,
-                        onValueChange = { cardUrl = it.trim() },
-                        label = "Agent Card URL（HTTPS 或局域网 HTTP）",
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    TextField(
-                        value = bearerToken,
-                        onValueChange = { bearerToken = it },
-                        label = "Bearer Token（可选，存入 Android Keystore）",
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        text = "公网地址必须使用 HTTPS。私网 HTTP 仅允许你明确填写的精确局域网主机，避免开放任意内网地址。",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
-                    error?.let {
-                        Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote1)
+                Column(Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        TextButton(
+                            text = "从剪贴板导入配对信息",
+                            enabled = !busy,
+                            onClick = ::importPairingFromClipboard,
+                        )
+                        pairingNotice?.let {
+                            Text(
+                                text = it,
+                                color = StatusSuccess,
+                                style = MiuixTheme.textStyles.footnote1,
+                            )
+                        }
+                        TextField(
+                            value = displayName,
+                            onValueChange = { displayName = it },
+                            label = "显示名称（可留空，使用 Agent Card 名称）",
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TextField(
+                            value = cardUrl,
+                            onValueChange = { cardUrl = it.trim() },
+                            label = "Agent Card URL（HTTPS 或局域网 HTTP）",
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TextField(
+                            value = bearerToken,
+                            onValueChange = { bearerToken = it },
+                            label = "Bearer Token（可选，存入 Android Keystore）",
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = "公网地址必须使用 HTTPS。私网 HTTP 仅允许你明确填写的精确局域网主机，避免开放任意内网地址。",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                        error?.let {
+                            Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote1)
+                        }
                     }
+                    Spacer(Modifier.height(12.dp))
                     MiuixDialogActions(
-                        confirmText = if (busy) "发现中…" else "发现并添加",
+                        confirmText = if (busy) "发现中…" else "添加",
+                        cancelText = "取消",
                         onCancel = { if (!busy) showAddDialog = false },
                         onConfirm = {
                             if (busy) return@MiuixDialogActions
@@ -281,7 +342,9 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                             )
                             TextButton(
                                 text = "复制",
-                                onClick = { copyText(context, "Eta A2A Token", inbound.token) },
+                                onClick = {
+                                    copyText(context, "Eta A2A Token", inbound.token, sensitive = true)
+                                },
                             )
                             TextButton(
                                 text = "轮换",
@@ -293,6 +356,46 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                             style = MiuixTheme.textStyles.footnote2,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
+                        inbound.agentCardUrl?.let { cardUrl ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Link,
+                                    contentDescription = null,
+                                    tint = MiuixTheme.colorScheme.primary,
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "一键配对连接",
+                                        style = MiuixTheme.textStyles.body2,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                    Text(
+                                        text = "包含当前 Bearer Token，只发送给你信任的设备。",
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    )
+                                }
+                                TextButton(
+                                    text = "复制",
+                                    onClick = {
+                                        copyText(
+                                            context = context,
+                                            label = "Eta A2A 配对信息",
+                                            value = A2APairingCode.encode(
+                                                displayName = "Eta 手机",
+                                                agentCardUrl = cardUrl,
+                                                bearerToken = inbound.token,
+                                            ),
+                                            sensitive = true,
+                                        )
+                                    },
+                                )
+                            }
+                        }
                     } else {
                         Text(
                             text = "开启后会生成仅存放于 Android Keystore 的 Bearer Token。",
@@ -321,6 +424,18 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
             items(agents, key = { it.id }) { agent ->
                 A2AAgentCard(
                     agent = agent,
+                    onEnabledChange = { enabled ->
+                        scope.launch {
+                            runCatching { repository.setAgentEnabled(agent.id, enabled) }
+                                .onFailure { failure ->
+                                    Toast.makeText(
+                                        context,
+                                        failure.message ?: "无法更新 A2A Agent 状态",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                        }
+                    },
                     onRefresh = {
                         scope.launch {
                             runCatching {
@@ -375,14 +490,36 @@ private fun CopyableEndpoint(label: String, value: String) {
     }
 }
 
-private fun copyText(context: android.content.Context, label: String, value: String) {
+private fun readClipboardText(context: android.content.Context): String? =
     context.getSystemService(ClipboardManager::class.java)
-        .setPrimaryClip(ClipData.newPlainText(label, value))
+        ?.primaryClip
+        ?.takeIf { it.itemCount > 0 }
+        ?.getItemAt(0)
+        ?.coerceToText(context)
+        ?.toString()
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+
+private fun copyText(
+    context: android.content.Context,
+    label: String,
+    value: String,
+    sensitive: Boolean = false,
+) {
+    val clip = ClipData.newPlainText(label, value)
+    if (sensitive) {
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+    Toast.makeText(context, "已复制$label", Toast.LENGTH_SHORT).show()
 }
 
 @Composable
 private fun A2AAgentCard(
     agent: A2AAgentEntity,
+    onEnabledChange: (Boolean) -> Unit,
     onRefresh: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -413,6 +550,10 @@ private fun A2AAgentCard(
                     modifier = Modifier.padding(top = 3.dp),
                 )
             }
+            Switch(
+                checked = agent.enabled,
+                onCheckedChange = onEnabledChange,
+            )
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Rounded.Refresh, contentDescription = "刷新 Agent Card")
             }

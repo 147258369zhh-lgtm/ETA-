@@ -2,7 +2,6 @@ package io.github.mangi.eta.ui.screens.home
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import io.github.mangi.eta.ui.components.AgentChatBody
@@ -10,7 +9,8 @@ import io.github.mangi.eta.ui.components.AgentConversationLoadState
 import io.github.mangi.eta.ui.components.LocalRoleplayChat
 import io.github.mangi.eta.ui.components.LocalAgentBrowserSession
 import io.github.mangi.eta.agent.browser.BrowserSessionRegistry
-import io.github.mangi.eta.ui.components.chatConversationCompositionKey
+import io.github.mangi.eta.ui.components.ConversationStage
+import io.github.mangi.eta.data.model.ConversationSubject
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
 import io.github.mangi.eta.ui.model.AgentHomeAction
@@ -29,6 +29,7 @@ internal fun AgentHomeScreen(
     modelPickerState: AgentModelPickerUiState,
     conversationKey: String?,
     onAction: (AgentHomeAction) -> Unit,
+    onSubmitMessage: (String, Boolean) -> Boolean,
     onNewConversation: () -> Unit,
     isLoadingConversation: Boolean = false,
     conversationLoadFailed: Boolean = false,
@@ -37,7 +38,7 @@ internal fun AgentHomeScreen(
     modifier: Modifier = Modifier,
 ) {
     // key 内保持完整分支，避免提前返回遗留无法转换为 DEX 的编译器标记。
-    key(chatConversationCompositionKey(conversationKey)) {
+    ConversationStage(ConversationSubject.chat(conversationKey)) {
         if (!state.isConversationLoaded) {
             AgentConversationLoadState(
                 isLoading = isLoadingConversation,
@@ -65,14 +66,18 @@ internal fun AgentHomeScreen(
                     pendingFileReferences = state.pendingFileReferences,
                     queuedMessages = state.queuedMessages,
                     inputSyncVersion = state.inputSyncVersion,
+                    onInputSyncApplied = { version, text ->
+                        onAction(AgentHomeAction.InputSyncApplied(conversationKey, version, text))
+                    },
                     focusInputOnSync = state.focusInputOnSync,
                     messageEdit = state.messageEdit,
                     onReasoningEffortChange = { onAction(AgentHomeAction.ReasoningEffortChanged(it)) },
                     onCompactContext = { onAction(AgentHomeAction.CompactContext) },
+                    onConfigureContextBudget = { onAction(AgentHomeAction.ConfigureContextBudget) },
                     canCompactContext = state.canCompactContext,
                     onModelSelected = { onAction(AgentHomeAction.ModelSelected(it)) },
-                    onSubmit = { text -> onAction(AgentHomeAction.SubmitMessage(text)) },
-                    onInterruptAndSubmit = { text -> onAction(AgentHomeAction.InterruptAndSubmitMessage(text)) },
+                    onSubmit = { text -> onSubmitMessage(text, false) },
+                    onInterruptAndSubmit = { text -> onSubmitMessage(text, true) },
                     onSteerQueuedMessage = { id -> onAction(AgentHomeAction.SteerQueuedMessage(id)) },
                     onRecallQueuedMessage = { id, draft -> onAction(AgentHomeAction.RecallQueuedMessage(id, draft)) },
                     onRemoveQueuedMessage = { id -> onAction(AgentHomeAction.RemoveQueuedMessage(id)) },
@@ -87,11 +92,13 @@ internal fun AgentHomeScreen(
                     onCancelMessageEdit = { onAction(AgentHomeAction.CancelMessageEdit) },
                     onDeleteMessage = { id -> onAction(AgentHomeAction.DeleteMessage(id)) },
                     onRegenerateMessage = { id -> onAction(AgentHomeAction.RegenerateMessage(id)) },
+                    onForkMessage = { id -> onAction(AgentHomeAction.ForkMessage(id)) },
                     onSelectReplyCandidate = { id, index -> onAction(AgentHomeAction.SelectReplyCandidate(id, index)) },
                     onSuggestionClick = { prompt ->
                         onAction(AgentHomeAction.SubmitMessage(prompt))
                     },
                     onRunTraceClick = { onAction(AgentHomeAction.ExpandRunTrace) },
+                    onOpenPermissions = { onAction(AgentHomeAction.OpenPermissions) },
                     onOpenBrowser = { onAction(AgentHomeAction.OpenBrowser) },
                     onNewConversation = onNewConversation,
                     hasEarlierMessages = state.hasEarlierMessages,

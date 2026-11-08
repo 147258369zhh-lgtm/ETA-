@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeper
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
+import io.github.mangi.eta.agent.accessibility.AccessibilityRunGate
 import io.github.mangi.eta.agent.browser.BrowserSessionRegistry
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentConversationToolCatalog
@@ -10,17 +12,29 @@ import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
 import io.github.mangi.eta.agent.model.AgentModelFailure
+import io.github.mangi.eta.agent.model.AgentModelFallbackPolicy
+import io.github.mangi.eta.agent.model.ModelFallbackProgress
 import io.github.mangi.eta.agent.model.AgentHttpClient
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.memory.AgentMemoryContextBuilder
 import io.github.mangi.eta.agent.memory.ConversationMemoryPins
+import io.github.mangi.eta.agent.memory.MemoryAutomationCapture
+import io.github.mangi.eta.agent.memory.MemoryAutomationSettingsStore
+import io.github.mangi.eta.agent.memory.MemoryReviewRepository
+import io.github.mangi.eta.agent.memory.MemorySearchTool
+import io.github.mangi.eta.fork.learning.LearningDatabase
 import io.github.mangi.eta.agent.roleplay.CharacterMemoryTools
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
+import io.github.mangi.eta.agent.prompt.PromptRunScope
 import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
 import io.github.mangi.eta.agent.subagent.SubagentExecutor
 import io.github.mangi.eta.agent.mcp.McpRunSnapshot
 import io.github.mangi.eta.agent.mcp.McpToolExecutor
 import io.github.mangi.eta.agent.mcp.RoutingToolExecutor
+import io.github.mangi.eta.agent.capability.ApiConnectorSnapshot
+import io.github.mangi.eta.agent.capability.ApiToolExecutor
+import io.github.mangi.eta.agent.capability.ManagedToolPackageRuntimeSnapshot
+import io.github.mangi.eta.agent.capability.ManagedToolPackageToolExecutor
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
 import io.github.mangi.eta.agent.skill.SkillContext
@@ -35,7 +49,10 @@ import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
+import io.github.mangi.eta.data.repository.AgentMemoryScope
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.fork.projects.ProjectRepository
+import io.github.mangi.eta.fork.projects.ProjectSubjectType
 import io.github.mangi.eta.fork.learning.AgentLearningTools
 import io.github.mangi.eta.fork.learning.LearningRepository
 import io.github.mangi.eta.fork.learning.LearningSettingsStore
@@ -77,6 +94,10 @@ internal class AgentRuntimeRunExecutor(
     ): Outcome {
         val runController = session.controller
         val archivedEvents = AgentRunArchiveStore.createEventBuffer(request.handoff)
+        val experienceEvents = mutableListOf<AgentEvent>()
+        val usedSkillIds = linkedSetOf<String>()
+        var experienceVerified = true
+        var selectedSkillPolicy: AgentToolPolicy? = null
         var entrySurfaceGuard: EntrySurfaceGuard? = null
         var toolExecutor: AutoCloseable? = null
         var toolsBinding: AgentRunController.ResourceBinding? = null
@@ -89,7 +110,15 @@ internal class AgentRuntimeRunExecutor(
 
         // 失败清理需要在 try 外拿到会话 id。
         var memoryConversationId: String? = null
+        MemoryAutomationCapture.activeRuns.incrementAndGet()
+        MemoryAutomationSettingsStore.touch(appContext)
         val result = try {
+            runController.throwIfCancelled()
+            val setupConversationId = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
+            check(runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                io.github.mangi.eta.data.repository.ConversationBranchSetupCoordinator.ensure(appContext, setupConversationId)
+            }) { appContext.getString(io.github.mangi.eta.R.string.branch_setup_required) }
+            runController.throwIfCancelled()
             val contextWindow = request.config.knownContextWindow
             checkpointRecorder = AgentRunCheckpointRecorder.create(appContext, request)
             entrySurfaceGuard = EntrySurfaceGuard.from(
@@ -107,7 +136,7 @@ internal class AgentRuntimeRunExecutor(
                 cacheRoot = appContext.cacheDir,
                 baseClient = AgentHttpClient.client,
             )
-            val skillContext = SkillContext(
+            var skillContext = SkillContext(
                 installedSkills = skillIndexService.listInstalledSkills()
                     .filter { SkillCompatibilityChecker.evaluate(it).available },
             )
@@ -118,9 +147,41 @@ internal class AgentRuntimeRunExecutor(
             val conversationId = uiPayload?.conversationId
                 ?.takeIf { it.isNotBlank() }
             memoryConversationId = conversationId
+            val meetingId = request.handoff?.takeIf { it.source == AgentRuntimeWire.MEETING_HANDOFF_SOURCE }
+                ?.payload?.trim()?.takeIf { it.isNotBlank() }
+            val taskId = request.handoff?.takeIf { it.source == "scheduled_task" }
+                ?.payload?.trim()?.takeIf { it.isNotBlank() }
+            val projectId = runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                when {
+                    conversationId != null -> ProjectRepository.bindingForSubject(
+                        appContext, ProjectSubjectType.CONVERSATION, conversationId,
+                    )?.projectId
+                    meetingId != null -> ProjectRepository.bindingForSubject(
+                        appContext, ProjectSubjectType.MEETING, meetingId,
+                    )?.projectId
+                    taskId != null -> io.github.mangi.eta.fork.tasks.AgentTaskDatabase.get(appContext).agentTaskDao().definition(taskId)?.let {
+                        io.github.mangi.eta.fork.tasks.AutomationSpec.parse(it.policyJson).projectId
+                    }
+                    else -> null
+                }
+            }
+            val projectMemoryScope = projectId?.let(AgentMemoryScope::project)
+            val runMemoryScope = when {
+                taskId != null -> AgentMemoryScope.task(taskId)
+                meetingId != null -> AgentMemoryScope.meeting(meetingId)
+                conversationId != null -> AgentMemoryScope.conversation(conversationId)
+                else -> AgentMemoryScope.GLOBAL
+            }
             val roleplayContext = conversationId?.let { id ->
                 runBlocking { RoleplayRunContext.resolve(appContext, id, contextWindow, memoryEnabled) }
             }
+            // 提示词注入的作用域由请求与本次 run 的实际对象共同确定；请求已给出的标识优先。
+            val promptScope = request.promptScope.withDefaults(
+                conversationId = conversationId,
+                characterId = roleplayContext?.characterId,
+                meetingRoomId = meetingId,
+                automationId = taskId,
+            )
             if (request.operation == AgentRuntimeWire.OP_REWRITE_REPLY) {
                 require(roleplayContext != null) { "只有角色会话可以改写角色回复" }
                 val target = request.rewriteTargetMessageId?.takeIf { it.isNotBlank() && it.length <= 256 }
@@ -134,12 +195,28 @@ internal class AgentRuntimeRunExecutor(
                     runBlocking { AgentMemoryRepository.isEnabled() }
                 }
             }
-            val memoryContext = if (memoryEnabled) {
+            val memoryScopes = listOfNotNull(AgentMemoryScope.GLOBAL, projectMemoryScope, runMemoryScope).distinctBy { it.key }
+            skillContext = skillContext.copy(installedSkills = runBlocking {
+                val dao = io.github.mangi.eta.fork.learning.LearningDatabase.get(appContext).skillEvolutionDao()
+                skillContext.installedSkills.filter { skill ->
+                    if (!skill.id.startsWith("auto-")) true else dao.recipe(skill.id)?.let { recipe ->
+                        recipe.version > 0 && recipe.state in setOf("active", "review") && (recipe.scope == "global" || recipe.scope in memoryScopes.map { it.key })
+                    } == true
+                }
+            })
+            val reviewRepository = MemoryReviewRepository(LearningDatabase.get(appContext))
+            val memoryContext = (if (memoryEnabled) {
                 runCatching {
                     ConversationMemoryPins.contextFor(
                         conversationId = conversationId,
                         snapshot = AgentMemoryRepository.snapshot(),
                         contextWindow = request.config.contextWindow,
+                    ).copy(
+                        scopedContent = memoryScopes.filter { it != AgentMemoryScope.GLOBAL }.joinToString("\n\n") { scoped ->
+                            val snapshot = AgentMemoryRepository.snapshot(scoped)
+                            "[${scoped.key}] revision=${snapshot.revision}\n${snapshot.content.take(2400)}"
+                        }.take(6000),
+                        reviewedContent = runBlocking { reviewRepository.context(memoryScopes) },
                     )
                 }.getOrElse { throwable ->
                     AndroidAgentLogger.warnThrottled("agent_memory_context_failed") {
@@ -149,7 +226,15 @@ internal class AgentRuntimeRunExecutor(
                 }
             } else {
                 AgentMemoryContext.DISABLED
-            }
+            }).copy(learnedContent = if (roleplayContext == null && LearningSettingsStore.isEnabled(appContext)) {
+                runCatching { runBlocking { LearningRepository.get(appContext).context() } }.getOrElse { throwable ->
+                    AndroidAgentLogger.warnThrottled("agent_learning_context_failed") {
+                        "Agent learning context unavailable: type=${throwable.safeLogType()}"
+                    }
+                    ""
+                }
+            } else "")
+            val memorySearch = MemorySearchTool(appContext, memoryScopes)
             if (request.config.terminalTools) {
                 // 启动探测由 App 拥有；模型首轮等待其结果，避免把检测中的授权当成普通设备。
                 runBlocking {
@@ -168,7 +253,25 @@ internal class AgentRuntimeRunExecutor(
                     McpRunSnapshot.EMPTY
                 }
             }
-            val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
+            val apiSnapshot = runCatching { ApiConnectorSnapshot.load(appContext) }.getOrElse { throwable ->
+                AndroidAgentLogger.warnThrottled("agent_api_snapshot_failed") {
+                    "REST API tool snapshot unavailable: type=${throwable.safeLogType()}"
+                }
+                ApiConnectorSnapshot.EMPTY
+            }
+            val managedPackageSnapshot = runCatching {
+                ManagedToolPackageRuntimeSnapshot.load(appContext)
+            }.getOrElse { throwable ->
+                AndroidAgentLogger.warnThrottled("agent_managed_packages_snapshot_failed") {
+                    "Plugin and sandbox tool snapshot unavailable: type=${throwable.safeLogType()}"
+                }
+                ManagedToolPackageRuntimeSnapshot(appContext, emptyList())
+            }
+            val externalTools = JSONArray().also { tools ->
+                mcpSnapshot.appendModelTools(tools)
+                apiSnapshot.appendModelTools(tools)
+                managedPackageSnapshot.appendModelTools(tools)
+            }
             val browserKey = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
             browserBinding = BrowserSessionRegistry.acquireRun(browserKey, request.runId)
             guiRun = guiControl.openRun(request.runId, runController) { status ->
@@ -177,12 +280,22 @@ internal class AgentRuntimeRunExecutor(
                     entrySurfaceGuard, checkpointRecorder,
                 )
             }
+            val accessibilityGate = AccessibilityRunGate(
+                controller = runController,
+                gui = checkNotNull(guiRun),
+                serviceAvailable = AgentAccessibilityService::isAvailable,
+                requestRecovery = { AgentAccessibilityKeeper.ensureEnabledForGuiOperation(appContext) },
+                onEvent = { event ->
+                    acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
+                },
+            )
             val executor = AgentLocalTools(
                 context = appContext,
                 logger = AndroidAgentLogger,
                 browserRunId = request.runId,
                 browserSession = BrowserSessionRegistry.get(browserKey),
                 guiControl = guiRun,
+                automationWritesAllowed = { request.handoff?.source != "scheduled_task" },
                 browserToolsEnabled = {
                     request.config.browserTools && currentPermissions().browserTools
                 },
@@ -204,9 +317,13 @@ internal class AgentRuntimeRunExecutor(
                     runBlocking { AgentMemoryRepository.isEnabled() }
                 },
                 memoryWritable = roleplayContext == null,
+                memoryScope = AgentMemoryScope.GLOBAL,
+                projectMemoryScope = projectMemoryScope,
+                runMemoryScope = runMemoryScope,
                 screenshotExcludedPackages = {
                     entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty()
                 },
+                beforeGuiAcquisition = accessibilityGate::prepare,
                 beforeToolExecution = { toolName ->
                     val requiresAccessibility =
                         AgentToolRequirements.requiresAccessibility(toolName)
@@ -217,16 +334,15 @@ internal class AgentRuntimeRunExecutor(
                         ToolExecutionDecision.Allow
                     } else {
                         val accessibility = if (requiresAccessibility) {
-                            AgentAccessibilityKeeper.ensureEnabledForGuiOperation(appContext)
+                            AgentAccessibilityService.isAvailable()
                         } else {
                             null
                         }
                         when {
-                            accessibility != null && !accessibility.available ->
-                                ToolExecutionDecision.Reject(
-                                    code = accessibility.code,
-                                    message = accessibility.message,
-                                )
+                            accessibility == false -> ToolExecutionDecision.Reject(
+                                code = "ACCESSIBILITY_DISCONNECTED",
+                                message = "无障碍在取得屏幕操作权后断开，本次未执行；请重新观察，恢复等待将释放操作权。",
+                            )
                             entrySurfaceGuard?.dismissOnce() == false ->
                                 ToolExecutionDecision.Reject(
                                     code = "ENTRY_SURFACE_NOT_READY",
@@ -247,7 +363,11 @@ internal class AgentRuntimeRunExecutor(
             )
             val routingExecutor = RoutingToolExecutor(
                 local = executor,
-                mcp = McpToolExecutor(mcpSnapshot),
+                providers = listOf(
+                    McpToolExecutor(mcpSnapshot),
+                    ApiToolExecutor(appContext, apiSnapshot),
+                    ManagedToolPackageToolExecutor(managedPackageSnapshot, executor),
+                ),
             )
             toolExecutor = routingExecutor
             toolsBinding = runController.register(routingExecutor::close)
@@ -272,6 +392,7 @@ internal class AgentRuntimeRunExecutor(
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentController = runController,
+                promptScope = promptScope,
                 configProvider = { profileName, explicitProviderId, explicitModelId, explicitReasoningEffort ->
                     val resolved = runBlocking {
                         RuntimeConfigRepository.subagentRuntimeConfig(
@@ -287,11 +408,17 @@ internal class AgentRuntimeRunExecutor(
                     )
                 },
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
-                baseToolExecutor = routingExecutor,
+                baseToolExecutor = AgentModelClient.ToolExecutor { call ->
+                    if (request.toolPolicy.isAllowed(call.name) && (selectedSkillPolicy?.isAllowed(call.name) != false)) routingExecutor.execute(call)
+                    else AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "PARENT_TOOL_BOUNDARY_DENIED").toString())
+                },
                 skillContext = skillContext,
                 memoryContext = memoryContext,
-                mcpTools = mcpTools,
+                mcpTools = externalTools,
                 executionContext = executor.terminalExecutionContext,
+                metricsScope = session.telemetry?.scope,
+                inheritedToolPolicy = request.toolPolicy,
+                currentToolPolicy = { request.toolPolicy.intersect(selectedSkillPolicy ?: AgentToolPolicy.UNRESTRICTED) },
                 onProgress = { progressEvent ->
                     acceptEvent(
                         session,
@@ -302,7 +429,7 @@ internal class AgentRuntimeRunExecutor(
                     )
                 },
             )
-            val runTools = JSONArray(mcpTools.toString()).also { tools ->
+            val runTools = JSONArray(externalTools.toString()).also { tools ->
                 if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools)
                 if (historyTool != null) tools.put(AgentConversationToolCatalog.schema())
                 if (characterMemoryTools != null && memoryEnabled) CharacterMemoryTools.appendSchemas(tools)
@@ -310,9 +437,10 @@ internal class AgentRuntimeRunExecutor(
                     val schemas = AgentLearningTools.schemas()
                     for (index in 0 until schemas.length()) tools.put(schemas.getJSONObject(index))
                 }
+                if (memoryEnabled && roleplayContext == null) tools.put(MemorySearchTool.schema())
             }
             val runToolExecutor = AgentModelClient.ToolExecutor { call ->
-                if (!request.toolPolicy.isAllowed(call.name)) {
+                if (!request.toolPolicy.isAllowed(call.name) || selectedSkillPolicy?.isAllowed(call.name) == false) {
                     AgentModelClient.ToolResult(
                         JSONObject()
                             .put("ok", false)
@@ -340,57 +468,150 @@ internal class AgentRuntimeRunExecutor(
                     characterMemoryTools.execute(call)
                 } else if (learningTools != null && call.name in AgentLearningTools.NAMES) {
                     learningTools.execute(call)
+                } else if (call.name == "memory_search" && roleplayContext == null && memoryEnabled) {
+                    memorySearch.execute(call)
                 } else routingExecutor.execute(call).also { result ->
+                    if (call.name == "skills_read") runCatching { JSONObject(result.content) }.getOrNull()
+                        ?.takeIf { it.optBoolean("ok") }?.optString("id")?.takeIf(String::isNotBlank)?.let { id ->
+                            usedSkillIds.add(id)
+                            val recipe = runBlocking { LearningDatabase.get(appContext).skillEvolutionDao().recipe(id) }
+                            if (recipe != null) {
+                                val skillPolicy = AgentToolPolicy(
+                                    recipe.tools.lines() + listOf(
+                                        "skills_read", "skills_read_resource", "skills_list",
+                                        "get_current_context", "release_gui",
+                                    ),
+                                )
+                                selectedSkillPolicy = selectedSkillPolicy?.union(skillPolicy) ?: skillPolicy
+                            }
+                        }
                     if (call.name == "memory_write") {
                         runCatching { JSONObject(result.content) }.getOrNull()
                             ?.takeIf { it.optBoolean("ok") }
-                            ?.let { ConversationMemoryPins.recordOwnWrite(conversationId, it.optString("revision")) }
+                            ?.let {
+                                ConversationMemoryPins.recordOwnWrite(conversationId, it.optString("revision"))
+                                if (taskId == null) io.github.mangi.eta.fork.tasks.AutomationTriggers.signal(appContext,
+                                    io.github.mangi.eta.fork.tasks.AutomationTrigger.MEMORY_UPDATED, request.runId + ":" + it.optString("revision"))
+                            }
                     }
                 }
             }
-            val completedResponse = AgentModelClient.complete(
-                config = request.config,
-                sessionId = request.effectiveModelSessionId,
-                operationId = request.runId,
-                initialUserMessageId = uiPayload?.promptMessageId(request.runId) ?: "user-${request.runId}",
-                initialSupplementIndex = uiPayload?.lastSupplementIndex ?: 0,
-                roleplayContext = roleplayContext,
-                rewriteReply = request.operation == AgentRuntimeWire.OP_REWRITE_REPLY,
-                compactOnly = request.operation == AgentRuntimeWire.OP_COMPACT,
-                onContextSnapshot = { snapshot ->
-                    // 压缩会把历史里的记忆写入摘要掉，下一轮需要重新注入最新记忆。
-                    ConversationMemoryPins.forget(conversationId)
-                    val committed = snapshot.copy(operationId = request.runId)
-                    AgentRunCheckpointStore.saveContext(appContext, request.runId, committed)
-                    session.updateContext(committed)
-                },
-                onTranscript = { transcript ->
-                    AgentRunCheckpointStore.saveTranscript(appContext, request.runId, transcript)
-                    session.updateTranscript(transcript)
-                },
-                capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
-                prompt = request.prompt,
-                assistantScreenContext = request.assistantScreenContext,
-                toolExecutor = runToolExecutor,
-                images = request.images,
-                history = request.history,
-                runController = runController,
-                skillContext = skillContext,
-                memoryContext = memoryContext,
-                additionalTools = runTools,
-                toolFilter = request.toolPolicy::filterSchemas,
-                executionContext = executor.terminalExecutionContext,
-            ) { event ->
-                timing.accept(event)
+            val fallbackProgress = ModelFallbackProgress()
+            val fallbackToolExecutor = AgentModelClient.ToolExecutor {
+                AgentModelClient.ToolResult(
+                    JSONObject().put("ok", false).put("code", "FALLBACK_TOOLS_DISABLED")
+                        .put("message", "备用模型仅提供文字答复，不执行工具").toString(),
+                )
+            }
+            fun completeWith(config: AgentModelClient.ModelConfig, fallback: Boolean = false): AgentModelClient.ModelResponse.Text {
+                session.telemetry?.modelAttempt(config)
+                return AgentModelClient.complete(
+                    config = config,
+                    metricsScope = session.telemetry?.scope,
+                    sessionId = request.effectiveModelSessionId,
+                    operationId = request.runId,
+                    initialUserMessageId = uiPayload?.promptMessageId(request.runId) ?: "user-${request.runId}",
+                    initialSupplementIndex = uiPayload?.lastSupplementIndex ?: 0,
+                    roleplayContext = roleplayContext,
+                    rewriteReply = request.operation == AgentRuntimeWire.OP_REWRITE_REPLY,
+                    compactOnly = request.operation == AgentRuntimeWire.OP_COMPACT,
+                    compactionSelection = request.compactionSelection,
+                    onContextSnapshot = { snapshot ->
+                        // 压缩会把历史里的记忆写入摘要掉，下一轮需要重新注入最新记忆。
+                        ConversationMemoryPins.forget(conversationId)
+                        val committed = snapshot.copy(operationId = request.runId)
+                        AgentRunCheckpointStore.saveContext(appContext, request.runId, committed)
+                        session.updateContext(committed)
+                    },
+                    onTranscript = { transcript ->
+                        AgentRunCheckpointStore.saveTranscript(appContext, request.runId, transcript)
+                        session.updateTranscript(transcript)
+                    },
+                    capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
+                    prompt = request.prompt,
+                    assistantScreenContext = request.assistantScreenContext,
+                    toolExecutor = if (fallback) fallbackToolExecutor else runToolExecutor,
+                    images = request.images,
+                    history = request.history,
+                    runController = runController,
+                    skillContext = skillContext,
+                    memoryContext = memoryContext,
+                    additionalTools = if (fallback) JSONArray() else runTools,
+                    toolFilter = if (!fallback) { schemas ->
+                        request.toolPolicy.filterSchemas(schemas).let { parentFiltered ->
+                            (selectedSkillPolicy ?: AgentToolPolicy.UNRESTRICTED).filterSchemas(parentFiltered)
+                        }
+                    } else { _: JSONArray -> JSONArray() },
+                    executionContext = executor.terminalExecutionContext,
+                    initialRound = if (fallback) fallbackProgress.lastRound + 1 else 1,
+                    textOnlyFallback = fallback,
+                    promptScope = promptScope,
+                ) { event ->
+                    if (event is AgentEvent.ToolFinished && event.success != true) experienceVerified = false
+                    if (event is AgentEvent.ToolStarted || event is AgentEvent.ToolFinished) {
+                        if (experienceEvents.size >= 100) experienceEvents.removeAt(0)
+                        experienceEvents.add(event)
+                    }
+                    fallbackProgress.accept(event)
+                    timing.accept(event)
+                    acceptEvent(
+                        session,
+                        event,
+                        archivedEvents,
+                        entrySurfaceGuard,
+                        checkpointRecorder,
+                    )
+                }
+            }
+            val completedResponse = try {
+                completeWith(request.config)
+            } catch (primaryFailure: AgentModelExecutionException) {
+                val failureKind = AgentModelFallbackPolicy.classify(primaryFailure.cause)
+                val canRestart = fallbackProgress.canRestart && primaryFailure.transcript.isEmpty()
+                val isChat = request.operation == AgentRuntimeWire.OP_CHAT
+                if (!AgentModelFallbackPolicy.decide(failureKind, true, true, canRestart, isChat).useFallback) throw primaryFailure
+                val fallbackConfig = try {
+                    runBlocking { RuntimeConfigRepository.fallbackRuntimeConfig(request.config) }
+                } catch (failure: Exception) {
+                    AndroidAgentLogger.warn("Backup model configuration unavailable: type=${failure.safeLogType()}")
+                    throw primaryFailure
+                }
+                val decision = AgentModelFallbackPolicy.decide(
+                    kind = failureKind,
+                    fallbackConfigured = fallbackConfig != null,
+                    userEnabled = fallbackConfig != null,
+                    canRestart = canRestart,
+                    isChat = isChat,
+                )
+                if (!decision.useFallback || runController.isCancelled) throw primaryFailure
+                AndroidAgentLogger.warn("Primary model failed (${failureKind.name}); retrying once with the configured backup model")
                 acceptEvent(
                     session,
-                    event,
+                    AgentEvent.ModelRetryScheduled(
+                        round = fallbackProgress.lastRound,
+                        attempt = 1,
+                        maxAttempts = 1,
+                        delayMs = 0,
+                        reasonCode = "fallback_${failureKind.name.lowercase()}",
+                    ),
                     archivedEvents,
                     entrySurfaceGuard,
                     checkpointRecorder,
                 )
+                completeWith(requireNotNull(fallbackConfig), fallback = true)
             }
             response = completedResponse
+            if (experienceVerified && roleplayContext == null && request.operation == AgentRuntimeWire.OP_CHAT) {
+                runCatching { runBlocking { io.github.mangi.eta.agent.skill.SkillEvolution.capture(
+                    appContext, request.runId, projectMemoryScope?.key ?: "global", request.prompt, experienceEvents) } }
+                    .onFailure { AndroidAgentLogger.warn("Skill experience capture unavailable: type=${it.safeLogType()}") }
+            }
+            if (roleplayContext == null && uiPayload != null && request.operation == AgentRuntimeWire.OP_CHAT) {
+                runCatching { runBlocking { MemoryAutomationCapture.capture(appContext, request.runId,
+                    "conversation:${conversationId.orEmpty()}/run:${request.runId}",
+                    (listOf(request.prompt) + uiPayload.supplements.map { it.text }).joinToString("\n"), memoryScopes) } }
+                    .onFailure { AndroidAgentLogger.warn("Memory capture unavailable: type=${it.safeLogType()}") }
+            }
             AgentRuntimeWire.RunResult(
                 runId = request.runId,
                 ok = true,
@@ -418,7 +639,8 @@ internal class AgentRuntimeRunExecutor(
                 AndroidAgentLogger.error(
                     "Agent runtime failed: type=${throwable.safeLogType()}, " +
                         "model_code=${requestFailure?.code.orEmpty()}, " +
-                        "cause_type=${requestFailure?.cause?.safeLogType().orEmpty()}"
+                        "cause_type=${requestFailure?.cause?.safeLogType().orEmpty()}",
+                    throwable,
                 )
                 if (LearningSettingsStore.automaticCaptureEnabled(appContext)) {
                     runCatching {
@@ -464,6 +686,19 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } finally {
+            val usedSkillsSucceeded = response != null &&
+                !runController.isCancelled &&
+                experienceEvents.filterIsInstance<AgentEvent.ToolFinished>().none { it.success == false }
+            runCatching {
+                io.github.mangi.eta.agent.skill.SkillUsageStore(appContext).recordRun(
+                    skillIds = usedSkillIds,
+                    successful = usedSkillsSucceeded,
+                )
+            }
+            runCatching { runBlocking { io.github.mangi.eta.agent.skill.SkillEvolution.recordUse(appContext, request.runId, usedSkillIds.toList(),
+                usedSkillsSucceeded) } }
+            MemoryAutomationCapture.activeRuns.decrementAndGet()
+            MemoryAutomationSettingsStore.touch(appContext)
             runCatching { toolsBinding?.close() }
             runCatching { toolExecutor?.close() }
             runCatching { guiRun?.close() }

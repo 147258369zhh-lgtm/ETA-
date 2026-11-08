@@ -9,6 +9,56 @@ import org.junit.Test
 
 class AgentToolCatalogTest {
     @Test
+    fun everyCatalogToolSurvivesProviderSchemaValidation() {
+        val tools = AgentToolCatalog.build(
+            terminalTools = true,
+            browserTools = true,
+            deviceSensitiveReadTools = true,
+            deviceSensitiveActionTools = true,
+            skillGitHubDiscovery = true,
+            skillGitHubInstall = true,
+            memoryTools = true,
+        )
+
+        val sanitized = AgentToolSchema.sanitizeFunctionCatalog(tools)
+        assertEquals(tools.toolNames(), sanitized.toolNames())
+
+        val schedule = tools.function("schedule_create").getJSONObject("parameters")
+        assertEquals(
+            setOf("title", "prompt", "kind", "start_at", "confirmed"),
+            schedule.requiredNames(),
+        )
+        assertFalse(schedule.getJSONObject("properties").has("required"))
+    }
+
+    @Test
+    fun malformedToolIsIsolatedWithoutDroppingValidCatalogEntries() {
+        val tools = AgentToolCatalog.build(terminalTools = false, browserTools = false)
+        tools.put(
+            JSONObject()
+                .put("type", "function")
+                .put(
+                    "function",
+                    JSONObject()
+                        .put("name", "broken_tool")
+                        .put(
+                            "parameters",
+                            JSONObject()
+                                .put("type", "object")
+                                .put(
+                                    "properties",
+                                    JSONObject().put("required", JSONArray().put("missing")),
+                                ),
+                        ),
+                ),
+        )
+
+        val names = AgentToolSchema.sanitizeFunctionCatalog(tools).toolNames()
+        assertFalse("broken_tool" in names)
+        assertTrue("observe_screen" in names)
+    }
+
+    @Test
     fun featureFlagsProduceExactUniqueToolUnions() {
         val base = AgentToolCatalog.build(
             terminalTools = false,
@@ -29,7 +79,7 @@ class AgentToolCatalogTest {
         assertEquals(base.size, baseTools.size)
         assertTrue(
             base.containsAll(
-                setOf("observe_screen", "skills_list", "skills_read", "skills_read_resource"),
+                setOf("observe_screen", "skills_list", "skills_read", "skills_read_resource", "eta_control"),
             ),
         )
         assertFalse("browser_use" in base)
@@ -185,6 +235,18 @@ class AgentToolCatalogTest {
             listOf("replace_range", "append", "clear"),
             properties.getJSONObject("mode").getJSONArray("enum").stringValues(),
         )
+    }
+
+    @Test
+    fun voiceSynthesisIsAValidatedAlwaysAvailableCapability() {
+        val tools = AgentToolCatalog.build(terminalTools = false, browserTools = false)
+        assertTrue("voice_synthesize" in tools.toolNames())
+        val parameters = tools.function("voice_synthesize").getJSONObject("parameters")
+        assertEquals(setOf("text"), parameters.requiredNames())
+        val properties = parameters.getJSONObject("properties")
+        assertEquals(10_000, properties.getJSONObject("text").getInt("maxLength"))
+        assertEquals(0.5, properties.getJSONObject("speed").getDouble("minimum"), 0.0)
+        assertEquals(2.0, properties.getJSONObject("speed").getDouble("maximum"), 0.0)
     }
 
     private fun JSONArray.toolNames(): List<String> =

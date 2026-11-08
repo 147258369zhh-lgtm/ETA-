@@ -45,6 +45,12 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
 }
 
 private fun AgentOverlayState.projectEvent(event: AgentEvent): AgentOverlayState = when (event) {
+    is AgentEvent.AccessibilityWaiting -> copy(
+        status = if (event.phase == io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase.WAITING) {
+            AgentOverlayStatus.WaitingAccessibility
+        } else AgentOverlayStatus.Continuing,
+        thought = "", detailText = "",
+    )
     is AgentEvent.GuiControlChanged -> when (event.status) {
         GuiControlStatus.UserPaused -> copy(phase = AgentOverlayPhase.PAUSED, status = AgentOverlayStatus.Paused)
         GuiControlStatus.Acquired -> copy(phase = AgentOverlayPhase.RUNNING, status = AgentOverlayStatus.Continuing)
@@ -110,6 +116,7 @@ private fun AgentOverlayState.thinkingUnlessWorking(): AgentOverlayState = when 
     is AgentOverlayStatus.HostedToolRunning,
     AgentOverlayStatus.GeneratingAnswer,
     AgentOverlayStatus.Paused,
+    AgentOverlayStatus.WaitingAccessibility,
     AgentOverlayStatus.Stopping,
     -> this
     else -> copy(phase = AgentOverlayPhase.RUNNING, status = AgentOverlayStatus.Reasoning)

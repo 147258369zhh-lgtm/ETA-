@@ -8,6 +8,26 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 internal object ConversationExtensionRepository {
+    suspend fun initializeBranch(
+        context: Context, setup: io.github.mangi.eta.data.db.ConversationBranchSetupEntity, useCurrent: Boolean,
+    ) {
+        val db = ConversationExtensionDatabase.get(context)
+        db.withTransaction {
+            val dao = db.conversationExtensionDao()
+            if (dao.hasBranchSetupReceipt(setup.setupId)) return@withTransaction
+            if (!useCurrent) {
+                check(setup.folderId == null || dao.folder(setup.folderId) != null) { "FOLDER_UNAVAILABLE" }
+                val current = dao.extension(setup.conversationId) ?: ConversationExtensionEntity(
+                    conversationId = setup.conversationId, lastActiveAt = setup.createdAt,
+                    createdAt = setup.createdAt, updatedAt = setup.createdAt)
+                dao.upsertExtension(current.copy(folderId = setup.folderId,
+                    folderSortOrder = setup.folderId?.let { dao.maxFolderConversationSortOrder(it) + 1 } ?: 0,
+                    contextWindowOverride = setup.contextWindow))
+            }
+            dao.insertBranchSetupReceipt(io.github.mangi.eta.data.db.BranchSetupReceiptEntity(setup.setupId, setup.conversationId, setup.createdAt))
+        }
+    }
+
     fun snapshot(context: Context): Flow<ConversationExtensionSnapshot> {
         val dao = ConversationExtensionDatabase.get(context).conversationExtensionDao()
         return combine(
@@ -57,20 +77,27 @@ internal object ConversationExtensionRepository {
         context: Context,
         name: String,
         now: Long = System.currentTimeMillis(),
+        parentId: String? = null,
     ): String {
-        val normalized = name.trim()
-        require(normalized.isNotEmpty()) { "Folder name must not be blank" }
+        val normalized = folderName(name)
         val database = ConversationExtensionDatabase.get(context)
         return database.withTransaction {
             val dao = database.conversationExtensionDao()
+            val folders = dao.folders()
+            requireParent(folders, parentId)
+            if (parentId != null && folderTree(folders).ancestors(parentId).size + 2 > MAX_CONVERSATION_FOLDER_DEPTH) {
+                throw ConversationFolderException("DEPTH_LIMIT")
+            }
+            requireUniqueName(folders, normalized, parentId)
             val id = UUID.randomUUID().toString()
-            dao.upsertFolder(
+            dao.insertFolder(
                 ConversationFolderEntity(
                     id = id,
                     name = normalized,
                     sortOrder = dao.maxFolderSortOrder() + 1,
                     createdAt = now,
                     updatedAt = now,
+                    parentId = parentId,
                 ),
             )
             id
@@ -83,17 +110,31 @@ internal object ConversationExtensionRepository {
         name: String,
         now: Long = System.currentTimeMillis(),
     ) {
-        val normalized = name.trim()
-        require(normalized.isNotEmpty()) { "Folder name must not be blank" }
-        ConversationExtensionDatabase.get(context).conversationExtensionDao().upsertFolder(
-            ConversationFolderEntity(
-                id = folder.id,
-                name = normalized,
-                sortOrder = folder.sortOrder,
-                createdAt = folder.createdAt,
-                updatedAt = now,
-            ),
-        )
+        val normalized = folderName(name)
+        val database = ConversationExtensionDatabase.get(context)
+        database.withTransaction {
+            val dao = database.conversationExtensionDao()
+            val current = dao.folder(folder.id) ?: throw ConversationFolderException("NOT_FOUND")
+            requireUniqueName(dao.folders(), normalized, current.parentId, current.id)
+            dao.updateFolderEntity(current.copy(name = normalized, updatedAt = now))
+        }
+    }
+
+    suspend fun moveFolder(context: Context, folderId: String, parentId: String?, now: Long = System.currentTimeMillis()) {
+        val database = ConversationExtensionDatabase.get(context)
+        database.withTransaction {
+            val dao = database.conversationExtensionDao()
+            val current = dao.folder(folderId) ?: throw ConversationFolderException("NOT_FOUND")
+            val folders = dao.folders()
+            requireParent(folders, parentId)
+            val tree = folderTree(folders)
+            if (parentId in tree.subtreeIds(folderId)) throw ConversationFolderException("CYCLE")
+            if (!tree.canMove(folderId, parentId)) throw ConversationFolderException("DEPTH_LIMIT")
+            requireUniqueName(folders, current.name, parentId, folderId)
+            if (current.parentId != parentId) {
+                dao.updateFolderEntity(current.copy(parentId = parentId, sortOrder = dao.maxFolderSortOrder() + 1, updatedAt = now))
+            }
+        }
     }
 
     suspend fun deleteFolder(
@@ -104,8 +145,19 @@ internal object ConversationExtensionRepository {
         val database = ConversationExtensionDatabase.get(context)
         database.withTransaction {
             val dao = database.conversationExtensionDao()
-            dao.clearFolderMembers(folderId, now)
+            val current = dao.folder(folderId) ?: throw ConversationFolderException("NOT_FOUND")
+            val folders = dao.folders()
+            requireParent(folders, current.parentId)
+            val children = folders.filter { it.parentId == folderId }
+            val remaining = folders.filterNot { it.id == folderId }
+            children.forEach { requireUniqueName(remaining, it.name, current.parentId, it.id) }
+            var order = dao.maxFolderSortOrder()
+            var memberOrder = current.parentId?.let { dao.maxFolderConversationSortOrder(it) } ?: -1
             dao.deleteFolder(folderId)
+            children.forEach { dao.updateFolderEntity(it.copy(parentId = current.parentId, sortOrder = ++order, updatedAt = now)) }
+            dao.folderMembers(folderId).forEach {
+                dao.updateFolder(it.conversationId, current.parentId, ++memberOrder, now)
+            }
         }
     }
 
@@ -118,10 +170,28 @@ internal object ConversationExtensionRepository {
         val database = ConversationExtensionDatabase.get(context)
         database.withTransaction {
             val dao = database.conversationExtensionDao()
+            requireParent(dao.folders(), folderId)
+            if (dao.extension(conversationId) == null) throw ConversationFolderException("CONVERSATION_NOT_FOUND")
             val sortOrder = folderId?.let { dao.maxFolderConversationSortOrder(it) + 1 } ?: 0L
             dao.updateFolder(conversationId, folderId, sortOrder, now)
         }
     }
+
+    private fun folderName(name: String): String = name.trim().also {
+        if (it.isEmpty() || it.length > 80 || it.any { char -> char.isISOControl() || char == '/' || char == '\\' }) {
+            throw ConversationFolderException("INVALID_NAME")
+        }
+    }
+
+    private fun requireParent(folders: List<ConversationFolderEntity>, parentId: String?) {
+        if (parentId != null && folders.none { it.id == parentId }) throw ConversationFolderException("NOT_FOUND")
+    }
+
+    private fun requireUniqueName(folders: List<ConversationFolderEntity>, name: String, parentId: String?, except: String? = null) {
+        if (folders.any { it.id != except && it.parentId == parentId && it.name == name }) throw ConversationFolderException("DUPLICATE_NAME")
+    }
+
+    private fun folderTree(folders: List<ConversationFolderEntity>) = ConversationFolderTree(folders, { it.id }, { it.parentId })
 
     suspend fun archiveConversation(
         context: Context,
@@ -185,6 +255,24 @@ internal object ConversationExtensionRepository {
     ) {
         ConversationExtensionDatabase.get(context).conversationExtensionDao()
             .setKind(conversationId, kind, now)
+    }
+
+    suspend fun contextWindowOverride(context: Context, conversationId: String): Int? =
+        ConversationExtensionDatabase.get(context).conversationExtensionDao()
+            .extension(conversationId)?.contextWindowOverride
+
+    suspend fun setContextWindowOverride(
+        context: Context,
+        conversationId: String,
+        contextWindow: Int?,
+        now: Long = System.currentTimeMillis(),
+    ) {
+        require(contextWindow == null || contextWindow in 1_024..16_000_000) {
+            "CONTEXT_WINDOW_INVALID"
+        }
+        val updated = ConversationExtensionDatabase.get(context).conversationExtensionDao()
+            .setContextWindowOverride(conversationId, contextWindow, now)
+        if (updated == 0) throw ConversationFolderException("CONVERSATION_NOT_FOUND")
     }
 
     suspend fun archiveSettings(context: Context): ConversationArchiveSettings =

@@ -16,6 +16,12 @@ class AgentAccessibilityHealthProvider : ContentProvider() {
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
         val callingUid = Binder.getCallingUid()
+        if (method == AccessibilityRecoveryCommandMain.CONTROL_METHOD) {
+            if (callingUid != Process.ROOT_UID || extras?.getInt("version", -1) != 1) return Bundle.EMPTY
+            val phase = extras.getString("phase")
+            if (phase !in setOf("check", "begin", "restore", "complete")) return Bundle.EMPTY
+            return RootAccessibilityRecovery.control(requireNotNull(context), arg.orEmpty(), requireNotNull(phase))
+        }
         if (
             (callingUid == Process.SYSTEM_UID || callingUid == Process.ROOT_UID) &&
             method == AccessibilityProtectionProtocol.VIRTUAL_DISPLAY_SURFACE_METHOD &&

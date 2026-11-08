@@ -27,7 +27,7 @@ import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-internal fun SpeechSynthesisScreen(onBack: () -> Unit) {
+internal fun SpeechSynthesisScreen(onBack: () -> Unit, onOpenLocalModels: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = remember { SpeechSettingsStore(context, scope) }
@@ -62,13 +62,17 @@ internal fun SpeechSynthesisScreen(onBack: () -> Unit) {
         }
         if (settings.tts != TtsProvider.NONE) {
             item(key = "connection") {
-                SpeechConnectionSection(store, synthesis = true)
+                SpeechConnectionSection(store, synthesis = true, onOpenLocalModels = onOpenLocalModels)
             }
             item(key = "voice") {
-                SpeechVoiceSection(store)
+                SpeechVoiceSection(store, onOpenLocalModels)
             }
             item(key = "preview") {
-                SpeechPreviewSection(store)
+                if (settings.tts == TtsProvider.LOCAL) {
+                    LocalSpeechPreviewSection(store)
+                } else {
+                    SpeechPreviewSection(store)
+                }
             }
         }
         item(key = "save") {

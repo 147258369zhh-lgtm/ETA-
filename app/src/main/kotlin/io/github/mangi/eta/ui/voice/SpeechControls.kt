@@ -364,11 +364,12 @@ internal fun SpeechPlaybackHost(content: @Composable () -> Unit) {
     val controller = remember {
         val appContext = context.applicationContext
         lateinit var created: SpeechPlaybackController
+        var foreground: java.io.Closeable? = null
         created = SpeechPlaybackController(
             context = context,
             scope = scope,
-            beforePlayback = { ReadAloudPlaybackService.start(appContext) { created.stop() } },
-            afterPlayback = { ReadAloudPlaybackService.stop(appContext) },
+            beforePlayback = { foreground = ReadAloudPlaybackService.start(appContext) { created.stop() } },
+            afterPlayback = { foreground?.close(); foreground = null },
             interruptOnScreenOff = false,
         )
         created

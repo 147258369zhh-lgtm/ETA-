@@ -8,6 +8,7 @@ import io.github.mangi.eta.agent.roleplay.RoleplayBinding
 import io.github.mangi.eta.agent.roleplay.RoleplayMessageLink
 import io.github.mangi.eta.agent.roleplay.RoleplayMessageState
 import io.github.mangi.eta.data.db.ConversationEntity
+import io.github.mangi.eta.data.db.ConversationContextCheckpointEntity
 import io.github.mangi.eta.data.db.ConversationMessageEntity
 import io.github.mangi.eta.data.db.ConversationStateEntity
 import io.github.mangi.eta.data.db.EtaDatabase
@@ -636,5 +637,36 @@ class AgentConversationStoreTest {
             val reloaded = AgentConversationStore.load(context)
             assertEquals(setOf("conv-2"), reloaded.pinnedIds)
         }
+    }
+
+    @Test
+    fun liveCheckpointDoesNotStoreIdenticalHistoryAndJournalTwice() = runBlocking {
+        val dao = EtaDatabase.get(context).conversationDao()
+        dao.insertConversations(listOf(ConversationEntity("dedupe", "去重", false, createdAt = 1L, updatedAt = 1L)))
+        val transcript = AgentConversationCodec.encodeTranscriptForStorage(listOf(
+            AgentModelClient.ConversationMessage(role = "assistant", content = "相同内容", messageId = "assistant-1"),
+        ))
+
+        dao.updateContextCheckpoint("dedupe", transcript, transcript)
+
+        val row = dao.contextCheckpointRow("dedupe")!!
+        assertTrue(row.journalJson.isEmpty())
+        assertEquals(transcript, dao.contextCheckpoint("dedupe")!!.historyJson)
+    }
+
+    @Test
+    fun startupMaintenanceRemovesLegacyDuplicateCheckpointChunks() = runBlocking {
+        val dao = EtaDatabase.get(context).conversationDao()
+        dao.insertConversations(listOf(ConversationEntity("legacy-dedupe", "旧去重", false, createdAt = 1L, updatedAt = 1L)))
+        val transcript = AgentConversationCodec.encodeTranscriptForStorage(listOf(
+            AgentModelClient.ConversationMessage(role = "assistant", content = "旧内容", messageId = "assistant-old"),
+        ))
+        dao.insertContextCheckpoints(listOf(ConversationContextCheckpointEntity("legacy-dedupe", transcript, transcript)))
+        assertTrue(dao.contextCheckpointRow("legacy-dedupe")!!.journalJson.isNotEmpty())
+
+        assertEquals(1, dao.dedupeIdenticalContextCheckpoints())
+
+        assertTrue(dao.contextCheckpointRow("legacy-dedupe")!!.journalJson.isEmpty())
+        assertEquals(transcript, dao.contextCheckpoint("legacy-dedupe")!!.historyJson)
     }
 }

@@ -1,11 +1,16 @@
 package io.github.mangi.eta.core
 
+import io.github.mangi.eta.BuildConfig
+
 internal object ModuleConfig {
     const val TAG = "Eta"
     const val HOT_PATH_LOG_WINDOW_MS = 60_000L
 
     const val GOOGLE_PACKAGE = "com.google.android.googlequicksearchbox"
-    const val ETA_PACKAGE = "io.github.mangi.eta"
+    // Keep the source namespace separate from the installed application id.  The
+    // fork intentionally installs as fuck.andes, and system/assistant routing must
+    // address that real package name.
+    const val ETA_PACKAGE = BuildConfig.APPLICATION_ID
     const val BREENO_PACKAGE = "com.heytap.speechassist"
     const val COLOROS_MEMORY_PACKAGE = "com.oplus.aimemory"
     const val XIAOAI_PACKAGE = "com.miui.voiceassist"

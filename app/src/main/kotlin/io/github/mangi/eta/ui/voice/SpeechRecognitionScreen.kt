@@ -5,16 +5,26 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.voice.EtaVoiceInteractionService
 import io.github.mangi.eta.agent.voice.validateSpeechSettings
+import io.github.mangi.eta.agent.voice.WakeWordStore
+import io.github.mangi.eta.agent.voice.VoiceprintProfileStore
+import io.github.mangi.eta.agent.voice.VoiceprintEnrollmentController
 import io.github.mangi.eta.data.model.AsrProvider
 import io.github.mangi.eta.data.model.SpeechSettings
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -30,7 +40,11 @@ import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) {
+internal fun SpeechRecognitionScreen(
+    onBack: () -> Unit,
+    onOpenOss: () -> Unit,
+    onOpenLocalModels: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = remember { SpeechSettingsStore(context, scope) }
@@ -60,6 +74,7 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
             }
         }
         if (settings.recognitionEnabled) {
+            item(key = "wake_words") { WakeWordSection(context) }
             item(key = "service") {
                 Column {
                     SmallTitle(stringResource(R.string.speech_group_service))
@@ -83,15 +98,16 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
                                 AsrProvider.QWEN_REALTIME, AsrProvider.DOUBAO -> R.string.speech_asr_note_streaming
                                 AsrProvider.QWEN_FLASH -> R.string.speech_asr_note_flash
                                 AsrProvider.QWEN_FILE -> R.string.speech_asr_note_file
+                                AsrProvider.LOCAL -> R.string.speech_asr_note_local
                             },
                         ),
                     )
                 }
             }
             item(key = "connection") {
-                SpeechConnectionSection(store, synthesis = false)
+                SpeechConnectionSection(store, synthesis = false, onOpenLocalModels = onOpenLocalModels)
             }
-            if (settings.asr != AsrProvider.DOUBAO) {
+            if (settings.asr != AsrProvider.DOUBAO && settings.asr != AsrProvider.LOCAL) {
                 item(key = "language") {
                     Card(
                         modifier = Modifier
@@ -143,11 +159,115 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
     }
 }
 
+@Composable
+private fun WakeWordSection(context: android.content.Context) {
+    val scope = rememberCoroutineScope()
+    val store = remember(context) { WakeWordStore(context) }
+    val voiceprintStore = remember(context) { VoiceprintProfileStore(context) }
+    var config by remember { mutableStateOf(store.read()) }
+    var assistantActive by remember(context) {
+        mutableStateOf(EtaVoiceInteractionService.isDefaultAssistant(context))
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                assistantActive = EtaVoiceInteractionService.isDefaultAssistant(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    var profile by remember { mutableStateOf(voiceprintStore.profile()) }
+    val enrollment = remember(context, scope) {
+        VoiceprintEnrollmentController(context, scope) { enrolled ->
+            profile = enrolled
+            config = config.copy(voiceprintEnabled = true)
+            store.write(config)
+        }
+    }
+    val enrollmentState by enrollment.state.collectAsState()
+    val requestEnrollment = rememberSpeechPermission { enrollment.start() }
+    var words by remember(config.words) { mutableStateOf(config.words.joinToString("、")) }
+    Column {
+        SmallTitle(stringResource(R.string.speech_wake_word_title))
+        Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            SwitchPreference(
+                title = stringResource(R.string.speech_wake_word_enabled),
+                summary = stringResource(R.string.speech_wake_word_summary),
+                checked = config.enabled,
+                onCheckedChange = {
+                    config = config.copy(enabled = it)
+                    store.write(config)
+                },
+            )
+            ArrowPreference(
+                title = stringResource(R.string.speech_voiceprint_profile),
+                summary = enrollmentState.error
+                    ?: enrollmentState.progress.takeIf(String::isNotBlank)
+                    ?: if (profile == null) {
+                        stringResource(R.string.speech_voiceprint_profile_missing)
+                    } else {
+                        stringResource(R.string.speech_voiceprint_profile_ready_simple)
+                    },
+                enabled = !enrollmentState.active,
+                onClick = requestEnrollment,
+            )
+            SwitchPreference(
+                title = stringResource(R.string.speech_voiceprint_enabled),
+                summary = stringResource(R.string.speech_voiceprint_summary),
+                checked = config.voiceprintEnabled,
+                enabled = !enrollmentState.active,
+                onCheckedChange = { enabled ->
+                    if (!enabled) {
+                        config = config.copy(voiceprintEnabled = false)
+                        store.write(config)
+                    } else if (profile != null) {
+                        config = config.copy(voiceprintEnabled = true)
+                        store.write(config)
+                    } else {
+                        requestEnrollment()
+                    }
+                },
+            )
+            if (profile != null) {
+                ArrowPreference(
+                    title = stringResource(R.string.speech_voiceprint_delete),
+                    summary = null,
+                    enabled = !enrollmentState.active,
+                    onClick = {
+                        voiceprintStore.clear()
+                        profile = null
+                        config = config.copy(voiceprintEnabled = false)
+                        store.write(config)
+                    },
+                )
+            }
+            SpeechFieldColumn {
+                SpeechField(
+                    label = stringResource(R.string.speech_wake_word_field),
+                    value = words,
+                    onChange = { value ->
+                        words = value
+                        val next = config.copy(words = value.split('、', ',', ';', '\n'))
+                        config = next
+                        store.write(next)
+                    },
+                )
+            }
+        }
+        if (config.enabled && !assistantActive) {
+            SpeechNote("当前 Eta 未设为系统默认助手，唤醒词不会生效。请先在“设置 → 系统助手接管”中完成注册。")
+        }
+        SpeechNote(stringResource(R.string.speech_wake_word_note))
+    }
+}
+
 /** 短音频与文件转写只在录音结束后识别，没有停顿判定，因此只对流式识别提供自动发送。 */
 @Composable
 private fun SpeechResultSection(store: SpeechSettingsStore) {
     val settings = store.settings
-    val streaming = settings.asr != AsrProvider.QWEN_FLASH && settings.asr != AsrProvider.QWEN_FILE
+    val streaming = settings.asr !in setOf(AsrProvider.QWEN_FLASH, AsrProvider.QWEN_FILE)
     val options = SpeechSettings.AUTO_SEND_SILENCE_OPTIONS
     Column {
         Card(
@@ -178,6 +298,12 @@ private fun SpeechResultSection(store: SpeechSettingsStore) {
                 summary = stringResource(R.string.speech_refine_summary),
                 checked = settings.refineTranscript,
                 onCheckedChange = { store.edit(settings.copy(refineTranscript = it)) },
+            )
+            SwitchPreference(
+                title = stringResource(R.string.speech_continuous_conversation_title),
+                summary = stringResource(R.string.speech_continuous_conversation_summary),
+                checked = settings.continuousConversation,
+                onCheckedChange = { store.edit(settings.copy(continuousConversation = it)) },
             )
         }
         if (streaming) SpeechNote(stringResource(R.string.speech_auto_send_note))

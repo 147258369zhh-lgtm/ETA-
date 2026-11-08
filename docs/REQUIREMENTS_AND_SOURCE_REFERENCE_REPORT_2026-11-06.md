@@ -21,7 +21,7 @@
 | [Oo0520/Eta-por](https://github.com/Oo0520/Eta-por) | `9bfe6ca0bfae002290aba926918ea4f69fb0197b` | POR 功能对标：完整备份、上下文压缩、Linux 工具、记忆与技能学习、灵屏、子 Agent、提示词与工具边界、流体云、统计、顶部切换、分支图和文件管理 | 已研究并选择性吸收；没有整仓替代，也没有把未落地能力算作完成 |
 | [omnimind-ai/OmniBot](https://github.com/omnimind-ai/OmniBot) | `c9bf006c8684138f1b65cab337c170375820c362` | Omni 方向参考：第二套 UI、运行轨迹、外观细调、终端环境、MCP 与 Skill 管理 | 已研究并完成部分基础视觉与运行轨迹能力；完整移植未完成 |
 | Hermes | 沟通中作为行为和架构参考，当前仓库没有固定的 Hermes 上游提交号 | 自动归档、自我学习 curator、候选晋升与回滚、长记忆维护方式 | 已吸收候选、证据、确认、版本和回滚；自动归档已落地；自动技能生成与评测未完成 |
-| A2A App 集成方案（用户桌面文档：`C:\Users\29136\Desktop\A2A_App集成方案.docx`） | 用户提供的桌面文档 | Headscale 控制面 + tsnet 用户态数据面 + 现有 A2A HTTP 服务 | 已审阅并形成 Gate；尚未把 tsnet/Headscale 接入主构建 |
+| A2A App 集成方案（用户桌面文档：`[本地交付目录]/A2A_App集成方案.docx`） | 用户提供的桌面文档 | Headscale 控制面 + tsnet 用户态数据面 + 现有 A2A HTTP 服务 | 已审阅并形成 Gate；尚未把 tsnet/Headscale 接入主构建 |
 
 ### 1.1 主流多 Agent 方案调研结论
 

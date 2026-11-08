@@ -8,6 +8,8 @@ internal data class MeetingRoomUiState(
     val failedTasks: Int,
     val mentionCandidates: List<MeetingParticipantEntity>,
     val latestRoundTasks: List<MeetingTaskEntity> = emptyList(),
+    val timelineEvents: List<MeetingEventEntity> = emptyList(),
+    val messageAttachments: Map<String, io.github.mangi.eta.data.repository.ConversationAttachments> = emptyMap(),
 ) {
     val host: MeetingParticipantEntity?
         get() = participants.firstOrNull(MeetingParticipantEntity::isHost)
@@ -84,5 +86,7 @@ internal fun MeetingRoomSnapshot.toUiState(): MeetingRoomUiState =
         failedTasks = roundTasks.count { task -> task.status == MeetingTaskStatus.FAILED },
         mentionCandidates = participants.filter(MeetingParticipantEntity::enabled),
         latestRoundTasks = roundTasks,
+        timelineEvents = timelineEvents,
+        messageAttachments = messageAttachments,
         )
     }

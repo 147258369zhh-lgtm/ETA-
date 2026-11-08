@@ -51,7 +51,7 @@ class AgentContextRecoveryTest {
                         response("完成")
                     }
                 })
-            assertEquals(if (input == 765_000) 1 else 0, summaries)
+            if (input == 765_000) assertTrue(summaries >= 1) else assertEquals(0, summaries)
             assertEquals("完成", result.content)
             val completed = events.filterIsInstance<AgentEvent.ContextCompaction>().lastOrNull()
             if (input == 765_000) {
@@ -190,13 +190,18 @@ class AgentContextRecoveryTest {
 
     @Test
     fun onlySummaryRequestsHaveAnOverallTimeout() {
-        assertEquals(300_000, AgentHttpClient.modelClient(ProviderRequestPurpose.COMPACTION).callTimeoutMillis)
-        assertEquals(0, AgentHttpClient.modelClient(ProviderRequestPurpose.CHAT).callTimeoutMillis)
+        assertEquals(
+            AgentHttpClient.MODEL_READ_TIMEOUT_MS,
+            AgentHttpClient.modelClient(ProviderRequestPurpose.COMPACTION).callTimeoutMillis.toLong(),
+        )
+        assertEquals(0L, AgentHttpClient.modelClient(ProviderRequestPurpose.CHAT).callTimeoutMillis.toLong())
     }
 
     private fun history() = listOf(
         AgentModelClient.ConversationMessage("user", "旧任务"),
-        AgentModelClient.ConversationMessage("assistant", "长".repeat(780_000)),
+        // Keep the fixture below the configured 85% trigger. The test explicitly supplies the
+        // observed usage so it exercises the threshold instead of relying on a character count.
+        AgentModelClient.ConversationMessage("assistant", "长".repeat(200_000)),
     )
 
     private fun messages() = JSONArray().put(JSONObject().put("role", "system").put("content", "固定约束")).also { source ->

@@ -81,7 +81,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         }
     }
 
-    private fun buildRequestJson(
+    internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray
@@ -571,7 +571,9 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             inputTokens = usage.firstInt("input_tokens"),
             outputTokens = usage.firstInt("output_tokens"),
             reasoningTokens = usage.firstInt("thinking_output_tokens"),
-            cachedTokens = usage.firstInt("cache_read_input_tokens")
+            cachedTokens = usage.firstInt("cache_read_input_tokens"),
+            cacheWriteTokens = usage.firstInt("cache_creation_input_tokens"),
+            billingBasis = io.github.mangi.eta.agent.runtime.AgentBillingTokens.ANTHROPIC,
         ).takeUnless { it.isEmpty }
     }
 
@@ -585,6 +587,9 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         outputTokens = later.outputTokens ?: outputTokens,
         reasoningTokens = later.reasoningTokens ?: reasoningTokens,
         cachedTokens = later.cachedTokens ?: cachedTokens,
+        billingBasis = later.billingBasis,
+        cacheWriteTokens = later.cacheWriteTokens ?: cacheWriteTokens,
+        toolUseTokens = later.toolUseTokens ?: toolUseTokens,
     )
 
     private fun parseJsonObject(raw: String): JSONObject =

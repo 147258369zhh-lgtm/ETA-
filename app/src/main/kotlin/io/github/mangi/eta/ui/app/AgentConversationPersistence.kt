@@ -18,7 +18,7 @@ internal class AgentConversationPersistence(initial: AgentConversationStore.Snap
 
     suspend fun save(context: Context, snapshot: AgentConversationStore.Snapshot) = mutex.withLock {
         val current = project(snapshot)
-        AgentConversationStore.saveChanges(context, snapshot.selectedConversationId, current, saved)
+        AgentConversationStore.saveChanges(context, snapshot.selectedConversationId, current, saved, snapshot.branchDrafts)
         saved = current
     }
 

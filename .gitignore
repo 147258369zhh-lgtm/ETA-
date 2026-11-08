@@ -27,6 +27,27 @@ output-metadata.json
 keystore.properties
 google-services.json
 
+# 真机调试输出（由截图、UI dump、运行时数据库和测试媒体生成）
+/*.png
+/*.jpg
+/*.jpeg
+/*.xml
+/*.db
+/*.db-shm
+/*.db-wal
+/*.wav
+/*.mp3
+/*.m4a
+/*.eta-backup
+/*-log.txt
+/*logcat.txt
+/.model-crash-tombstones.txt
+/.audio-aar-*/
+/.core-aar-*/
+/.litert-aar-*/
+/.mp-audio*/
+/tmp-litert-aar/
+
 # 本地配置和临时分析产物
 /local.properties
 /.analysis/

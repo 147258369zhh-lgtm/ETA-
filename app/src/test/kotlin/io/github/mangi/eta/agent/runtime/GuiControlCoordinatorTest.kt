@@ -12,6 +12,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GuiControlCoordinatorTest {
+    @Test fun manualActionWaitsForAgentAndBlocksResumeUntilItFinishes() {
+        val coordinator = GuiControlCoordinator(); val control = coordinator.openRun("a", AgentRunController())
+        val agentEntered = CountDownLatch(1); val agentDone = CountDownLatch(1)
+        val manualEntered = CountDownLatch(1); val manualDone = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(3)
+        try {
+            val original = pool.submit { control.withAction { agentEntered.countDown(); await(agentDone) } }
+            await(agentEntered); coordinator.pauseForUser("a")
+            val manual = pool.submit { coordinator.withUserAction("a") { manualEntered.countDown(); await(manualDone) } }
+            assertFalse(manualEntered.await(50, TimeUnit.MILLISECONDS))
+            agentDone.countDown(); original.get(2, TimeUnit.SECONDS); await(manualEntered)
+            coordinator.resumeForUser()
+            val next = pool.submit { control.withAction {} }
+            Thread.sleep(50); assertFalse(next.isDone)
+            manualDone.countDown(); manual.get(2, TimeUnit.SECONDS); next.get(2, TimeUnit.SECONDS)
+        } finally { agentDone.countDown(); manualDone.countDown(); control.close(); pool.shutdownNow() }
+    }
     @Test
     fun ownershipSpansActionsAndWaitersEnterInOrderAfterRelease() {
         val coordinator = GuiControlCoordinator()
@@ -165,6 +182,70 @@ class GuiControlCoordinatorTest {
             a.close()
             pool.shutdownNow()
         }
+    }
+
+    @Test
+    fun accessibilityInterventionWaitsForAnAlreadyRunningActionToDrain() {
+        val coordinator = GuiControlCoordinator()
+        val a = coordinator.openRun("action", AgentRunController())
+        val b = coordinator.openRun("repair", AgentRunController())
+        val entered = CountDownLatch(1)
+        val drain = CountDownLatch(1)
+        val repairStarted = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val action = pool.submit { a.withAction { entered.countDown(); await(drain) } }
+            await(entered)
+            val repair = pool.submit { b.withAccessibilityIntervention(2_000) { repairStarted.countDown() } }
+            assertFalse(repairStarted.await(50, TimeUnit.MILLISECONDS))
+            drain.countDown()
+            action.get(2, TimeUnit.SECONDS)
+            repair.get(2, TimeUnit.SECONDS)
+            await(repairStarted)
+            assertFalse(coordinator.state.value.accessibilityWaiting)
+        } finally { drain.countDown(); a.close(); b.close(); pool.shutdownNow() }
+    }
+
+    @Test
+    fun overlappingAccessibilityInterventionsRemainBlockedUntilBothEnd() {
+        val coordinator = GuiControlCoordinator()
+        val a = coordinator.openRun("repair-a", AgentRunController())
+        val b = coordinator.openRun("repair-b", AgentRunController())
+        val aStarted = CountDownLatch(1)
+        val bStarted = CountDownLatch(1)
+        val aEnd = CountDownLatch(1)
+        val bEnd = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val first = pool.submit { a.withAccessibilityIntervention(2_000) { aStarted.countDown(); await(aEnd) } }
+            val second = pool.submit { b.withAccessibilityIntervention(2_000) { bStarted.countDown(); await(bEnd) } }
+            await(aStarted); await(bStarted)
+            aEnd.countDown(); first.get(2, TimeUnit.SECONDS)
+            assertTrue(coordinator.state.value.accessibilityWaiting)
+            bEnd.countDown(); second.get(2, TimeUnit.SECONDS)
+            assertFalse(coordinator.state.value.accessibilityWaiting)
+        } finally { aEnd.countDown(); bEnd.countDown(); a.close(); b.close(); pool.shutdownNow() }
+    }
+
+    @Test
+    fun timedOutInterventionCannotLeakAGlobalGuiBlock() {
+        val coordinator = GuiControlCoordinator()
+        val a = coordinator.openRun("action", AgentRunController())
+        val b = coordinator.openRun("repair", AgentRunController())
+        val entered = CountDownLatch(1)
+        val drain = CountDownLatch(1)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val action = pool.submit { a.withAction { entered.countDown(); await(drain) } }
+            await(entered)
+            org.junit.Assert.assertThrows(GuiInterventionTimeoutException::class.java) {
+                b.withAccessibilityIntervention(20) { error("Must drain first") }
+            }
+            assertFalse(coordinator.state.value.accessibilityWaiting)
+            drain.countDown(); action.get(2, TimeUnit.SECONDS)
+            a.release()
+            b.withAction { }
+        } finally { drain.countDown(); a.close(); b.close(); pool.shutdownNow() }
     }
 
     private fun await(latch: CountDownLatch) {

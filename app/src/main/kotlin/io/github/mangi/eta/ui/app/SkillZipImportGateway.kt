@@ -4,6 +4,7 @@ import android.content.Context
 import io.github.mangi.eta.agent.skill.SkillInstallErrorCode
 import io.github.mangi.eta.agent.skill.SkillInstallResult
 import io.github.mangi.eta.agent.skill.SkillRuntime
+import io.github.mangi.eta.agent.skill.SkillVersionService
 import java.io.InputStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -23,7 +24,8 @@ internal fun interface SkillZipImportGateway {
 internal class CoreSkillZipImportGateway(
     context: Context,
 ) : SkillZipImportGateway {
-    private val installer = SkillRuntime.createPackageInstaller(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val installer = SkillRuntime.createPackageInstaller(appContext)
 
     override suspend fun installLocalZip(
         openStream: () -> InputStream,
@@ -31,6 +33,16 @@ internal class CoreSkillZipImportGateway(
         expectedReplacementId: String?,
         expectedArchiveSha256: String?,
     ): SkillZipImportOutcome {
+        if (replaceUserSkill && !expectedReplacementId.isNullOrBlank()) {
+            val backup = runCatching {
+                SkillVersionService(appContext).backupCurrent(expectedReplacementId)
+            }
+            if (backup.isFailure) {
+                return SkillZipImportOutcome.Failure(
+                    SkillZipImportOutcome.FailureCode.VERSION_BACKUP_FAILED,
+                )
+            }
+        }
         val callingContext = currentCoroutineContext()
         return installer.installLocalZip(
             openStream = openStream,
@@ -138,6 +150,7 @@ internal sealed interface SkillZipImportOutcome {
         TARGET_NOT_REPLACEABLE,
         READ_FAILED,
         STORAGE_FAILED,
+        VERSION_BACKUP_FAILED,
         RECOVERY_REQUIRED,
     }
 }

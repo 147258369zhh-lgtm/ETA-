@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MeetingEventEntity::class,
         MeetingParticipantContextEntity::class,
     ],
-    version = 3,
+    version = 5,
     exportSchema = false,
 )
 internal abstract class MeetingDatabase : RoomDatabase() {
@@ -34,7 +34,7 @@ internal abstract class MeetingDatabase : RoomDatabase() {
                     MeetingDatabase::class.java,
                     "eta_meeting.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { instance = it }
             }
@@ -71,6 +71,18 @@ internal abstract class MeetingDatabase : RoomDatabase() {
         internal val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE meeting_rooms ADD COLUMN archived_at INTEGER")
+            }
+        }
+
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meeting_rooms ADD COLUMN pinned_at INTEGER")
+            }
+        }
+
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meeting_rooms ADD COLUMN context_window_override INTEGER")
             }
         }
     }

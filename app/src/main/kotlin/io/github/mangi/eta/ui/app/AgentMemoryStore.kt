@@ -9,6 +9,7 @@ import io.github.mangi.eta.agent.memory.AgentMemoryContextBuilder
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
+import io.github.mangi.eta.data.repository.AgentMemoryScope
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.model.AgentMemoryUiState
 import kotlinx.coroutines.CoroutineScope
@@ -27,23 +28,42 @@ internal class AgentMemoryStore(
         private set
 
     fun refreshMemory() {
+        loadScope(memoryState.selectedScope)
+    }
+
+    fun selectScope(scope: AgentMemoryScope) {
+        if (memoryState.isSaving || memoryState.isLoading) return
+        if (scope == memoryState.selectedScope) return
+        if (memoryState.hasUnsavedChanges) {
+            memoryState = memoryState.copy(notice = appContext.getString(R.string.memory_scope_unsaved))
+            return
+        }
+        loadScope(scope)
+    }
+
+    private fun loadScope(selectedScope: AgentMemoryScope) {
         memoryState = memoryState.copy(isLoading = true, notice = null)
         scope.launch(Dispatchers.IO) {
             runCatching {
-                val snapshot = AgentMemoryRepository.snapshot()
+                val snapshot = AgentMemoryRepository.snapshot(selectedScope)
                 val enabled = AgentMemoryRepository.isEnabled()
+                val scopes = (listOf(AgentMemoryScope.GLOBAL) + AgentMemoryRepository.listScopes())
+                    .distinctBy { it.key }
                 val contextWindow = RuntimeConfigRepository.currentRuntimeConfig()?.contextWindow
-                Triple(snapshot, enabled, AgentMemoryContextBuilder.coreBudgetChars(contextWindow))
+                LoadedMemory(snapshot, enabled, scopes, AgentMemoryContextBuilder.coreBudgetChars(contextWindow))
             }.fold(
-                onSuccess = { (snapshot, enabled, coreBudget) ->
+                onSuccess = { loaded ->
                     withContext(Dispatchers.Main) {
                         memoryState = AgentMemoryUiState(
-                            enabled = enabled,
+                            enabled = loaded.enabled,
                             isLoading = false,
-                            draft = snapshot.content,
-                            savedContent = snapshot.content,
-                            draftBytes = snapshot.byteSize,
-                            coreBudgetChars = coreBudget,
+                            draft = loaded.snapshot.content,
+                            savedContent = loaded.snapshot.content,
+                            savedRevision = loaded.snapshot.revision,
+                            draftBytes = loaded.snapshot.byteSize,
+                            coreBudgetChars = loaded.coreBudget,
+                            scopes = loaded.scopes,
+                            selectedScope = selectedScope,
                         )
                     }
                 },
@@ -61,6 +81,13 @@ internal class AgentMemoryStore(
             )
         }
     }
+
+    private data class LoadedMemory(
+        val snapshot: io.github.mangi.eta.data.repository.AgentMemorySnapshot,
+        val enabled: Boolean,
+        val scopes: List<AgentMemoryScope>,
+        val coreBudget: Int,
+    )
 
     fun updateMemoryDraft(content: String) {
         memoryState = memoryState.copy(
@@ -94,15 +121,18 @@ internal class AgentMemoryStore(
     fun saveMemory() {
         if (!memoryState.canSave) return
         val target = memoryState.draft
+        val selectedScope = memoryState.selectedScope
+        val revision = memoryState.savedRevision
         memoryState = memoryState.copy(isSaving = true, notice = null)
         scope.launch(Dispatchers.IO) {
-            runCatching { AgentMemoryRepository.replaceAll(target) }
+            runCatching { replaceIfCurrent(selectedScope, target, revision) }
                 .fold(
                     onSuccess = { snapshot ->
                         withContext(Dispatchers.Main) {
                             memoryState = memoryState.copy(
                                 isSaving = false,
                                 savedContent = snapshot.content,
+                                savedRevision = snapshot.revision,
                                 draft = if (memoryState.draft == target) {
                                     snapshot.content
                                 } else {
@@ -129,17 +159,20 @@ internal class AgentMemoryStore(
     }
 
     fun clearMemory() {
-        if (memoryState.isSaving) return
+        if (memoryState.isSaving || memoryState.isLoading) return
+        val selectedScope = memoryState.selectedScope
+        val revision = memoryState.savedRevision
         memoryState = memoryState.copy(isSaving = true, notice = null)
         scope.launch(Dispatchers.IO) {
-            runCatching { AgentMemoryRepository.replaceAll("") }
+            runCatching { replaceIfCurrent(selectedScope, "", revision) }
                 .fold(
-                    onSuccess = {
+                    onSuccess = { snapshot ->
                         withContext(Dispatchers.Main) {
                             memoryState = memoryState.copy(
                                 isSaving = false,
                                 draft = "",
                                 savedContent = "",
+                                savedRevision = snapshot.revision,
                                 draftBytes = 0,
                                 notice = appContext.getString(R.string.state_ui_memory_cleared_b415bb),
                             )
@@ -163,4 +196,10 @@ internal class AgentMemoryStore(
     fun dismissMemoryNotice() {
         memoryState = memoryState.copy(notice = null)
     }
+
+    private fun replaceIfCurrent(scope: AgentMemoryScope, content: String, revision: String): io.github.mangi.eta.data.repository.AgentMemorySnapshot =
+        when (val result = AgentMemoryRepository.replaceAllIfRevision(scope, content, revision)) {
+            is io.github.mangi.eta.data.repository.AgentMemoryWriteResult.Success -> result.snapshot
+            is io.github.mangi.eta.data.repository.AgentMemoryWriteResult.Conflict -> throw IllegalStateException("记忆已由其他会话更新，当前草稿已保留。请重新打开文档核对后保存。")
+        }
 }

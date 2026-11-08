@@ -71,11 +71,23 @@ internal object SpeechVoicePresets {
         SpeechVoicePreset("Chinese (Mandarin)_News_Anchor", R.string.speech_voice_minimax_news, R.string.speech_voice_female),
     )
 
+    private val local = listOf(
+        SpeechVoicePreset("zf_xiaobei", R.string.speech_voice_local_xiaobei, R.string.speech_voice_female),
+        SpeechVoicePreset("zf_xiaoni", R.string.speech_voice_local_xiaoni, R.string.speech_voice_female),
+        SpeechVoicePreset("zf_xiaoxiao", R.string.speech_voice_local_xiaoxiao, R.string.speech_voice_female),
+        SpeechVoicePreset("zf_xiaoyi", R.string.speech_voice_local_xiaoyi, R.string.speech_voice_female),
+        SpeechVoicePreset("zm_yunxia", R.string.speech_voice_local_yunxia, R.string.speech_voice_male),
+        SpeechVoicePreset("zm_yunjian", R.string.speech_voice_local_yunjian, R.string.speech_voice_male),
+        SpeechVoicePreset("zm_yunxi", R.string.speech_voice_local_yunxi, R.string.speech_voice_male),
+        SpeechVoicePreset("zm_yunyang", R.string.speech_voice_local_yunyang, R.string.speech_voice_male),
+    )
+
     fun forProvider(provider: TtsProvider): List<SpeechVoicePreset> = when (provider) {
         TtsProvider.QWEN -> qwen
         TtsProvider.DOUBAO -> doubao
         TtsProvider.GEMINI -> gemini
         TtsProvider.MINIMAX -> minimax
+        TtsProvider.LOCAL -> local
         TtsProvider.NONE -> emptyList()
     }
 }

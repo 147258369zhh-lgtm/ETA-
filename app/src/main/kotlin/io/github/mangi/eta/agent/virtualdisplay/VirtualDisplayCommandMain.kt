@@ -222,50 +222,63 @@ internal object VirtualDisplayCommandMain {
         width: Int,
         height: Int,
         densityDpi: Int,
-    ): android.hardware.display.VirtualDisplay? = runCatching {
+    ): android.hardware.display.VirtualDisplay? {
         val activityThreadClass = Class.forName("android.app.ActivityThread")
         val thread = activityThreadClass.getMethod("systemMain").invoke(null)
         val systemContext = activityThreadClass.getMethod("getSystemContext").invoke(thread) as android.content.Context
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val config = android.hardware.display.VirtualDisplayConfig.Builder(
-                CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
-                width,
-                height,
-                densityDpi,
-            )
-                .setSurface(surface)
-                .setFlags(CanvasRoutingPolicy.TRUSTED_INTERACTIVE_FLAGS)
-                .build()
-            val dmgClass = Class.forName("android.hardware.display.DisplayManagerGlobal")
-            val dmg = dmgClass.getMethod("getInstance").invoke(null)
-            val createMethod = dmgClass.methods.firstOrNull {
-                it.name == "createVirtualDisplay" &&
-                    it.parameterCount >= 3 &&
-                    it.parameterTypes[0] == android.content.Context::class.java &&
-                    it.parameterTypes[2] == android.hardware.display.VirtualDisplayConfig::class.java
-            }
-            if (createMethod != null) {
-                val args = arrayOfNulls<Any?>(createMethod.parameterCount)
-                args[0] = systemContext
-                args[1] = null // MediaProjection
-                args[2] = config
-                createMethod.invoke(dmg, *args) as? android.hardware.display.VirtualDisplay
-            } else {
-                val dm = systemContext.getSystemService(android.hardware.display.DisplayManager::class.java)
-                dm?.createVirtualDisplay(config)
-            }
+        val dmgClass = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            Class.forName("android.hardware.display.DisplayManagerGlobal")
         } else {
-            val dm = systemContext.getSystemService(android.hardware.display.DisplayManager::class.java)
-            dm?.createVirtualDisplay(
-                CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
-                width,
-                height,
-                densityDpi,
-                surface,
-                CanvasRoutingPolicy.TRUSTED_INTERACTIVE_FLAGS,
-            )
+            null
         }
-    }.getOrNull()
+        val dmg = dmgClass?.getMethod("getInstance")?.invoke(null)
+        val createMethod = dmgClass?.methods?.firstOrNull {
+            it.name == "createVirtualDisplay" &&
+                it.parameterCount >= 3 &&
+                it.parameterTypes[0] == android.content.Context::class.java &&
+                it.parameterTypes[2] == android.hardware.display.VirtualDisplayConfig::class.java
+        }
+
+        for (flags in CanvasRoutingPolicy.FLAG_CANDIDATES) {
+            val display = runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    val config = android.hardware.display.VirtualDisplayConfig.Builder(
+                        CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
+                        width,
+                        height,
+                        densityDpi,
+                    )
+                        .setSurface(surface)
+                        .setFlags(flags)
+                        .build()
+                    if (createMethod != null && dmg != null) {
+                        val args = arrayOfNulls<Any?>(createMethod.parameterCount)
+                        args[0] = systemContext
+                        args[1] = null // MediaProjection
+                        args[2] = config
+                        createMethod.invoke(dmg, *args) as? android.hardware.display.VirtualDisplay
+                    } else {
+                        val dm = systemContext.getSystemService(android.hardware.display.DisplayManager::class.java)
+                        dm?.createVirtualDisplay(config)
+                    }
+                } else {
+                    val dm = systemContext.getSystemService(android.hardware.display.DisplayManager::class.java)
+                    dm?.createVirtualDisplay(
+                        CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME,
+                        width,
+                        height,
+                        densityDpi,
+                        surface,
+                        flags,
+                    )
+                }
+            }.getOrNull()
+            val displayId = display?.display?.displayId ?: Display.INVALID_DISPLAY
+            if (display != null && displayId > 0) return display
+            display?.let { runCatching { it.release() } }
+        }
+        return null
+    }
 
     private fun moveTaskToMainDisplay(request: JSONObject): JSONObject {
         val displayId = request.optInt("display_id", Display.INVALID_DISPLAY)
@@ -299,9 +312,9 @@ internal object VirtualDisplayCommandMain {
                 ?: taskInfo.baseIntent.`package`
             val displayMatches = displayId > 0 && taskDisplayId == displayId
             val pkgMatches = targetPackage.isNotEmpty() && topPkg == targetPackage
-            if (displayMatches || pkgMatches) {
+            if (displayMatches && (targetPackage.isEmpty() || pkgMatches)) {
                 matchedTaskId = taskInfo.taskId
-                if (displayMatches && pkgMatches) break
+                break
             }
         }
 

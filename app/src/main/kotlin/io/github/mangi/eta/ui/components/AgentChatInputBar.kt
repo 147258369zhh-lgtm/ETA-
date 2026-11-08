@@ -42,9 +42,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -65,9 +62,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -79,10 +74,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.SpeechSettingsRepository
@@ -129,16 +122,18 @@ internal fun AgentChatInputBar(
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi> = emptyList(),
     inputSyncVersion: Int = 0,
+    onInputSyncApplied: (Int, String) -> Unit = { _, _ -> },
     focusInputOnSync: Boolean = true,
     isEditingMessage: Boolean,
     editHasLaterTurns: Boolean,
     preserveFollowingMessages: Boolean,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onCompactContext: () -> Unit,
+    onConfigureContextBudget: () -> Unit = {},
     canCompactContext: Boolean,
     onModelSelected: (String) -> Unit,
-    onSubmit: (String) -> Unit,
-    onInterruptAndSubmit: (String) -> Unit = onSubmit,
+    onSubmit: (String) -> Boolean,
+    onInterruptAndSubmit: (String) -> Boolean = onSubmit,
     onSteerQueuedMessage: (String) -> Unit = {},
     onRecallQueuedMessage: (String, String) -> Unit = { _, _ -> },
     onRemoveQueuedMessage: (String) -> Unit = {},
@@ -155,7 +150,11 @@ internal fun AgentChatInputBar(
     val keyboard = LocalSoftwareKeyboardController.current
     val hapticFeedback = LocalHapticFeedback.current
     val focusRequester = remember { FocusRequester() }
-    val textFieldState = rememberTextFieldState(initialText = input)
+    val draftEditor = rememberConversationEditor(initialText = if (isEditingMessage) "" else input)
+    val draftStatus by draftEditor.status.collectAsState()
+    // Editing a historical message never overwrites the unsent draft for this conversation.
+    val editFieldState = rememberTextFieldState(initialText = input)
+    val textFieldState = if (isEditingMessage) editFieldState else draftEditor.field
     val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = null)
     val recognitionEnabled = speechSettings?.recognitionEnabled == true
     val dictation = rememberSpeechInput { recognized ->
@@ -166,11 +165,11 @@ internal fun AgentChatInputBar(
         }
     }
     LaunchedEffect(isEditingMessage, recognitionEnabled) { dictation.cancel() }
-    var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
     var syncedVersion by remember { mutableIntStateOf(inputSyncVersion) }
-    val canSend = textFieldState.text.isNotBlank() ||
+    val draftReady = isEditingMessage || draftStatus == ConversationDraftStatus.READY || draftStatus == ConversationDraftStatus.SAVE_FAILED
+    val canSend = draftReady && (textFieldState.text.isNotBlank() ||
         pendingImages.isNotEmpty() ||
-        pendingFileReferences.isNotEmpty()
+        pendingFileReferences.isNotEmpty())
     val density = LocalDensity.current
     val statusBarTopPx = WindowInsets.statusBars.getTop(density)
     var inputContainerTopPx by remember { mutableIntStateOf(0) }
@@ -183,21 +182,26 @@ internal fun AgentChatInputBar(
         // 编辑态与排队消息撤回由外部业务状态驱动；普通输入只保留在本地，避免每个字符把聊天舞台
         // 的消息流、滚动和 Markdown 一起带入重组。
         val versionChanged = inputSyncVersion != syncedVersion
-        if (isEditingMessage || wasEditingMessage || versionChanged) {
-            textFieldState.setTextAndPlaceCursorAtEnd(input)
-        }
+        if (isEditingMessage) editFieldState.setTextAndPlaceCursorAtEnd(input)
+        else if (versionChanged) draftEditor.replace(input)
         if (isEditingMessage || (versionChanged && input.isNotEmpty() && focusInputOnSync)) {
             focusRequester.requestFocus()
             keyboard?.show()
         }
-        wasEditingMessage = isEditingMessage
         syncedVersion = inputSyncVersion
+        if (!isEditingMessage) {
+            // Transfer external input once. A later remount restores the newer local draft instead
+            // of replaying stale share/recall text kept in the business model.
+            draftEditor.persistNow()
+            onInputSyncApplied(inputSyncVersion, input)
+        }
     }
 
     Column(
         modifier = modifier
             .fillMaxWidth(),
     ) {
+        if (!isEditingMessage) ConversationDraftFeedback(draftEditor)
         if (recognitionEnabled) SpeechInputFeedback(dictation)
         AnimatedVisibility(
             visible = queuedMessages.isNotEmpty(),
@@ -316,44 +320,19 @@ internal fun AgentChatInputBar(
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 40.dp)
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.TopStart,
-                ) {
-                    // 占位文字与输入正文共用同一行高，首字输入时基线不跳动。
-                    val inputTextStyle = MiuixTheme.textStyles.body1.copy(lineHeight = 22.sp)
-                    val character = LocalRoleplayChat.current
-                    if (textFieldState.text.isBlank()) {
-                        Text(
-                            text = when {
-                                // 角色对话的占位文字跟随角色，避免“交给 Eta”打断沉浸感。
-                                character != null && isStreaming ->
-                                    stringResource(R.string.chat_character_typing, character.characterName)
-                                character != null -> stringResource(R.string.chat_character_input_hint, character.characterName)
-                                isStreaming -> stringResource(R.string.chat_eta_working)
-                                else -> stringResource(R.string.chat_input_hint)
-                            },
-                            style = inputTextStyle,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                    }
-                    BasicTextField(
-                        state = textFieldState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(focusRequester),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                        textStyle = inputTextStyle.copy(color = MiuixTheme.colorScheme.onSurface),
-                        cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
-                        lineLimits = TextFieldLineLimits.MultiLine(
-                            minHeightInLines = 1,
-                            maxHeightInLines = 6,
-                        ),
-                    )
-                }
+                val character = LocalRoleplayChat.current
+                ConversationTextEditor(
+                    state = textFieldState,
+                    onUserEdit = { if (!isEditingMessage) draftEditor.onUserEdit() },
+                    placeholder = when {
+                        character != null && isStreaming -> stringResource(R.string.chat_character_typing, character.characterName)
+                        character != null -> stringResource(R.string.chat_character_input_hint, character.characterName)
+                        isStreaming -> stringResource(R.string.chat_eta_working)
+                        else -> stringResource(R.string.chat_input_hint)
+                    },
+                    focusRequester = focusRequester,
+                    modifier = Modifier.fillMaxWidth(),
+                )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -399,7 +378,12 @@ internal fun AgentChatInputBar(
                         Spacer(modifier = Modifier.weight(1f))
 
                         if (showContextUsage) {
-                            AgentContextUsageButton(usage = contextUsage, onCompact = onCompactContext, canCompact = canCompactContext && !isStreaming)
+                            AgentContextUsageButton(
+                                usage = contextUsage,
+                                onCompact = onCompactContext,
+                                onConfigure = onConfigureContextBudget,
+                                canCompact = canCompactContext && !isStreaming,
+                            )
 
                             Spacer(modifier = Modifier.width(2.dp))
                         }
@@ -421,12 +405,12 @@ internal fun AgentChatInputBar(
                         val submitCurrentDraft: (Boolean) -> Unit = { interrupt ->
                             if (canSend) {
                                 dictation.cancel()
+                                val submitted = if (isEditingMessage) null else draftEditor.snapshot()
                                 val submittedText = textFieldState.text.toString()
-                                textFieldState.clearText()
-                                if (interrupt) {
-                                    onInterruptAndSubmit(submittedText)
-                                } else {
-                                    onSubmit(submittedText)
+                                val accepted = if (interrupt) onInterruptAndSubmit(submittedText) else onSubmit(submittedText)
+                                if (accepted) {
+                                    if (submitted != null) draftEditor.clearSubmitted(submitted)
+                                    else if (textFieldState.text.toString() == submittedText) textFieldState.clearText()
                                 }
                             }
                         }
@@ -614,7 +598,7 @@ private fun ThinkingEffortChip(
  * 横向跟随 Chip，竖向则避开整个输入面板；默认下拉定位只会避开 Chip 自身。
  */
 @Composable
-private fun PendingImageStrip(
+internal fun PendingImageStrip(
     images: List<PendingImageUi>,
     onRemoveImage: (String) -> Unit,
     modifier: Modifier = Modifier,

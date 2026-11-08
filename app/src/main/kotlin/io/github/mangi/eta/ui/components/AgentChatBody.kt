@@ -97,6 +97,7 @@ import io.github.mangi.eta.ui.model.PendingImageUi
 import io.github.mangi.eta.ui.model.QueuedMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
+import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import io.github.mangi.eta.ui.model.latestContextUsage
@@ -149,14 +150,16 @@ internal fun AgentChatBody(
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi> = emptyList(),
     inputSyncVersion: Int = 0,
+    onInputSyncApplied: (Int, String) -> Unit = { _, _ -> },
     focusInputOnSync: Boolean = true,
     messageEdit: MessageEditUiState?,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onCompactContext: () -> Unit,
+    onConfigureContextBudget: () -> Unit = {},
     canCompactContext: Boolean,
     onModelSelected: (String) -> Unit,
-    onSubmit: (String) -> Unit,
-    onInterruptAndSubmit: (String) -> Unit = onSubmit,
+    onSubmit: (String) -> Boolean,
+    onInterruptAndSubmit: (String) -> Boolean = onSubmit,
     onSteerQueuedMessage: (String) -> Unit = {},
     onRecallQueuedMessage: (String, String) -> Unit = { _, _ -> },
     onRemoveQueuedMessage: (String) -> Unit = {},
@@ -171,9 +174,11 @@ internal fun AgentChatBody(
     onCancelMessageEdit: () -> Unit,
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
+    onForkMessage: ((String) -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
+    onOpenPermissions: (() -> Unit)? = null,
     onOpenBrowser: () -> Unit,
     onNewConversation: () -> Unit,
     hasEarlierMessages: Boolean = false,
@@ -255,22 +260,23 @@ internal fun AgentChatBody(
             pendingFileReferences = pendingFileReferences,
             queuedMessages = queuedMessages,
             inputSyncVersion = inputSyncVersion,
+            onInputSyncApplied = onInputSyncApplied,
             focusInputOnSync = focusInputOnSync,
             messageEdit = messageEdit,
             showEmptySuggestions = !isKeyboardVisible,
             keepBottomAnchored = keepBottomAnchored,
             onBottomAnchorChanged = { keepBottomAnchored = it },
             onSubmit = { text ->
-                sentFromKeyboard = true
                 // 发送即重新锚定底部：用户从历史上方直接发送时，同帧内 isStreaming 与
                 // 新消息一起到位，立即回到底部并恢复后续的流式平滑跟底。
-                keepBottomAnchored = true
-                onSubmit(text)
+                onSubmit(text).also { accepted ->
+                    if (accepted) { sentFromKeyboard = true; keepBottomAnchored = true }
+                }
             },
             onInterruptAndSubmit = { text ->
-                sentFromKeyboard = true
-                keepBottomAnchored = true
-                onInterruptAndSubmit(text)
+                onInterruptAndSubmit(text).also { accepted ->
+                    if (accepted) { sentFromKeyboard = true; keepBottomAnchored = true }
+                }
             },
             onSteerQueuedMessage = { id ->
                 keepBottomAnchored = true
@@ -280,6 +286,7 @@ internal fun AgentChatBody(
             onRemoveQueuedMessage = onRemoveQueuedMessage,
             onReasoningEffortChange = onReasoningEffortChange,
             onCompactContext = onCompactContext,
+            onConfigureContextBudget = onConfigureContextBudget,
             canCompactContext = canCompactContext,
             onModelSelected = onModelSelected,
             onStop = onStop,
@@ -293,9 +300,11 @@ internal fun AgentChatBody(
             onCancelMessageEdit = onCancelMessageEdit,
             onDeleteMessage = onDeleteMessage,
             onRegenerateMessage = onRegenerateMessage,
+            onForkMessage = onForkMessage,
             onSelectReplyCandidate = onSelectReplyCandidate,
             onSuggestionClick = onSuggestionClick,
             onRunTraceClick = onRunTraceClick,
+            onOpenPermissions = onOpenPermissions,
             onOpenBrowser = onOpenBrowser,
             onNewConversation = onNewConversation,
             currentBrowserMessageId = currentBrowserMessageId,
@@ -326,18 +335,20 @@ private fun AgentChatScaffold(
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi>,
     inputSyncVersion: Int,
+    onInputSyncApplied: (Int, String) -> Unit,
     focusInputOnSync: Boolean,
     messageEdit: MessageEditUiState?,
     showEmptySuggestions: Boolean,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
-    onSubmit: (String) -> Unit,
-    onInterruptAndSubmit: (String) -> Unit,
+    onSubmit: (String) -> Boolean,
+    onInterruptAndSubmit: (String) -> Boolean,
     onSteerQueuedMessage: (String) -> Unit,
     onRecallQueuedMessage: (String, String) -> Unit,
     onRemoveQueuedMessage: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onCompactContext: () -> Unit,
+    onConfigureContextBudget: () -> Unit = {},
     canCompactContext: Boolean,
     onModelSelected: (String) -> Unit,
     onStop: () -> Unit,
@@ -351,9 +362,11 @@ private fun AgentChatScaffold(
     onCancelMessageEdit: () -> Unit,
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
+    onForkMessage: ((String) -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
+    onOpenPermissions: (() -> Unit)? = null,
     onOpenBrowser: () -> Unit,
     onNewConversation: () -> Unit,
     currentBrowserMessageId: String?,
@@ -396,6 +409,7 @@ private fun AgentChatScaffold(
                 pendingFileReferences = pendingFileReferences,
                 queuedMessages = queuedMessages,
                 inputSyncVersion = inputSyncVersion,
+                onInputSyncApplied = onInputSyncApplied,
                 focusInputOnSync = focusInputOnSync,
                 messageEdit = messageEdit,
                 onSubmit = onSubmit,
@@ -405,6 +419,7 @@ private fun AgentChatScaffold(
                 onRemoveQueuedMessage = onRemoveQueuedMessage,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onCompactContext = onCompactContext,
+                onConfigureContextBudget = onConfigureContextBudget,
                 canCompactContext = canCompactContext,
                 onModelSelected = onModelSelected,
                 onStop = onStop,
@@ -438,10 +453,13 @@ private fun AgentChatScaffold(
                 onBottomAnchorChanged = onBottomAnchorChanged,
                 onSuggestionClick = onSuggestionClick,
                 onRunTraceClick = onRunTraceClick,
+                onOpenPermissions = onOpenPermissions,
+                onStopWaiting = onStop,
                 onOpenBrowser = onOpenBrowser,
                 onEditMessage = onEditMessage,
                 onDeleteMessage = onDeleteMessage,
                 onRegenerateMessage = onRegenerateMessage,
+                onForkMessage = onForkMessage,
                 onSelectReplyCandidate = onSelectReplyCandidate,
                 messageActionsEnabled = !isStreaming && messageEdit == null,
                 editTargetMessageId = messageEdit?.targetMessageId,
@@ -471,10 +489,13 @@ internal fun AgentConversationMessages(
     assistantOverlay: Boolean = false,
     onSuggestionClick: (String) -> Unit = {},
     onRunTraceClick: () -> Unit = {},
+    onOpenPermissions: (() -> Unit)? = null,
+    onStopWaiting: (() -> Unit)? = null,
     onOpenBrowser: () -> Unit = {},
     onEditMessage: (String) -> Unit = {},
     onDeleteMessage: (String) -> Unit = {},
     onRegenerateMessage: (String) -> Unit = {},
+    onForkMessage: ((String) -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit = { _, _ -> },
     messageActionsEnabled: Boolean = false,
     editTargetMessageId: String? = null,
@@ -484,12 +505,18 @@ internal fun AgentConversationMessages(
     historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
     onLoadEarlierMessages: () -> Unit = {},
     onHistoryViewportChanged: (Boolean) -> Unit = {},
+    messageIdentities: Map<String, ConversationMessageIdentity> = emptyMap(),
+    completedReplyMessageIds: Set<String>? = null,
+    allowMessageChanges: Boolean = true,
+    followIncomingMessages: Boolean = true,
+    initiallyScrollToBottom: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     // 上一版条目只作复用比对，不参与组合观察。
     val previousTimelineEntries = remember { arrayOf(emptyList<AgentTimelineEntry>()) }
-    val timelineEntries = remember(visibleMessages) {
-        visibleMessages.toTimelineEntries(previous = previousTimelineEntries[0])
+    val workGroups = remember(messageIdentities) { messageIdentities.mapValues { it.value.workGroup } }
+    val timelineEntries = remember(visibleMessages, workGroups) {
+        visibleMessages.toTimelineEntries(previous = previousTimelineEntries[0], workGroups = workGroups)
     }
     SideEffect { previousTimelineEntries[0] = timelineEntries }
     val activeWorkProcessKey = if (isStreaming) {
@@ -499,7 +526,7 @@ internal fun AgentConversationMessages(
     }
     // 复制按钮只出现在每轮对话的最终结果上，中间步骤的过渡文本不提供复制入口。
     // 流式进行中当前这一轮尚未收尾，此时的“最后一条正文”只是中间步骤，不标记。
-    val finalResultMessageIds = remember(visibleMessages, isStreaming) {
+    val finalResultMessageIds = completedReplyMessageIds ?: remember(visibleMessages, isStreaming) {
         resolveFinalResultMessageIds(visibleMessages, isStreaming = isStreaming)
     }
     // 流式消息的渲染会话按 id 提升到列表层持有：item 滚出视口被 LazyColumn 销毁后，
@@ -534,6 +561,13 @@ internal fun AgentConversationMessages(
     }
     val densityScale = LocalDensity.current.density
     val coroutineScope = rememberCoroutineScope()
+    var initialPositionRequested by remember { mutableStateOf(false) }
+    LaunchedEffect(initiallyScrollToBottom, isListMeasured) {
+        if (initiallyScrollToBottom && isListMeasured && !initialPositionRequested) {
+            scrollState.requestScrollToItem(bottomItemIndex)
+            initialPositionRequested = true
+        }
+    }
 
     LaunchedEffect(
         isListMeasured,
@@ -566,8 +600,8 @@ internal fun AgentConversationMessages(
     }
     var isBottomSettling by remember { mutableStateOf(isStreaming) }
 
-    LaunchedEffect(isStreaming, isTailRendering, keepBottomAnchored, isUserDragging) {
-        if (!keepBottomAnchored || isUserDragging) {
+    LaunchedEffect(isStreaming, isTailRendering, keepBottomAnchored, isUserDragging, followIncomingMessages) {
+        if (!keepBottomAnchored || isUserDragging || !followIncomingMessages) {
             isBottomSettling = false
         } else if (isStreaming || isTailRendering) {
             isBottomSettling = true
@@ -596,7 +630,7 @@ internal fun AgentConversationMessages(
     )
 
     val shouldFollowBottom by rememberUpdatedState(
-        resolveBottomFollowEnabled(
+        followIncomingMessages && resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
             isUserDragging = isUserDragging,
@@ -613,8 +647,9 @@ internal fun AgentConversationMessages(
         keepBottomAnchored,
         isUserDragging,
         isStreaming,
+        followIncomingMessages,
     ) {
-        if (shouldRequestInitialBottom(
+        if (followIncomingMessages && shouldRequestInitialBottom(
                 isStreaming = isStreaming,
                 keepBottomAnchored = keepBottomAnchored,
                 isUserDragging = isUserDragging,
@@ -779,6 +814,8 @@ internal fun AgentConversationMessages(
                                 },
                             onSuggestionClick = onSuggestionClick,
                             onRunTraceClick = onRunTraceClick,
+                            onOpenPermissions = onOpenPermissions,
+                            onStopWaiting = onStopWaiting,
                             onOpenBrowser = onOpenBrowser,
                             showBrowserShortcut = message is ToolActivityMessageUi &&
                                 message.toolName == "browser_use" &&
@@ -794,7 +831,12 @@ internal fun AgentConversationMessages(
                             onEditMessage = onEditMessage,
                             onDeleteMessage = onDeleteMessage,
                             onRegenerateMessage = onRegenerateMessage,
+                            onForkMessage = onForkMessage?.takeIf {
+                                !assistantOverlay && (message is UserMessageUi || message.id in finalResultMessageIds)
+                            },
                             onSelectReplyCandidate = onSelectReplyCandidate,
+                            allowMessageChanges = allowMessageChanges,
+                            identity = messageIdentities[message.id],
                             modifier = itemModifier,
                         )
                     }
@@ -805,16 +847,22 @@ internal fun AgentConversationMessages(
                                 streamingMarkdownCache.getOrCreate(message.id)
                             }
                         }
-                        AgentWorkProcess(
-                            id = entry.key,
-                            active = entry.key == activeWorkProcessKey,
-                            messages = entry.messages,
-                            assistantOverlay = assistantOverlay,
-                            onOpenBrowser = onOpenBrowser,
-                            currentBrowserMessageId = currentBrowserMessageId,
-                            retainedStreamingStates = streamingMarkdownStates,
-                            modifier = itemModifier,
-                        )
+                        Column(modifier = itemModifier) {
+                            messageIdentities[entry.messages.first().id]?.let { ConversationAuthorHeader(it) }
+                            AgentWorkProcess(
+                                id = entry.key,
+                                active = if (messageIdentities.isEmpty()) entry.key == activeWorkProcessKey else
+                                    isStreaming && entry.messages.any { message ->
+                                        (message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running) ||
+                                            (message is ThinkingMessageUi && message.isStreaming)
+                                    },
+                                messages = entry.messages,
+                                assistantOverlay = assistantOverlay,
+                                onOpenBrowser = onOpenBrowser,
+                                currentBrowserMessageId = currentBrowserMessageId,
+                                retainedStreamingStates = streamingMarkdownStates,
+                            )
+                        }
                     }
                 }
             }
@@ -925,6 +973,7 @@ internal sealed interface AgentTimelineEntry {
     data class WorkProcess(
         override val key: String,
         val messages: List<AgentChatMessageUi>,
+        val group: String? = null,
     ) : AgentTimelineEntry
 }
 
@@ -934,6 +983,7 @@ internal sealed interface AgentTimelineEntry {
  */
 internal fun List<AgentChatMessageUi>.toTimelineEntries(
     previous: List<AgentTimelineEntry> = emptyList(),
+    workGroups: Map<String, String?> = emptyMap(),
 ): List<AgentTimelineEntry> = buildList {
     val previousWorkByMessageId = previous.asSequence()
         .filterIsInstance<AgentTimelineEntry.WorkProcess>()
@@ -946,18 +996,21 @@ internal fun List<AgentChatMessageUi>.toTimelineEntries(
         // 历史页可能从同一工作过程的中间开始；前插补齐后保留已显示分组的身份和滚动锚点。
         val messageIds = workMessages.mapTo(HashSet()) { it.id }
         val previousEntry = workMessages.firstNotNullOfOrNull { previousWorkByMessageId[it.id] }
-            ?.takeIf { entry -> entry.messages.all { it.id in messageIds } }
+            ?.takeIf { entry -> entry.group == workGroups[workMessages.first().id] && entry.messages.all { it.id in messageIds } }
         val key = previousEntry?.key ?: "work-${workMessages.first().id}"
         val reusable = previousEntry?.takeIf { entry ->
             entry.messages.size == workMessages.size &&
                 entry.messages.indices.all { index -> entry.messages[index] === workMessages[index] }
         }
-        add(reusable ?: AgentTimelineEntry.WorkProcess(key = key, messages = workMessages.toList()))
+        add(reusable ?: AgentTimelineEntry.WorkProcess(key = key, messages = workMessages.toList(), group = workGroups[workMessages.first().id]))
         workMessages.clear()
     }
 
     this@toTimelineEntries.forEach { message ->
         if (message.isWorkProcessMessage()) {
+            if (workMessages.isNotEmpty() && workGroups[workMessages.last().id] != workGroups[message.id]) {
+                flushWorkProcess()
+            }
             workMessages += message
         } else {
             flushWorkProcess()
@@ -1017,15 +1070,17 @@ private fun AgentChatBottomBar(
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi>,
     inputSyncVersion: Int,
+    onInputSyncApplied: (Int, String) -> Unit,
     focusInputOnSync: Boolean,
     messageEdit: MessageEditUiState?,
-    onSubmit: (String) -> Unit,
-    onInterruptAndSubmit: (String) -> Unit,
+    onSubmit: (String) -> Boolean,
+    onInterruptAndSubmit: (String) -> Boolean,
     onSteerQueuedMessage: (String) -> Unit,
     onRecallQueuedMessage: (String, String) -> Unit,
     onRemoveQueuedMessage: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onCompactContext: () -> Unit,
+    onConfigureContextBudget: () -> Unit = {},
     canCompactContext: Boolean,
     onModelSelected: (String) -> Unit,
     onStop: () -> Unit,
@@ -1110,6 +1165,7 @@ private fun AgentChatBottomBar(
                     pendingFileReferences = pendingFileReferences,
                     queuedMessages = queuedMessages,
                     inputSyncVersion = inputSyncVersion,
+                    onInputSyncApplied = onInputSyncApplied,
                     focusInputOnSync = focusInputOnSync,
                     isEditingMessage = messageEdit != null,
                     editHasLaterTurns = messageEdit?.hasLaterTurns == true,
@@ -1121,6 +1177,7 @@ private fun AgentChatBottomBar(
                     onRemoveQueuedMessage = onRemoveQueuedMessage,
                     onReasoningEffortChange = onReasoningEffortChange,
                     onCompactContext = onCompactContext,
+                    onConfigureContextBudget = onConfigureContextBudget,
                     canCompactContext = canCompactContext,
                     onModelSelected = onModelSelected,
                     onStop = onStop,
@@ -1145,7 +1202,7 @@ private fun AgentChatBottomBar(
                         onClick = onNewConversation,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .offset(y = (-38).dp),
+                            .offset(y = (-42).dp),
                     )
                 }
             }
@@ -1153,7 +1210,7 @@ private fun AgentChatBottomBar(
     }
 }
 
-private val NewConversationPillShape = RoundedCornerShape(17.dp)
+private val NewConversationPillShape = RoundedCornerShape(18.dp)
 
 @Composable
 private fun AgentNewConversationPill(
@@ -1183,8 +1240,8 @@ private fun AgentNewConversationPill(
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Row(
             modifier = Modifier
-                .widthIn(min = 112.dp, max = 156.dp)
-                .height(34.dp)
+                .widthIn(min = 136.dp, max = 208.dp)
+                .height(36.dp)
                 .dropShadow(
                     shape = NewConversationPillShape,
                     shadow = Shadow(radius = 7.dp, color = Color.Black, alpha = 0.075f),
@@ -1193,7 +1250,7 @@ private fun AgentNewConversationPill(
                 .squircleBorder(
                     width = 0.5.dp,
                     color = colors.outline.copy(alpha = 0.5f),
-                    cornerRadius = 17.dp,
+                    cornerRadius = 18.dp,
                 )
                 .clickable(onClick = onClick)
                 .padding(horizontal = 14.dp),
@@ -1211,6 +1268,8 @@ private fun AgentNewConversationPill(
                 text = stringResource(R.string.action_new_conversation_pill),
                 style = MiuixTheme.textStyles.body2,
                 color = colors.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

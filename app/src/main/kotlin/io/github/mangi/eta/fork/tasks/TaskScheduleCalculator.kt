@@ -13,6 +13,7 @@ internal enum class AgentScheduleKind {
     INTERVAL,
     DAILY,
     WEEKLY,
+    MONTHLY,
 }
 
 internal enum class MissedRunPolicy {
@@ -31,6 +32,7 @@ internal data class AgentScheduleRule(
     /** Monday is bit 0; Sunday is bit 6. */
     val weekdaysMask: Int? = null,
     val timeZoneId: String = "UTC",
+    val monthDay: Int? = null,
 ) {
     init {
         require(endAt == null || endAt >= startAt) { "endAt must not precede startAt" }
@@ -41,6 +43,7 @@ internal data class AgentScheduleRule(
             }
             AgentScheduleKind.DAILY,
             AgentScheduleKind.WEEKLY,
+            AgentScheduleKind.MONTHLY,
             -> {
                 require(localHour != null && localHour in 0..23) { "localHour must be in 0..23" }
                 require(localMinute != null && localMinute in 0..59) { "localMinute must be in 0..59" }
@@ -50,6 +53,7 @@ internal data class AgentScheduleRule(
             require((weekdaysMask ?: 0) in 1..WEEKDAY_ALL) { "weekdaysMask must contain at least one weekday" }
         }
         require(runCatching { ZoneId.of(timeZoneId) }.isSuccess) { "Unknown time zone: $timeZoneId" }
+        if (kind == AgentScheduleKind.MONTHLY) require(monthDay != null && monthDay in 1..31)
     }
 
     companion object {
@@ -71,6 +75,7 @@ internal object TaskScheduleCalculator {
         AgentScheduleKind.INTERVAL -> nextInterval(rule, afterExclusive)
         AgentScheduleKind.DAILY -> nextCalendar(rule, afterExclusive, weekly = false)
         AgentScheduleKind.WEEKLY -> nextCalendar(rule, afterExclusive, weekly = true)
+        AgentScheduleKind.MONTHLY -> nextMonthly(rule, afterExclusive)
     }
 
     fun decideAfter(
@@ -93,6 +98,18 @@ internal object TaskScheduleCalculator {
                 ?.let(MissedRunDecision::Scheduled)
                 ?: MissedRunDecision.Exhausted
         }
+    }
+
+    private fun nextMonthly(rule: AgentScheduleRule, afterExclusive: Long): Long? {
+        val zone = ZoneId.of(rule.timeZoneId)
+        val month = java.time.YearMonth.from(Instant.ofEpochMilli(maxOf(afterExclusive, cursorBefore(rule.startAt))).atZone(zone))
+        for (offset in 0..2) {
+            val current = month.plusMonths(offset.toLong())
+            val date = current.atDay(minOf(rule.monthDay!!, current.lengthOfMonth()))
+            val millis = resolveLocal(date, LocalTime.of(rule.localHour!!, rule.localMinute!!), zone).toInstant().toEpochMilli()
+            if (millis > afterExclusive && millis >= rule.startAt && rule.isWithinEnd(millis)) return millis
+        }
+        return null
     }
 
     private fun nextInterval(rule: AgentScheduleRule, afterExclusive: Long): Long? {

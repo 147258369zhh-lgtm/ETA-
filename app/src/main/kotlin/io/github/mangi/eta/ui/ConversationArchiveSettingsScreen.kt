@@ -35,6 +35,7 @@ internal fun ConversationArchiveSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val applicationContext = context.applicationContext
     val scope = rememberCoroutineScope()
+    val checkStartedMessage = stringResource(R.string.conversation_archive_check_started)
     val settingsFlow = remember(applicationContext) {
         ConversationExtensionRepository.snapshot(applicationContext)
     }
@@ -136,7 +137,7 @@ internal fun ConversationArchiveSettingsScreen(onBack: () -> Unit) {
                         ConversationArchiveScheduler.checkNow(applicationContext)
                         Toast.makeText(
                             context,
-                            context.getString(R.string.conversation_archive_check_started),
+                            checkStartedMessage,
                             Toast.LENGTH_SHORT,
                         ).show()
                     },

@@ -52,6 +52,7 @@ internal class AgentTraceFormatter {
             "wait_for_package" -> "等待应用就绪"
             "open_system_panel" -> "打开系统面板"
             "read_image" -> "查看图片"
+            "voice_synthesize" -> "生成语音"
             AgentSubagentToolCatalog.TOOL_NAME -> summarizeSubagentArguments(toolCall.argumentsJson)
             AgentSubagentToolCatalog.PROFILE_TOOL_NAME -> summarizeSubagentProfileArguments(toolCall.argumentsJson)
             AgentConversationToolCatalog.READ_HISTORY -> "读取当前会话历史"
@@ -92,6 +93,15 @@ internal class AgentTraceFormatter {
         } else {
             null
         }
+
+    /** Apply the same command redaction before a bounded trace preview is persisted. */
+    fun durableDisplayPreview(value: String, maxChars: Int): String {
+        require(maxChars > 0)
+        val redacted = value.redactDisplaySecrets()
+            .replace(SENSITIVE_JSON_VALUE) { "${it.groupValues[1]}\"<已隐藏>\"" }
+            .replace(BEARER_VALUE) { "${it.groupValues[1]}<已隐藏>" }
+        return if (redacted.length <= maxChars) redacted else redacted.take(maxChars - 1) + "…"
+    }
 
     private fun String.redactDisplaySecrets(): String =
         replace(SENSITIVE_ASSIGNMENT) { match ->
@@ -299,6 +309,15 @@ internal class AgentTraceFormatter {
             "search_apps" -> json?.let(::summarizeSearchAppsResult) ?: "完成"
             "launch_app" -> json?.let(::summarizeLaunchAppResult) ?: "已打开"
             "present_to_user" -> json?.let(::summarizePresentToUserResult) ?: "已呈现到主屏"
+            "voice_synthesize" -> json?.let { value ->
+                val name = value.optString("path").substringAfterLast('/').substringAfterLast('\\')
+                val seconds = value.optDouble("duration_seconds", 0.0)
+                listOfNotNull(
+                    "语音已生成",
+                    name.takeIf { it.isNotBlank() && it.length <= 80 },
+                    seconds.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.1f 秒", it) },
+                ).joinToString(" · ")
+            } ?: "语音已生成"
             "skills_list", "skills_list_curated", "skills_inspect_github", "skills_install_from_github" -> json?.let {
                 summarizeSkillResult(toolName, it) ?: summarizeGenericResult(it, result)
             } ?: "完成"
@@ -690,6 +709,10 @@ internal class AgentTraceFormatter {
         val SENSITIVE_ASSIGNMENT = Regex(
             """(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|TOKEN|PASSWORD|PASSWD|SECRET)[A-Z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s;&|]+)"""
         )
+        val SENSITIVE_JSON_VALUE = Regex(
+            """(?i)("[A-Z0-9_]*(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|TOKEN|PASSWORD|PASSWD|SECRET)[A-Z0-9_]*"\s*:\s*)("(?:\\.|[^"\\])*"|[^,}\s]+)"""
+        )
+        val BEARER_VALUE = Regex("""(?i)\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*""")
         val SENSITIVE_FLAG = Regex(
             """(?i)(--?(?:password|passwd|token|api[-_]?key|secret)(?:\s*=\s*|\s+))(?:"[^"]*"|'[^']*'|[^\s;&|]+)"""
         )

@@ -40,8 +40,8 @@ android {
         minSdk = 33
         targetSdk = 37
         // versionCode 规则：yyyyMMdd + 两位当日序号（01 起），发版时随 versionName 一起手动递增。
-        versionCode = 2026110501
-        versionName = "4.0.0"
+        versionCode = 2026110902
+        versionName = "4.10.4"
 
         ndk {
             // 同时过滤本地与依赖 AAR 的原生库，确保 APK 仅包含 ARM64。
@@ -70,6 +70,9 @@ android {
         release {
             versionNameSuffix = buildMetadataSuffix
             signingConfig = signingConfigs.findByName("release")
+            // ColorOS 会依据 pkgFlags 中的 DEBUGGABLE 将侧载无障碍服务判为风险。
+            // release 必须始终关闭调试标志，不能依赖 AGP 的默认值。
+            isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -180,6 +183,15 @@ dependencies {
     ksp(libs.room.compiler)
     implementation(libs.androidx.work.runtime)
 
+    // Google LiteRT-LM for .litertlm. The separately vendored llama.cpp arm64 runtime handles
+    // GGUF through a dedicated adapter and is never routed through LiteRT-LM.
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
+    // MediaPipe audio tasks provide the production ASR/TTS adapters for LiteRT speech bundles.
+    implementation("com.google.mediapipe:tasks-audio:1.2.2")
+    // Qualcomm dispatch is kept in the APK, while the licensed QNN runtime is installed on demand
+    // into app storage. This keeps the LiteRT-LM/NPU ABI paired and avoids redistributing QNN.
+    implementation("com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.3.2")
+
     // OkHttp：替代 HttpURLConnection，支持 SSE
     implementation(libs.okhttp)
     implementation(libs.nimbus.jose.jwt)
@@ -187,6 +199,8 @@ dependencies {
 
     // Kotlinx Serialization：Provider 设置与运行时配置 JSON
     implementation(libs.kotlinx.serialization.json)
+    // ToolPkg compatibility: Operit-compatible manifests may use HJSON as well as JSON.
+    implementation("org.hjson:hjson:3.1.0")
 
     // Coroutines：显式引入，避免依赖传递版本不确定
     implementation(libs.kotlinx.coroutines.android)

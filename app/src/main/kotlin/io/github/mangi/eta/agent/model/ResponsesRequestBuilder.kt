@@ -10,7 +10,10 @@ internal object ResponsesRequestBuilder {
         tools: JSONArray,
     ): JSONObject {
         val input = buildInput(messages)
-        val responseTools = buildTools(tools, config.usesHostedWebSearch)
+        val responseTools = buildTools(
+            if (config.supportsTools) AgentToolSchema.sanitizeFunctionCatalog(tools) else JSONArray(),
+            config.usesHostedWebSearch,
+        )
         val instructions = OpenAiRequestMessages.responsesInstructions(messages)
             .ifBlank { config.systemPrompt }
         val request = JSONObject()

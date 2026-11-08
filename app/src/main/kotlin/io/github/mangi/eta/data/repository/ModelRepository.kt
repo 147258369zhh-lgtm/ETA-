@@ -1,7 +1,6 @@
 package io.github.mangi.eta.data.repository
 
 import io.github.mangi.eta.data.model.Model
-import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.agent.auth.ProviderAuthException
@@ -55,7 +54,7 @@ internal object ModelRepository {
                 displayName = displayName,
                 isBuiltIn = false,
                 sortOrder = (models.maxOfOrNull { it.sortOrder } ?: -1) + 1,
-                source = ModelSource.MANUAL,
+                source = draft.source,
             )
         } else {
             draft.copy(

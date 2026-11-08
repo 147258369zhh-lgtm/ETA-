@@ -10,6 +10,9 @@ sealed interface AppRoute : NavKey {
     data object Home : AppRoute
 
     @Serializable
+    data object AppControlCenter : AppRoute
+
+    @Serializable
     data class Browser(val sessionKey: String = BrowserSessionRegistry.MANUAL_SESSION_KEY) : AppRoute
 
     @Serializable
@@ -23,6 +26,15 @@ sealed interface AppRoute : NavKey {
 
     @Serializable
     data object Skills : AppRoute
+
+    @Serializable
+    data object PromptInjection : AppRoute
+
+    @Serializable
+    data object CapabilityCenter : AppRoute
+
+    @Serializable
+    data object ApiConnectors : AppRoute
 
     @Serializable
     data object Subagents : AppRoute
@@ -103,10 +115,16 @@ sealed interface AppRoute : NavKey {
     data object Workspace : AppRoute
 
     @Serializable
+    data object Projects : AppRoute
+
+    @Serializable
     data class LinuxFiles(val distribution: String) : AppRoute
 
     @Serializable
     data object ModelProviders : AppRoute
+
+    @Serializable
+    data object LocalModels : AppRoute
 
     @Serializable
     data object CommunityCatalog : AppRoute
@@ -118,7 +136,24 @@ sealed interface AppRoute : NavKey {
     data object McpServers : AppRoute
 
     @Serializable
+    data object AgentMetrics : AppRoute
+    @Serializable
+    data class ConversationBranches(val conversationId: String? = null) : AppRoute
+
+    @Serializable
+    data class AgentMetricDetail(val recordId: String) : AppRoute
+
+    @Serializable
+    data object AgentTokenPricing : AppRoute
+
+    @Serializable
+    data class AgentTokenPriceEditor(val providerId: String, val modelId: String) : AppRoute
+
+    @Serializable
     data class McpServerDetail(val serverId: String) : AppRoute
+
+    @Serializable
+    data class McpCatalog(val serverId: String) : AppRoute
 
     @Serializable
     data class ModelProviderDetail(val providerId: String) : AppRoute
@@ -128,4 +163,4 @@ sealed interface AppRoute : NavKey {
 }
 
 @Serializable
-enum class NewProviderType { OpenAiCompatible, Anthropic, Gemini }
+enum class NewProviderType { OpenAiCompatible, LocalRuntime, Anthropic, Gemini }

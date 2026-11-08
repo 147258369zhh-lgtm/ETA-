@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.CallSplit
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronLeft
@@ -108,6 +109,7 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.RichTooltip
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TooltipAnchorPosition
 import top.yukonga.miuix.kmp.basic.TooltipBox
 import top.yukonga.miuix.kmp.basic.TooltipDefaults
@@ -117,8 +119,20 @@ import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-internal fun rememberDataUrlBitmap(dataUrl: String) = remember(dataUrl) {
-    decodeDataUrlBitmap(dataUrl)
+internal fun rememberDataUrlBitmap(dataUrl: String): ImageBitmap? {
+    val bitmap by androidx.compose.runtime.produceState<ImageBitmap?>(null, dataUrl) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            if (dataUrl.startsWith("file:")) runCatching {
+                val path = android.net.Uri.parse(dataUrl).path ?: return@runCatching null
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+                BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+            }.getOrNull() else decodeDataUrlBitmap(dataUrl)
+        }
+    }
+    return bitmap
 }
 
 internal fun decodeDataUrlBitmap(dataUrl: String): ImageBitmap? {
@@ -203,84 +217,108 @@ internal fun ChatMessageItem(
     onEditMessage: (String) -> Unit = {},
     onDeleteMessage: (String) -> Unit = {},
     onRegenerateMessage: (String) -> Unit = {},
+    onForkMessage: ((String) -> Unit)? = null,
+    onOpenPermissions: (() -> Unit)? = null,
+    onStopWaiting: (() -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit = { _, _ -> },
+    allowMessageChanges: Boolean = true,
+    identity: ConversationMessageIdentity? = null,
 ) {
-    when (message) {
-        is UserMessageUi -> UserMessageBubble(
-            message = message,
-            assistantOverlay = assistantOverlay,
-            actionsEnabled = messageActionsEnabled,
-            isEditing = isEditing,
-            onEdit = { onEditMessage(message.id) },
-            onDelete = { onDeleteMessage(message.id) },
-            modifier = modifier,
-        )
-        is AgentMessageUi -> AgentMessageBlock(
-            message = message,
-            allowSpeech = true,
-            assistantOverlay = assistantOverlay,
-            retainedStreamingState = retainedStreamingState,
-            showCopyAction = showCopyAction,
-            showMessageActions = showMessageActions,
-            messageActionsEnabled = messageActionsEnabled,
-            onDelete = { onDeleteMessage(message.id) },
-            onRegenerate = { onRegenerateMessage(message.id) },
-            onEdit = { onEditMessage(message.id) },
-            onSelectCandidate = { onSelectReplyCandidate(message.id, it) },
-            modifier = modifier,
-        )
-        is SystemNoticeMessageUi -> if (message.code == SystemNoticeCode.ContextCompaction) {
-            ContextCompactionMarker(message = message, modifier = modifier)
-        } else {
-            AgentMessageBlock(
-                message = AgentMessageUi(
-                    id = message.id,
-                    content = buildString {
-                        append(
-                            stringResource(
-                                when (message.code) {
-                                    SystemNoticeCode.Stopped -> R.string.system_notice_stopped
-                                    SystemNoticeCode.EmptyResult -> R.string.system_notice_empty_result
-                                    SystemNoticeCode.ContextCompaction -> R.string.context_compaction
-                                    SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
-                                    SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
-                                    SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
-                                },
-                            ),
-                        )
-                        message.detail?.takeIf(String::isNotBlank)?.let { detail ->
-                            append("\n\n")
-                            append(detail)
-                        }
-                    },
-                    renderMarkdown = false,
-                ),
-                assistantOverlay = false,
-                retainedStreamingState = null,
+    val content: @Composable (Modifier) -> Unit = { contentModifier ->
+        when (message) {
+            is UserMessageUi -> UserMessageBubble(
+                message = message,
+                assistantOverlay = assistantOverlay,
+                actionsEnabled = messageActionsEnabled || !allowMessageChanges,
+                allowChanges = allowMessageChanges,
+                isEditing = isEditing,
+                onEdit = { onEditMessage(message.id) },
+                onDelete = { onDeleteMessage(message.id) },
+                onFork = onForkMessage?.let { callback -> { callback(message.id) } },
+                modifier = contentModifier,
+            )
+            is AgentMessageUi -> AgentMessageBlock(
+                message = message,
+                allowSpeech = true,
+                assistantOverlay = assistantOverlay,
+                retainedStreamingState = retainedStreamingState,
                 showCopyAction = showCopyAction,
-                showMessageActions = showMessageActions,
+                showMessageActions = showMessageActions && allowMessageChanges,
+                showCharacterIdentity = identity == null,
+                previewLines = identity?.previewLines,
                 messageActionsEnabled = messageActionsEnabled,
                 onDelete = { onDeleteMessage(message.id) },
                 onRegenerate = { onRegenerateMessage(message.id) },
-                modifier = modifier,
+                onFork = onForkMessage?.let { callback -> { callback(message.id) } },
+                onEdit = { onEditMessage(message.id) },
+                onSelectCandidate = { onSelectReplyCandidate(message.id, it) },
+                modifier = contentModifier,
             )
+            is SystemNoticeMessageUi -> if (message.code == SystemNoticeCode.AccessibilityWaiting) {
+                AccessibilityWaitCard(message, onOpenPermissions, onStopWaiting, contentModifier)
+            } else if (message.code == SystemNoticeCode.ContextCompaction) {
+                ContextCompactionMarker(message = message, modifier = contentModifier)
+            } else {
+                AgentMessageBlock(
+                    message = AgentMessageUi(
+                        id = message.id,
+                        content = buildString {
+                            append(
+                                stringResource(
+                                    when (message.code) {
+                                        SystemNoticeCode.Stopped -> R.string.system_notice_stopped
+                                        SystemNoticeCode.EmptyResult -> R.string.system_notice_empty_result
+                                        SystemNoticeCode.ContextCompaction -> R.string.context_compaction
+                                        SystemNoticeCode.AccessibilityWaiting -> R.string.accessibility_wait_title
+                                        SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
+                                        SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
+                                        SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
+                                    },
+                                ),
+                            )
+                            message.detail?.takeIf(String::isNotBlank)?.let { detail ->
+                                append("\n\n")
+                                append(detail)
+                            }
+                        },
+                        renderMarkdown = false,
+                    ),
+                    assistantOverlay = false,
+                    retainedStreamingState = null,
+                    showCopyAction = showCopyAction,
+                    showMessageActions = showMessageActions && allowMessageChanges,
+                    showCharacterIdentity = identity == null,
+                    messageActionsEnabled = messageActionsEnabled,
+                    onDelete = { onDeleteMessage(message.id) },
+                    onRegenerate = { onRegenerateMessage(message.id) },
+                    modifier = contentModifier,
+                )
+            }
+            is ThinkingMessageUi -> ThinkingRow(
+                message = message,
+                retainedStreamingState = retainedStreamingState,
+                modifier = contentModifier,
+                compact = compact,
+            )
+            is RunTraceMessageUi -> RunTraceRow(message = message, onClick = onRunTraceClick, modifier = contentModifier)
+            is ToolActivityMessageUi -> ToolActivityInline(
+                message = message,
+                onOpenBrowser = onOpenBrowser,
+                showBrowserShortcut = showBrowserShortcut,
+                modifier = contentModifier,
+                compact = compact,
+            )
+            is ToolSummaryMessageUi -> ToolSummaryInline(message = message, modifier = contentModifier, compact = compact)
+            is SuggestionChipsMessageUi -> SuggestionChipsRow(message = message, onSuggestionClick = onSuggestionClick, modifier = contentModifier)
         }
-        is ThinkingMessageUi -> ThinkingRow(
-            message = message,
-            retainedStreamingState = retainedStreamingState,
-            modifier = modifier,
-            compact = compact,
-        )
-        is RunTraceMessageUi -> RunTraceRow(message = message, onClick = onRunTraceClick, modifier = modifier)
-        is ToolActivityMessageUi -> ToolActivityInline(
-            message = message,
-            onOpenBrowser = onOpenBrowser,
-            showBrowserShortcut = showBrowserShortcut,
-            modifier = modifier,
-            compact = compact,
-        )
-        is ToolSummaryMessageUi -> ToolSummaryInline(message = message, modifier = modifier, compact = compact)
-        is SuggestionChipsMessageUi -> SuggestionChipsRow(message = message, onSuggestionClick = onSuggestionClick, modifier = modifier)
+    }
+    if (identity == null) {
+        content(modifier)
+    } else {
+        Column(modifier = modifier.fillMaxWidth()) {
+            ConversationAuthorHeader(identity)
+            content(Modifier)
+        }
     }
 }
 
@@ -291,9 +329,11 @@ private fun UserMessageBubble(
     message: UserMessageUi,
     assistantOverlay: Boolean,
     actionsEnabled: Boolean,
+    allowChanges: Boolean,
     isEditing: Boolean,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onFork: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     @Suppress("DEPRECATION")
@@ -343,22 +383,28 @@ private fun UserMessageBubble(
                                 tooltipState.dismiss()
                             },
                         )
-                        MessageTooltipAction(
-                            icon = Icons.Rounded.Edit,
-                            label = stringResource(R.string.ui_edit_a7f814),
-                            onClick = {
-                                tooltipState.dismiss()
-                                onEdit()
-                            },
-                        )
-                        MessageTooltipAction(
-                            icon = Icons.Rounded.Delete,
-                            label = stringResource(R.string.ui_delete_3755f5),
-                            onClick = {
-                                tooltipState.dismiss()
-                                onDelete()
-                            },
-                        )
+                        if (allowChanges) {
+                            MessageTooltipAction(
+                                icon = Icons.Rounded.Edit,
+                                label = stringResource(R.string.ui_edit_a7f814),
+                                onClick = {
+                                    tooltipState.dismiss()
+                                    onEdit()
+                                },
+                            )
+                            MessageTooltipAction(
+                                icon = Icons.Rounded.Delete,
+                                label = stringResource(R.string.ui_delete_3755f5),
+                                onClick = {
+                                    tooltipState.dismiss()
+                                    onDelete()
+                                },
+                            )
+                            onFork?.let { fork ->
+                                MessageTooltipAction(icon = Icons.AutoMirrored.Rounded.CallSplit, label = stringResource(R.string.branch_create),
+                                    onClick = { tooltipState.dismiss(); fork() })
+                            }
+                        }
                     }
                 }
             },
@@ -400,8 +446,10 @@ private fun UserMessageBubble(
                     ),
             ) {
                 if (message.images.isNotEmpty()) {
-                    Row(
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(bottom = 8.dp)
                     ) {
                         message.images.forEach { dataUrl ->
@@ -545,8 +593,11 @@ private fun AgentMessageBlock(
     messageActionsEnabled: Boolean,
     onDelete: () -> Unit,
     onRegenerate: () -> Unit,
+    onFork: (() -> Unit)? = null,
     onEdit: () -> Unit = {},
     onSelectCandidate: (Int) -> Unit = {},
+    showCharacterIdentity: Boolean = true,
+    previewLines: Int? = null,
     modifier: Modifier = Modifier,
 ) {
     @Suppress("DEPRECATION")
@@ -582,7 +633,9 @@ private fun AgentMessageBlock(
         }
     }
 
-    val character = LocalRoleplayChat.current.takeUnless { assistantOverlay }
+    val character = LocalRoleplayChat.current.takeIf { showCharacterIdentity && !assistantOverlay }
+    var expanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    val collapsedPreview = previewLines != null && !expanded && !message.isStreaming
     val isGreeting = character != null && message.id.startsWith(GreetingMessagePrefix)
     Column(
         modifier = modifier
@@ -596,6 +649,19 @@ private fun AgentMessageBlock(
             CharacterReplyHeader(character = character, isGreeting = isGreeting)
         }
         when {
+            collapsedPreview -> {
+                if (previewLines > 0) {
+                    SelectionContainer {
+                    Text(
+                        text = message.content,
+                        style = MiuixTheme.textStyles.body1,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        maxLines = previewLines,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    }
+                }
+            }
             message.content.isBlank() && message.isStreaming -> {
                 AITypingIndicator(
                     modifier = Modifier.padding(top = 4.dp)
@@ -630,6 +696,14 @@ private fun AgentMessageBlock(
                     )
                 }
             }
+        }
+
+        if (previewLines != null && !message.isStreaming) {
+            TextButton(
+                text = stringResource(if (expanded) R.string.conversation_message_collapse else R.string.conversation_message_expand),
+                onClick = { expanded = !expanded },
+                modifier = Modifier.heightIn(min = 48.dp),
+            )
         }
 
         message.searchSuggestionsHtml.forEach { html ->
@@ -668,6 +742,12 @@ private fun AgentMessageBlock(
                 )
                 if (allowSpeech) SpeechReadAloudButton(message.id, message.content)
                 if (showMessageActions) {
+                    onFork?.let { fork ->
+                        TooltipBox(text = stringResource(R.string.branch_create), enabled = messageActionsEnabled) {
+                            AnswerActionButton(icon = Icons.AutoMirrored.Rounded.CallSplit, contentDescription = stringResource(R.string.branch_create),
+                                onClick = fork, enabled = messageActionsEnabled)
+                        }
+                    }
                     if (message.characterEditable) {
                         AnswerActionButton(
                             icon = Icons.Rounded.Edit,

@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -37,6 +38,7 @@ fun MiuixDialogActions(
     confirmEnabled: Boolean = true,
     destructive: Boolean = false,
 ) {
+    val tokens = LocalEtaDesignTokens.current
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -47,7 +49,7 @@ fun MiuixDialogActions(
             enabled = cancelEnabled,
             modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.width(20.dp))
+        Spacer(Modifier.width(tokens.dialogActionSpacing))
         TextButton(
             text = confirmText,
             onClick = onConfirm,

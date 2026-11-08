@@ -101,6 +101,9 @@ class GeminiInteractionsTest {
         assertEquals(4, events.filterIsInstance<ProviderEvent.Usage>().single().usage.outputTokens)
         assertEquals(16, events.filterIsInstance<ProviderEvent.Usage>().single().usage.contextTokens)
         assertEquals(10, events.filterIsInstance<ProviderEvent.Usage>().single().contextInputTokens)
+        val billingUsage = events.filterIsInstance<ProviderEvent.Usage>().single().usage
+        assertEquals(io.github.mangi.eta.agent.runtime.AgentBillingTokens.GEMINI_INTERACTIONS, billingUsage.billingBasis)
+        assertEquals(6L, io.github.mangi.eta.agent.runtime.AgentBillingTokens.from(billingUsage).output)
     }
 
     @Test

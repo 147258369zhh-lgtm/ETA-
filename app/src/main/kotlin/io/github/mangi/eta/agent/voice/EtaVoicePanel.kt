@@ -165,6 +165,7 @@ internal fun EtaVoicePanel(
     onMicrophone: (holdToTalk: Boolean) -> Unit,
     onCancelSpeech: () -> Unit,
     onFinishSpeech: () -> Unit,
+    onStopSpeaking: () -> Unit,
     onOpenSpeechSettings: () -> Unit,
     onKeyboard: () -> Unit,
     inputFocusRequestKey: Int,
@@ -275,11 +276,11 @@ internal fun EtaVoicePanel(
         )
 
         EtaAssistantEdgeGlow(
-            active = (speech.active || !entranceComplete) && !exitRequested,
+            active = (speech.active || speech.speaking || !entranceComplete) && !exitRequested,
             onEntranceFinished = onEntranceFinished,
         )
         EtaAssistantWave(
-            active = (speech.active || !entranceComplete) && !exitRequested,
+            active = (speech.active || speech.speaking || !entranceComplete) && !exitRequested,
             level = speechLevel,
             modifier = Modifier.align(Alignment.BottomCenter),
         )
@@ -312,6 +313,7 @@ internal fun EtaVoicePanel(
                 onMicrophone = onMicrophone,
                 onCancelSpeech = onCancelSpeech,
                 onFinishSpeech = onFinishSpeech,
+                onStopSpeaking = onStopSpeaking,
                 onOpenSpeechSettings = onOpenSpeechSettings,
                 onKeyboard = onKeyboard,
                 colors = colors,
@@ -353,6 +355,7 @@ private fun BoxScope.AssistantPanel(
     onMicrophone: (holdToTalk: Boolean) -> Unit,
     onCancelSpeech: () -> Unit,
     onFinishSpeech: () -> Unit,
+    onStopSpeaking: () -> Unit,
     onOpenSpeechSettings: () -> Unit,
     onKeyboard: () -> Unit,
     colors: EtaVoicePanelColors,
@@ -670,6 +673,7 @@ private fun BoxScope.AssistantPanel(
                         keepBottomAnchored = keepBottomAnchored,
                         onBottomAnchorChanged = { keepBottomAnchored = it },
                         assistantOverlay = true,
+                        onStopWaiting = onStop,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -690,6 +694,7 @@ private fun BoxScope.AssistantPanel(
             onMicrophone = onMicrophone,
             onCancelSpeech = onCancelSpeech,
             onFinishSpeech = onFinishSpeech,
+            onStopSpeaking = onStopSpeaking,
             onOpenSpeechSettings = onOpenSpeechSettings,
             onKeyboard = onKeyboard,
             keyboardVisible = keyboardVisible,

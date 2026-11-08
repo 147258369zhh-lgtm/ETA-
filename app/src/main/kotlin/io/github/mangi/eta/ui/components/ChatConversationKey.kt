@@ -1,5 +1,7 @@
 package io.github.mangi.eta.ui.components
 
+import io.github.mangi.eta.data.model.ConversationSubject
+
 /**
  * 为聊天舞台生成独立的 Compose 状态边界。
  *
@@ -7,4 +9,4 @@ package io.github.mangi.eta.ui.components
  * 否则旧会话的列表位置可能被新会话复用。
  */
 internal fun chatConversationCompositionKey(conversationId: String?): String =
-    conversationId?.let { "conversation:$it" } ?: "conversation:draft"
+    ConversationSubject.chat(conversationId).key

@@ -39,6 +39,8 @@ internal object ConversationMarkdownExporter {
         val noticeRuntimeFailed: String,
         val noticeInterrupted: String,
         val noticeContextCompaction: String = "上下文压缩",
+        val noticeAccessibility: String = "Accessibility recovery",
+        val accessibilityPhases: Map<String, String> = emptyMap(),
     ) {
         fun toolStatus(status: ToolActivityStatusUi): String = when (status) {
             ToolActivityStatusUi.Running -> toolStatusRunning
@@ -54,6 +56,7 @@ internal object ConversationMarkdownExporter {
             SystemNoticeCode.ModelRetry -> noticeModelRetry
             SystemNoticeCode.RuntimeFailed -> noticeRuntimeFailed
             SystemNoticeCode.Interrupted -> noticeInterrupted
+            SystemNoticeCode.AccessibilityWaiting -> noticeAccessibility
         }
     }
 
@@ -123,7 +126,9 @@ internal object ConversationMarkdownExporter {
 
         is SystemNoticeMessageUi -> buildList {
             add(labels.notice(code))
-            detail?.takeIf { it.isNotBlank() }?.let(::add)
+            detail?.takeIf { it.isNotBlank() }?.let {
+                add(if (code == SystemNoticeCode.AccessibilityWaiting) labels.accessibilityPhases[it] ?: it else it)
+            }
         }.toBlockquote()
 
         else -> null

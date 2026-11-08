@@ -7,6 +7,7 @@ import android.util.Base64
 import io.github.mangi.eta.BuildConfig
 import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.prompt.PromptRunScope
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ReasoningEffort
@@ -29,6 +30,66 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33, 36])
 class AgentRuntimeWireTest {
+    @Test
+    fun compactionSelectionRoundTripsThroughLegacyWire() {
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "compact-range", prompt = "", images = emptyList(),
+            config = AgentModelClient.ModelConfig(
+                baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "",
+            ),
+            operation = AgentRuntimeWire.OP_COMPACT,
+            compactionSelection = 2..8,
+        )
+        val restored = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toLegacyBundle(request))
+        assertEquals(AgentRuntimeWire.OP_COMPACT, restored.operation)
+        assertEquals(2..8, restored.compactionSelection)
+    }
+
+    @Test fun oldUsageBundlesKeepBillingUnknownAndNewFieldsRoundTrip() {
+        val usage = AgentTokenUsage(inputTokens = 10, outputTokens = 20, cachedTokens = 30,
+            billingBasis = AgentBillingTokens.ANTHROPIC, cacheWriteTokens = 40, toolUseTokens = 0)
+        val bundle = AgentRuntimeWire.eventToBundle(AgentEvent.UsageReceived(1, usage))
+        assertEquals(usage, (AgentRuntimeWire.eventFromBundle(bundle) as AgentEvent.UsageReceived).usage)
+        listOf("usage_billing_basis", "usage_cache_write", "usage_tool_use").forEach(bundle::remove)
+        val legacy = (AgentRuntimeWire.eventFromBundle(bundle) as AgentEvent.UsageReceived).usage
+        assertEquals(AgentBillingTokens.UNKNOWN, legacy.billingBasis)
+        assertNull(legacy.cacheWriteTokens)
+        assertNull(legacy.toolUseTokens)
+        assertEquals(10, legacy.inputTokens)
+    }
+
+    @Test fun localRuntimeMetricsRoundTripWithoutChangingLegacyUsage() {
+        val metrics = LocalRuntimeMetrics(
+            backend = LocalRuntimeBackend.GPU,
+            modelFormat = "GGUF",
+            modelId = "qwen-local",
+            backendDetail = "GPU · OpenCL",
+            loadMs = 2_400,
+            firstTokenMs = 180,
+            promptTokens = 512,
+            generatedTokens = 64,
+            tokensPerSecond = 18.5,
+            promptCacheHitTokens = 384,
+            promptCacheReusedTokens = 384,
+            kvCacheUsedTokens = 576,
+            kvCacheCapacityTokens = 4_096,
+            contextWindow = 4_096,
+            prefillMs = 90,
+            decodeMs = 3_450,
+            totalMs = 3_630,
+            finishReason = "stop",
+            startedAt = 100,
+            completedAt = 3_730,
+        )
+        val usage = AgentTokenUsage(inputTokens = 512, outputTokens = 64, localRuntime = metrics)
+        val restored = AgentRuntimeWire.eventFromBundle(
+            AgentRuntimeWire.eventToBundle(AgentEvent.UsageReceived(1, usage)),
+        ) as AgentEvent.UsageReceived
+
+        assertEquals(usage, restored.usage)
+        assertEquals(metrics, restored.usage.localRuntime)
+    }
+
     @Test
     fun runtimeServiceIntentUsesInstalledApplicationId() {
         val component = requireNotNull(AgentRuntimeWire.serviceIntent().component)
@@ -65,6 +126,29 @@ class AgentRuntimeWireTest {
         }
         assertNull(AgentRuntimeWire.eventFromBundle(oversized))
         assertFalse(event.toLogLine().contains("搜索建议"))
+    }
+
+    @Test
+    fun modelToolCapabilitySurvivesIpcAndDefaultsForOldRequests() {
+        val config = AgentModelClient.ModelConfig(
+            baseUrl = "http://127.0.0.1:9379/v1",
+            apiKey = "",
+            model = "local-model",
+            systemPrompt = "",
+            supportsTools = false,
+        )
+        val bundle = AgentRuntimeWire.toLegacyBundle(
+            AgentRuntimeWire.RunRequest(
+                runId = "local-tools",
+                prompt = "你好",
+                images = emptyList(),
+                config = config,
+            ),
+        )
+        assertFalse(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsTools)
+
+        bundle.remove("supports_tools")
+        assertTrue(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsTools)
     }
 
     @Test
@@ -137,6 +221,43 @@ class AgentRuntimeWireTest {
         bundle.remove("tool_allowlist")
         bundle.remove("tool_denylist")
         assertTrue(AgentRuntimeWire.runRequestFromBundle(bundle).toolPolicy.isAllowed("write_file"))
+    }
+
+    @Test
+    fun promptScopeSurvivesIpcAndDefaultsToEmptyForOldSenders() {
+        val scope = PromptRunScope(
+            conversationId = "conversation-a",
+            subagentName = "coder",
+            meetingRoomId = "room-a",
+            meetingParticipant = "coder",
+            characterId = "character-a",
+            automationId = "task-a",
+        )
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "prompt-scope",
+            prompt = "继续",
+            config = AgentModelClient.ModelConfig(
+                baseUrl = "https://example.invalid",
+                apiKey = "fixture",
+                model = "fixture",
+                systemPrompt = "",
+                reasoningEffort = ReasoningEffort.OFF,
+            ),
+            images = emptyList(),
+            promptScope = scope,
+        )
+
+        val bundle = AgentRuntimeWire.toLegacyBundle(request)
+        val restored = AgentRuntimeWire.runRequestFromBundle(bundle)
+        assertEquals(request, restored)
+        assertEquals(scope, restored.promptScope)
+        assertEquals(scope, PromptRunScope.fromJson(scope.toJson().toString()))
+
+        bundle.remove("prompt_scope_json")
+        assertEquals(PromptRunScope(), AgentRuntimeWire.runRequestFromBundle(bundle).promptScope)
+
+        bundle.putString("prompt_scope_json", "not-a-json-object")
+        assertEquals(PromptRunScope(), AgentRuntimeWire.runRequestFromBundle(bundle).promptScope)
     }
 
     @Test
@@ -722,6 +843,9 @@ class AgentRuntimeWireTest {
                     outputTokens = 320,
                     reasoningTokens = 80,
                     cachedTokens = 900,
+                    billingBasis = AgentBillingTokens.ANTHROPIC,
+                    cacheWriteTokens = 12,
+                    toolUseTokens = 0,
                 ),
             ),
             AgentEvent.ToolStarted(

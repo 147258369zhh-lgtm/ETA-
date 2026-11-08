@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.voice
 
+import io.github.mangi.eta.agent.device.LocalNetworkAccessException
 import io.github.mangi.eta.data.model.AsrProvider
 import io.github.mangi.eta.data.model.SpeechCredentials
 import io.github.mangi.eta.data.model.SpeechSettings
@@ -13,12 +14,24 @@ internal enum class SpeechErrorCode {
     RATE_LIMITED, SERVER, PROTOCOL, NO_SPEECH, BACKPRESSURE, STORAGE,
 }
 
-internal class SpeechFailure(val code: SpeechErrorCode, val userMessage: String) : IOException(code.name)
+internal class SpeechFailure(val code: SpeechErrorCode, val userMessage: String) : IOException(userMessage)
 
 internal fun Throwable.speechFailure(): SpeechFailure = when (this) {
     is SpeechFailure -> this
     is SpeechCredentialsUnavailable -> SpeechFailure(SpeechErrorCode.CREDENTIALS, "语音凭据无法解密，请重新填写并保存")
+    is LocalNetworkAccessException -> SpeechFailure(SpeechErrorCode.PERMISSION, message.orEmpty())
     is SecurityException -> SpeechFailure(SpeechErrorCode.PERMISSION, "请允许 Eta 使用麦克风")
+    // Native speech bridges are loaded from the APK. A stale/mixed installation or an R8 rule
+    // regression throws LinkageError, which is not an Exception and used to escape the speech
+    // controllers and terminate the process.
+    is LinkageError -> SpeechFailure(
+        SpeechErrorCode.AUDIO,
+        "本地语音组件与当前安装包不兼容，请重新安装完整的 Release 包后重试",
+    )
+    is OutOfMemoryError -> SpeechFailure(
+        SpeechErrorCode.AUDIO,
+        "设备可用内存不足，请先停止其他本地模型后重试",
+    )
     is kotlinx.coroutines.TimeoutCancellationException -> SpeechFailure(SpeechErrorCode.TIMEOUT, "语音服务响应超时，请重试")
     is IOException -> SpeechFailure(SpeechErrorCode.NETWORK, "无法连接语音服务，请检查网络")
     else -> SpeechFailure(SpeechErrorCode.PROTOCOL, "语音服务返回了无法处理的数据")
@@ -59,6 +72,16 @@ internal fun validateSpeechSettings(settings: SpeechSettings, secrets: SpeechCre
                     throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "MiniMax 语速须在 0.5～2 倍之间")
                 }
             }
+            TtsProvider.LOCAL -> {
+                required(settings.localTtsModelId, "本地播报模型")
+                required(settings.localTtsVoiceId, "本地播报音色")
+                if (!LocalSpeechRuntime.isLocalTtsReady(settings)) {
+                    throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "本地播报模型已移除、类型不匹配或不受当前语音运行时支持")
+                }
+                if (settings.localTtsRate !in 0.5f..2f) {
+                    throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "本地播报语速须在 0.5～2 倍之间")
+                }
+            }
         }
     } else when (settings.asr) {
         AsrProvider.DOUBAO -> {
@@ -81,6 +104,12 @@ internal fun validateSpeechSettings(settings: SpeechSettings, secrets: SpeechCre
                 if (!Regex("[a-z0-9][a-z0-9-]{1,61}[a-z0-9]").matches(settings.oss.bucket) ||
                     settings.oss.prefix.split('/').any { it == ".." || it == "." }
                 ) throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "请检查 OSS Bucket 和目录前缀")
+            }
+        }
+        AsrProvider.LOCAL -> {
+            required(settings.localAsrModelId, "本地识别模型")
+            if (!LocalSpeechRuntime.isLocalAsrReady(settings)) {
+                throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "本地识别模型已移除、类型不匹配或不受当前语音运行时支持")
             }
         }
     }

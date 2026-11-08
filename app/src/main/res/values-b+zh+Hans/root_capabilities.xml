@@ -49,6 +49,11 @@
     <string name="capability_workspace_summary">导入、导出与目录访问</string>
     <string name="capability_workspace_private">私有工作区</string>
     <string name="capability_workspace_private_summary">终端与普通 Linux 环境的默认文件目录，无需存储权限</string>
+    <string name="capability_workspace_artifacts">最近任务文件</string>
+    <string name="capability_workspace_artifacts_summary">显示最近运行产生且已验证的文件，点击可打开所在文件夹。</string>
+    <string name="capability_workspace_artifact_verified">已验证</string>
+    <string name="capability_workspace_artifact_pending">待验证</string>
+    <string name="capability_workspace_artifact_failed">失败</string>
     <string name="capability_workspace_import">导入文件</string>
     <string name="capability_workspace_public">公共目录访问</string>
     <string name="capability_workspace_public_summary">在系统设置中允许访问所有文件后，可使用共享存储中的目录</string>

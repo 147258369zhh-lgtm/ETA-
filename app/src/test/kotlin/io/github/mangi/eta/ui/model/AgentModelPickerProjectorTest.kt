@@ -73,6 +73,26 @@ class AgentModelPickerProjectorTest {
     }
 
     @Test
+    fun project_showsKeylessLocalProvider() {
+        val local = model(id = "gemma-local")
+        val result = AgentModelPickerProjector.project(
+            providers = listOf(
+                provider(
+                    id = "ollama",
+                    baseUrl = "http://127.0.0.1:11434/v1",
+                    apiKey = "",
+                    models = listOf(local),
+                ),
+            ),
+            selectedProviderId = "ollama",
+            selectedModelId = local.id,
+        )
+
+        assertEquals(listOf("ollama"), result.providerGroups.map { it.providerId })
+        assertEquals(local.id, result.selectedModel?.id)
+    }
+
+    @Test
     fun project_showsBothOAuthProvidersWithoutApiKeys() {
         val providers = listOf(
             provider(
@@ -243,6 +263,18 @@ class AgentModelPickerProjectorTest {
         assertNull(providers.enabledModel(null))
     }
 
+    @Test
+    fun enabledModel_can_disambiguate_a_model_id_by_provider() {
+        val providers = listOf(
+            provider(id = "first", models = listOf(model(id = "shared"))),
+            provider(id = "second", models = listOf(model(id = "shared"))),
+        )
+
+        assertEquals("first", providers.enabledModel("shared")?.provider?.id)
+        assertEquals("second", providers.enabledModel("shared", "second")?.provider?.id)
+        assertNull(providers.enabledModel("shared", "missing"))
+    }
+
     private fun provider(
         id: String,
         name: String = id,
@@ -250,11 +282,12 @@ class AgentModelPickerProjectorTest {
         enabled: Boolean = true,
         apiKey: String = "test-key",
         authMode: String = ProviderAuthModes.API_KEY,
+        baseUrl: String = "https://example.com/$id",
         models: List<Model>,
     ) = CustomProviderSetting(
         id = id,
         name = name,
-        baseUrl = "https://example.com/$id",
+        baseUrl = baseUrl,
         sourceType = sourceType,
         apiKey = apiKey,
         authMode = authMode,

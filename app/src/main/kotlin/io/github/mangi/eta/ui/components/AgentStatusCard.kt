@@ -19,6 +19,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
 import io.github.mangi.eta.ui.model.ActiveRunSummaryUi
 import io.github.mangi.eta.ui.model.RunStatusUi
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -36,13 +37,14 @@ fun AgentStatusCard(
     onStopRun: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalEtaDesignTokens.current
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = tokens.settingsHorizontalInset, vertical = 6.dp),
         onClick = onOpenRun,
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(tokens.cardContentPadding)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusIndicator(status = activeRun.status)
                 Spacer(modifier = Modifier.width(10.dp))

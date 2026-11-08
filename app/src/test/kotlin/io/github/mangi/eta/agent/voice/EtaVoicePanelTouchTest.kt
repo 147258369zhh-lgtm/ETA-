@@ -288,6 +288,7 @@ class EtaVoicePanelTouchTest {
                             onMicrophone = { microphoneStarts++ },
                             onCancelSpeech = {},
                             onFinishSpeech = {},
+                            onStopSpeaking = {},
                             onOpenSpeechSettings = {},
                             onKeyboard = {},
                             inputFocusRequestKey = inputFocusRequestKey.value,

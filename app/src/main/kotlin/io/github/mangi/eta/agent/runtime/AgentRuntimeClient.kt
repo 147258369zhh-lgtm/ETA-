@@ -67,7 +67,10 @@ internal class AgentRuntimeClient(
         )
 
         val lease = AgentRuntimeConnection.acquire(context, logger)
-            ?: return AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务绑定失败")
+            ?: return AgentRuntimeWire.RunResult(
+                request.runId, false, "", "Agent Runtime 服务绑定失败",
+                operation = request.operation, rewriteTargetMessageId = request.rewriteTargetMessageId,
+            )
         val serviceMessenger = lease.messenger
         val deathRecipient = IBinder.DeathRecipient {
             if (resultRef.get() == null) {

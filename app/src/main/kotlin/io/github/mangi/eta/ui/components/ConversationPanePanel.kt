@@ -56,6 +56,7 @@ import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.SportsBar
 import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.runtime.key
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -188,6 +189,7 @@ internal fun ConversationPanePanel(
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
     onOpenMeetingRoom: (String) -> Unit,
     onMeetingRoomRename: (MeetingRoomSummaryRow) -> Unit,
+    onMeetingRoomTogglePin: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomExport: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomDelete: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomArchiveChange: (MeetingRoomSummaryRow, Boolean) -> Unit,
@@ -222,10 +224,11 @@ internal fun ConversationPanePanel(
     } else {
         state.conversations
     }
-    val groups = remember(displayedConversations, state.folders, state.archiveViewOpen) {
+    val groups = remember(displayedConversations, state.folders, state.archiveViewOpen, query) {
         displayedConversations.groupForDrawer(
             folders = state.folders,
             archived = state.archiveViewOpen,
+            searching = query.isNotBlank(),
         )
     }
     val filteredMeetingRooms = remember(
@@ -313,7 +316,7 @@ internal fun ConversationPanePanel(
                     verticalArrangement = Arrangement.spacedBy(ConversationPanelMetrics.RowGap),
                     overscrollEffect = null,
                 ) {
-                    if (displayedConversations.isEmpty()) {
+                    if (groups.isEmpty()) {
                         item {
                             EmptyConversations(
                                 isSearching = query.isNotBlank(),
@@ -327,17 +330,14 @@ internal fun ConversationPanePanel(
                                 item(key = "folder-${folder.id}") {
                                     ConversationFolderGroup(
                                         group = group,
-                                        expanded = folder.id !in collapsedFolderIds,
+                                        collapsedFolderIds = collapsedFolderIds,
+                                        forceExpanded = query.isNotBlank(),
                                         selectedConversationId = state.selectedConversationId,
                                         archived = state.archiveViewOpen,
-                                        onToggleExpanded = {
-                                            collapsedFolderIds = if (folder.id in collapsedFolderIds) {
-                                                collapsedFolderIds - folder.id
-                                            } else {
-                                                collapsedFolderIds + folder.id
-                                            }
+                                        onToggleFolder = { id ->
+                                            collapsedFolderIds = if (id in collapsedFolderIds) collapsedFolderIds - id else collapsedFolderIds + id
                                         },
-                                        onRenameFolder = { onRenameFolder(folder) },
+                                        onFolderActions = onRenameFolder,
                                         onConversationSelected = onConversationSelected,
                                         onConversationTogglePin = onConversationTogglePin,
                                         onConversationRename = onConversationRename,
@@ -425,6 +425,7 @@ internal fun ConversationPanePanel(
                                 archived = meetingArchiveViewOpen,
                                 onClick = { onOpenMeetingRoom(room.id) },
                                 onRename = { onMeetingRoomRename(room) },
+                                onTogglePin = { onMeetingRoomTogglePin(room) },
                                 onExport = { onMeetingRoomExport(room) },
                                 onDelete = { onMeetingRoomDelete(room) },
                                 onArchiveChange = { archivedNow ->
@@ -624,6 +625,7 @@ private fun MeetingRoomPaneRow(
     archived: Boolean,
     onClick: () -> Unit,
     onRename: () -> Unit,
+    onTogglePin: () -> Unit,
     onExport: () -> Unit,
     onDelete: () -> Unit,
     onArchiveChange: (Boolean) -> Unit,
@@ -674,18 +676,30 @@ private fun MeetingRoomPaneRow(
             }
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = room.title,
-                    style = MiuixTheme.textStyles.body1,
-                    fontWeight = if (selected || running) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (selected) {
-                        MiuixTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MiuixTheme.colorScheme.onSurface
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = room.title,
+                        style = MiuixTheme.textStyles.body1,
+                        fontWeight = if (selected || running) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) {
+                            MiuixTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MiuixTheme.colorScheme.onSurface
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (room.pinnedAt != null) {
+                        Icon(
+                            imageVector = Icons.Outlined.PushPin,
+                            contentDescription = "已置顶",
+                            modifier = Modifier.padding(start = 4.dp).size(14.dp),
+                            tint = if (selected) MiuixTheme.colorScheme.onPrimaryContainer
+                            else MiuixTheme.colorScheme.primary,
+                        )
+                    }
+                }
                 Text(
                     text = "${room.hostProfile} 主持 · ${room.participantCount} 位 Agent",
                     style = MiuixTheme.textStyles.footnote2,
@@ -730,6 +744,7 @@ private fun MeetingRoomPaneRow(
             onDismissRequest = { showActionMenu = false },
         ) {
             val renameText = "重命名"
+            val pinText = if (room.pinnedAt == null) "置顶会议室" else "取消置顶"
             val exportText = "导出完整记录"
             val archiveText = if (archived) "恢复到会议室" else "归档会议室"
             val deleteText = "删除会议室"
@@ -753,6 +768,20 @@ private fun MeetingRoomPaneRow(
                             imageVector = Icons.Outlined.Download,
                             contentDescription = null,
                             modifier = modifier.size(ConversationPanelMetrics.ActionIconSize),
+                        )
+                    },
+                )
+            }
+            val pinItem = remember(pinText) {
+                DropdownItem(
+                    text = pinText,
+                    icon = { modifier ->
+                        Icon(
+                            imageVector = Icons.Outlined.PushPin,
+                            contentDescription = null,
+                            modifier = modifier.size(ConversationPanelMetrics.ActionIconSize),
+                            tint = if (room.pinnedAt == null) MiuixTheme.colorScheme.primary
+                            else MiuixTheme.colorScheme.onSurfaceVariantActions,
                         )
                     },
                 )
@@ -794,7 +823,7 @@ private fun MeetingRoomPaneRow(
             ListPopupColumn {
                 DropdownImpl(
                     item = renameItem,
-                    optionSize = 4,
+                    optionSize = 5,
                     isSelected = false,
                     index = 0,
                     onSelectedIndexChange = {
@@ -803,10 +832,20 @@ private fun MeetingRoomPaneRow(
                     },
                 )
                 DropdownImpl(
-                    item = exportItem,
-                    optionSize = 4,
+                    item = pinItem,
+                    optionSize = 5,
                     isSelected = false,
                     index = 1,
+                    onSelectedIndexChange = {
+                        showActionMenu = false
+                        onTogglePin()
+                    },
+                )
+                DropdownImpl(
+                    item = exportItem,
+                    optionSize = 5,
+                    isSelected = false,
+                    index = 2,
                     onSelectedIndexChange = {
                         showActionMenu = false
                         onExport()
@@ -814,9 +853,9 @@ private fun MeetingRoomPaneRow(
                 )
                 DropdownImpl(
                     item = archiveItem,
-                    optionSize = 4,
+                    optionSize = 5,
                     isSelected = false,
-                    index = 2,
+                    index = 3,
                     onSelectedIndexChange = {
                         showActionMenu = false
                         if (!running) onArchiveChange(!archived)
@@ -824,9 +863,9 @@ private fun MeetingRoomPaneRow(
                 )
                 DropdownImpl(
                     item = deleteItem,
-                    optionSize = 4,
+                    optionSize = 5,
                     isSelected = false,
-                    index = 3,
+                    index = 4,
                     dropdownColors = deleteColors,
                     onSelectedIndexChange = {
                         showActionMenu = false
@@ -961,11 +1000,12 @@ private fun PaneActionButton(
 @Composable
 private fun ConversationFolderGroup(
     group: ConversationDrawerGroup,
-    expanded: Boolean,
+    collapsedFolderIds: Set<String>,
+    forceExpanded: Boolean,
     selectedConversationId: String?,
     archived: Boolean,
-    onToggleExpanded: () -> Unit,
-    onRenameFolder: () -> Unit,
+    onToggleFolder: (String) -> Unit,
+    onFolderActions: (ConversationFolderUi) -> Unit,
     onConversationSelected: (String) -> Unit,
     onConversationTogglePin: (ConversationSummaryUi) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
@@ -976,6 +1016,14 @@ private fun ConversationFolderGroup(
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
 ) {
     val folder = (group.section as ConversationDrawerSection.Folder).folder
+    val expanded = forceExpanded || folder.id !in collapsedFolderIds
+    val hapticFeedback = LocalHapticFeedback.current
+    val onToggleExpanded = {
+        if (!forceExpanded) {
+            hapticFeedback.performHapticFeedback(if (expanded) HapticFeedbackType.ToggleOff else HapticFeedbackType.ToggleOn)
+            onToggleFolder(folder.id)
+        }
+    }
     val colors = MiuixTheme.colorScheme
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 0f else -90f,
@@ -1002,7 +1050,7 @@ private fun ConversationFolderGroup(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 46.dp)
-                .clickable(onClickLabel = folder.name, onClick = onToggleExpanded)
+                .clickable(enabled = !forceExpanded, onClickLabel = folder.name, onClick = onToggleExpanded)
                 .padding(start = 12.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1023,24 +1071,25 @@ private fun ConversationFolderGroup(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = group.items.size.toString(),
+                text = group.conversationCount.toString(),
                 style = MiuixTheme.textStyles.footnote2,
                 color = colors.onSurfaceVariantSummary,
                 modifier = Modifier.padding(horizontal = 7.dp),
             )
             IconButton(
-                onClick = onRenameFolder,
+                onClick = { onFolderActions(folder) },
                 modifier = Modifier.size(34.dp),
             ) {
                 Icon(
                     imageVector = Icons.Outlined.MoreHoriz,
-                    contentDescription = stringResource(R.string.conversation_folder_rename_action),
+                    contentDescription = stringResource(R.string.folder_tree_manage),
                     modifier = Modifier.size(18.dp),
                     tint = colors.onSurfaceVariantActions,
                 )
             }
             IconButton(
                 onClick = onToggleExpanded,
+                enabled = !forceExpanded,
                 modifier = Modifier.size(34.dp),
             ) {
                 Icon(
@@ -1078,6 +1127,27 @@ private fun ConversationFolderGroup(
                 modifier = Modifier.padding(start = 5.dp, end = 5.dp, bottom = 5.dp),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
+                group.children.forEach { child ->
+                    key((child.section as ConversationDrawerSection.Folder).folder.id) {
+                        ConversationFolderGroup(
+                            group = child,
+                            collapsedFolderIds = collapsedFolderIds,
+                            forceExpanded = forceExpanded,
+                            selectedConversationId = selectedConversationId,
+                            archived = archived,
+                            onToggleFolder = onToggleFolder,
+                            onFolderActions = onFolderActions,
+                            onConversationSelected = onConversationSelected,
+                            onConversationTogglePin = onConversationTogglePin,
+                            onConversationRename = onConversationRename,
+                            onConversationExport = onConversationExport,
+                            onConversationDelete = onConversationDelete,
+                            onConversationArchive = onConversationArchive,
+                            onConversationRestore = onConversationRestore,
+                            onConversationMoveToFolder = onConversationMoveToFolder,
+                        )
+                    }
+                }
                 group.items.forEach { conversation ->
                     ConversationTextRow(
                         conversation = conversation,
@@ -1645,19 +1715,6 @@ private fun DockEntry(
     }
 }
 
-private data class ConversationDrawerGroup(
-    val section: ConversationDrawerSection,
-    val items: List<ConversationSummaryUi>,
-)
-
-private sealed interface ConversationDrawerSection {
-    data object Pinned : ConversationDrawerSection
-    data object Archive : ConversationDrawerSection
-    data class Folder(val folder: ConversationFolderUi) : ConversationDrawerSection
-    data object Today : ConversationDrawerSection
-    data class Dated(val label: String) : ConversationDrawerSection
-}
-
 @Composable
 private fun ConversationDrawerGroup.localizedLabel(): String = when (val value = section) {
     ConversationDrawerSection.Pinned -> stringResource(R.string.conversation_section_pinned)
@@ -1665,56 +1722,4 @@ private fun ConversationDrawerGroup.localizedLabel(): String = when (val value =
     is ConversationDrawerSection.Folder -> value.folder.name
     ConversationDrawerSection.Today -> stringResource(R.string.conversation_section_today)
     is ConversationDrawerSection.Dated -> value.label
-}
-
-private fun List<ConversationSummaryUi>.groupForDrawer(
-    folders: List<ConversationFolderUi>,
-    archived: Boolean,
-): List<ConversationDrawerGroup> {
-    if (isEmpty()) return emptyList()
-    if (archived) {
-        return listOf(ConversationDrawerGroup(ConversationDrawerSection.Archive, this))
-    }
-    val groups = mutableListOf<ConversationDrawerGroup>()
-    val pinned = filter(ConversationSummaryUi::isPinned)
-    if (pinned.isNotEmpty()) {
-        groups += ConversationDrawerGroup(ConversationDrawerSection.Pinned, pinned)
-    }
-    val knownFolderIds = folders.mapTo(hashSetOf(), ConversationFolderUi::id)
-    for (folder in folders) {
-        val items = filter { conversation ->
-            !conversation.isPinned && conversation.folderId == folder.id
-        }
-        if (items.isNotEmpty()) {
-            groups += ConversationDrawerGroup(ConversationDrawerSection.Folder(folder), items)
-        }
-    }
-    val ungrouped = filter { conversation ->
-        !conversation.isPinned &&
-            (conversation.folderId == null || conversation.folderId !in knownFolderIds)
-    }
-    for (conversation in ungrouped) {
-        val section = conversation.drawerSection()
-        val last = groups.lastOrNull()
-        if (last?.section == section && section !is ConversationDrawerSection.Folder) {
-            groups[groups.lastIndex] = last.copy(items = last.items + conversation)
-        } else {
-            groups += ConversationDrawerGroup(section = section, items = listOf(conversation))
-        }
-    }
-    return groups
-}
-
-private fun ConversationSummaryUi.drawerSection(): ConversationDrawerSection = when {
-    isActiveRun || isUpdatedToday(updatedAtMillis) -> ConversationDrawerSection.Today
-    else -> ConversationDrawerSection.Dated(timeLabel)
-}
-
-private fun isUpdatedToday(timestampMillis: Long): Boolean {
-    if (timestampMillis <= 0L) return true
-    val now = java.util.Calendar.getInstance()
-    val target = java.util.Calendar.getInstance().apply { timeInMillis = timestampMillis }
-    return now.get(java.util.Calendar.ERA) == target.get(java.util.Calendar.ERA) &&
-        now.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
-        now.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
 }

@@ -130,17 +130,27 @@ class AgentFileOperationsTest {
         assertEquals("二 二", file.readText())
     }
 
-    @Test fun staleRevisionAndOldContentDigestPreventOverwrite() {
+    @Test fun staleRevisionRetriesOnlyWhileTheRequestedOldTextStillMatches() {
         val file = temporary.newFile("edit.txt").apply { writeText("original") }
         val backend = LocalFileToolBackend(temporary.root)
         val initial = backend.stat(file.path)
-        file.writeText("different")
-        assertEquals("FILE_CHANGED", JSONObject(AgentFileOperations(backend).editFile(file.name, "different", "new", expectedRevision = initial.revision)).getString("code"))
+        file.writeText("original\nsection\ntail")
+        val retried = JSONObject(AgentFileOperations(backend).editFile(
+            file.name, "section", "replacement", expectedRevision = initial.revision,
+        ))
+        assertTrue(retried.toString(), retried.getBoolean("ok"))
+        assertTrue(retried.getBoolean("revision_refreshed"))
+        assertEquals("original\nreplacement\ntail", file.readText())
+
+        val latest = backend.stat(file.path)
+        file.writeText("changed elsewhere")
+        assertEquals("FILE_CHANGED", JSONObject(AgentFileOperations(backend)
+            .editFile(file.name, "section", "new", expectedRevision = latest.revision)).getString("code"))
         try {
             backend.write(file.path, "new".toByteArray(), false, expectedSha256 = "0".repeat(64))
             throw AssertionError("digest mismatch accepted")
         } catch (error: FileToolException) { assertEquals("FILE_CHANGED", error.code) }
-        assertEquals("different", file.readText())
+        assertEquals("changed elsewhere", file.readText())
     }
 
     @Test fun atomicOverwriteRetainsExistingPosixPermissions() {

@@ -1,16 +1,22 @@
 package io.github.mangi.eta.ui.app
 
-import android.content.ComponentName
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealth
+import io.github.mangi.eta.agent.accessibility.RootAccessibilityRecovery
+import io.github.mangi.eta.agent.accessibility.RootAccessibilityRecoveryStatus
 import io.github.mangi.eta.agent.device.DeviceLocationProvider
+import io.github.mangi.eta.agent.device.DeviceRuntimeSnapshot
 import io.github.mangi.eta.agent.device.RootAccess
+import io.github.mangi.eta.ui.model.DeviceRuntimeUi
+import io.github.mangi.eta.ui.model.RootAccessibilityRecoveryUi
 import io.github.mangi.eta.ui.model.PermissionHealthItemUi
 import io.github.mangi.eta.ui.model.PermissionHealthUiState
 import io.github.mangi.eta.ui.model.PermissionStatusUi
@@ -31,13 +37,19 @@ internal class PermissionHealthStore(
     var permissionHealthState by mutableStateOf(PermissionHealthUiState(emptyList()))
         private set
 
+    private var permissionRefreshJob: Job? = null
+
     init {
         scope.launch {
             RootAccess.state.collectLatest { refreshPermissionHealth() }
         }
+        scope.launch {
+            AgentAccessibilityHealth.observeChanges(appContext).collectLatest { refreshPermissionHealth() }
+        }
+        scope.launch {
+            RootAccessibilityRecovery.state.collectLatest { refreshPermissionHealth() }
+        }
     }
-
-    private var permissionRefreshJob: Job? = null
 
     fun refreshPermissionHealth() {
         permissionRefreshJob?.cancel()
@@ -46,20 +58,66 @@ internal class PermissionHealthStore(
             withContext(Dispatchers.Main) { permissionHealthState = refreshed }
         }
     }
+
+    fun setRootAccessibilityRecovery(enabled: Boolean) {
+        scope.launch(Dispatchers.IO) {
+            RootAccessibilityRecovery.setEnabled(appContext, enabled)
+            withContext(Dispatchers.Main) { refreshPermissionHealth() }
+        }
+    }
+
+    fun retryRootAccessibilityRecovery() {
+        RootAccessibilityRecovery.retry(appContext)
+    }
 }
 
 private fun buildPermissionHealthState(context: Context): PermissionHealthUiState {
     val backgroundRunningEnabled = isIgnoringBatteryOptimizations(context)
     val overlayEnabled = Settings.canDrawOverlays(context)
     val appListEnabled = hasAppListAccess(context)
-    val accessibilityEnabled = isAgentAccessibilityEnabled(context) || AgentAccessibilityService.isAvailable()
-    val rootEnabled = RootAccess.isGranted
+    val runtime = DeviceRuntimeSnapshot.capture(context)
+    val microphoneEnabled = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    val rootEnabled = runtime.root.isGranted
     val notificationsEnabled = context.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()
     val locationAccess = DeviceLocationProvider.accessState(context)
     val notificationHistoryEnabled = io.github.mangi.eta.agent.device.AgentNotificationHistoryService.isEnabled(context)
     val usageAccessEnabled = io.github.mangi.eta.agent.tool.AgentPersonalContextTools.hasUsageAccess(context)
+    val recovery = RootAccessibilityRecovery.state.value
 
     return PermissionHealthUiState(
+        rootAccessibilityRecovery = RootAccessibilityRecoveryUi(
+            enabled = recovery.enabled,
+            canToggle = rootEnabled || recovery.enabled,
+            canRetry = recovery.enabled && rootEnabled && recovery.status in setOf(
+                RootAccessibilityRecoveryStatus.FAILED, RootAccessibilityRecoveryStatus.EXHAUSTED,
+                RootAccessibilityRecoveryStatus.WAITING,
+            ),
+            summary = context.getString(when {
+                !rootEnabled -> R.string.recovery_root_required
+                else -> when (recovery.status) {
+                    RootAccessibilityRecoveryStatus.OFF -> R.string.recovery_summary_off
+                    RootAccessibilityRecoveryStatus.READY -> R.string.recovery_summary_ready
+                    RootAccessibilityRecoveryStatus.ROOT_REQUIRED -> R.string.recovery_root_required
+                    RootAccessibilityRecoveryStatus.NOT_CONFIGURED -> R.string.recovery_not_configured
+                    RootAccessibilityRecoveryStatus.MANUAL_REQUIRED -> R.string.recovery_manual_required
+                    RootAccessibilityRecoveryStatus.RECOVERING -> R.string.recovery_in_progress
+                    RootAccessibilityRecoveryStatus.WAITING -> R.string.recovery_waiting
+                    RootAccessibilityRecoveryStatus.EXHAUSTED -> R.string.recovery_exhausted
+                    RootAccessibilityRecoveryStatus.UNCONFIRMED -> R.string.recovery_unconfirmed
+                    RootAccessibilityRecoveryStatus.SAVE_FAILED -> R.string.recovery_save_failed
+                    RootAccessibilityRecoveryStatus.FAILED -> R.string.recovery_failed
+                }
+            }),
+        ),
+        runtime = DeviceRuntimeUi(
+            androidVersion = context.getString(R.string.compat_os_version, runtime.androidRelease, runtime.sdkInt),
+            device = "${runtime.manufacturer} · ${runtime.model}",
+            systemBuild = context.getString(R.string.compat_system_build, runtime.systemBuild),
+            mode = context.getString(
+                if (rootEnabled) R.string.compat_mode_root else R.string.compat_mode_standard,
+                runtime.targetSdkInt,
+            ),
+        ),
         items = listOfNotNull(
             PermissionHealthItemUi(
                 id = "background",
@@ -83,6 +141,13 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
                 primaryActionLabel = if (appListEnabled) null else context.getString(R.string.state_ui_to_open_13ec17),
             ),
             localNetworkPermissionHealthItem(context),
+            PermissionHealthItemUi(
+                id = "microphone",
+                title = context.getString(R.string.compat_microphone_title),
+                summary = context.getString(R.string.compat_microphone_summary),
+                status = if (microphoneEnabled) PermissionStatusUi.Available else PermissionStatusUi.Missing,
+                primaryActionLabel = context.getString(R.string.state_ui_go_to_settings_1f2998),
+            ),
             PermissionHealthItemUi(
                 id = "calendar", title = "日历访问", summary = "读取日程并创建、修改事件与提醒；未授权时只在已有 Root 授权下使用增强通道。",
                 status = if (io.github.mangi.eta.agent.device.CalendarPermissions.granted(context, true)) PermissionStatusUi.Available else PermissionStatusUi.Missing,
@@ -133,13 +198,7 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
                 status = if (usageAccessEnabled) PermissionStatusUi.Available else PermissionStatusUi.Missing,
                 primaryActionLabel = if (usageAccessEnabled) null else context.getString(R.string.state_ui_to_authorize_762ec4),
             ),
-            PermissionHealthItemUi(
-                id = "accessibility",
-                title = context.getString(R.string.state_accessibility_permissions_f80103),
-                summary = "",
-                status = if (accessibilityEnabled) PermissionStatusUi.Available else PermissionStatusUi.Missing,
-                primaryActionLabel = if (accessibilityEnabled) null else context.getString(R.string.state_ui_to_open_13ec17),
-            ),
+            accessibilityPermissionHealthItem(context),
             PermissionHealthItemUi(
                 id = "notifications",
                 title = context.getString(R.string.capability_notifications_title),
@@ -150,24 +209,13 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
             PermissionHealthItemUi(
                 id = "root",
                 title = context.getString(R.string.capability_enhancements),
-                summary = context.getString(R.string.capability_optional_root),
+                summary = runtime.root.description(context) + "\n" + context.getString(R.string.capability_optional_root),
                 status = if (rootEnabled) PermissionStatusUi.Available else PermissionStatusUi.Disabled,
                 primaryActionLabel = if (rootEnabled) null else context.getString(R.string.state_ui_to_open_13ec17),
+                requiredForCore = false,
             ),
         )
     )
-}
-
-private fun isAgentAccessibilityEnabled(context: Context): Boolean {
-    val expected = ComponentName(
-        context,
-        AgentAccessibilityService::class.java,
-    ).flattenToString()
-    val enabledServices = Settings.Secure.getString(
-        context.contentResolver,
-        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-    ).orEmpty()
-    return enabledServices.split(':').any { it.equals(expected, ignoreCase = true) }
 }
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {

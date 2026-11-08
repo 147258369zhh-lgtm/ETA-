@@ -35,6 +35,28 @@ data class SkillItemUi(
     val enabled: Boolean,
     val installed: Boolean,
     val capabilities: List<String>,
+    val sourceName: String? = null,
+    val version: String? = null,
+    val installedAt: Long? = null,
+    val useCount: Int = 0,
+    val lastUsedAt: Long? = null,
+    val reviewRecommended: Boolean = false,
+    val qualityLabel: String? = null,
+    val qualityDetail: String? = null,
+    val dependencies: List<String> = emptyList(),
+    val prerequisiteLabel: String? = null,
+    val prerequisiteDetail: String? = null,
+    val setupRequired: Boolean = false,
+    val versions: List<SkillVersionUi> = emptyList(),
+)
+
+@Immutable
+data class SkillVersionUi(
+    val id: String,
+    val version: String? = null,
+    val sourceName: String? = null,
+    val createdAt: Long,
+    val sizeBytes: Long,
 )
 
 internal val SkillItemUi.canDeleteUserSkill: Boolean

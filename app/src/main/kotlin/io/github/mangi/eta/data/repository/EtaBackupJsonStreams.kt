@@ -8,6 +8,9 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.db.ConversationContextCheckpointEntity
 import io.github.mangi.eta.data.db.ConversationEntity
 import io.github.mangi.eta.data.db.ConversationMessageEntity
+import io.github.mangi.eta.data.db.ConversationBranchEntity
+import io.github.mangi.eta.data.db.ConversationMessageOriginEntity
+import io.github.mangi.eta.data.db.ConversationBranchSetupEntity
 import java.io.File
 import java.io.FilterInputStream
 import java.io.FilterOutputStream
@@ -24,9 +27,14 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.DecodeSequenceMode
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.decodeToSequence
-import kotlinx.serialization.json.encodeToStream
 
 /** 沿用 JSON 备份合同，用磁盘暂存大数组，校验与恢复均逐条解码。 */
 @OptIn(ExperimentalSerializationApi::class)
@@ -35,7 +43,10 @@ internal object EtaBackupJsonStreams {
     const val CONVERSATIONS = "conversations"
     const val MESSAGES = "messages"
     const val CHECKPOINTS = "contextCheckpoints"
-    private val recordFields = setOf(CONVERSATIONS, MESSAGES, CHECKPOINTS)
+    const val BRANCHES = "branches"
+    const val ORIGINS = "messageOrigins"
+    const val SETUPS = "branchSetups"
+    private val recordFields = setOf(CONVERSATIONS, MESSAGES, CHECKPOINTS, BRANCHES, ORIGINS, SETUPS)
     private val knownFields = EtaBackupDocument.serializer().descriptor.let { descriptor ->
         (0 until descriptor.elementsCount).mapTo(mutableSetOf(), descriptor::getElementName)
     }
@@ -129,6 +140,9 @@ internal object EtaBackupJsonStreams {
         suspend fun conversations(action: suspend (ConversationEntity) -> Unit) = records(CONVERSATIONS, action)
         suspend fun messages(action: suspend (ConversationMessageEntity) -> Unit) = records(MESSAGES, action)
         suspend fun checkpoints(action: suspend (ConversationContextCheckpointEntity) -> Unit) = records(CHECKPOINTS, action)
+        suspend fun branches(action: suspend (ConversationBranchEntity) -> Unit) = records(BRANCHES, action)
+        suspend fun origins(action: suspend (ConversationMessageOriginEntity) -> Unit) = records(ORIGINS, action)
+        suspend fun setups(action: suspend (ConversationBranchSetupEntity) -> Unit) = records(SETUPS, action)
 
         private suspend inline fun <reified T> records(field: String, noinline action: suspend (T) -> Unit) {
             val file = File(directory, "$field.json")
@@ -145,39 +159,48 @@ internal object EtaBackupJsonStreams {
     }
 
     class DocumentWriter(private val output: OutputStream) {
-        private var firstField = true
-        private var firstRecord = true
+        private val writer = JsonWriter(output.writer(Charsets.UTF_8).buffered())
 
-        init { literal("{") }
+        init { writer.beginObject() }
 
         fun <T> value(name: String, serializer: SerializationStrategy<T>, value: T) {
-            field(name)
-            json.encodeToStream(serializer, value, output)
+            writer.name(name)
+            element(json.encodeToJsonElement(serializer, value))
         }
 
         fun beginArray(name: String) {
-            field(name)
-            literal("[")
-            firstRecord = true
+            writer.name(name).beginArray()
         }
 
         fun <T> record(serializer: SerializationStrategy<T>, value: T) {
-            if (!firstRecord) literal(",")
-            firstRecord = false
-            json.encodeToStream(serializer, value, output)
+            element(json.encodeToJsonElement(serializer, value))
         }
 
-        fun endArray() = literal("]")
-        fun finish() = literal("}")
+        fun endArray() { writer.endArray() }
+        fun finish() { writer.endObject(); writer.flush() }
 
-        private fun field(name: String) {
-            if (!firstField) literal(",")
-            firstField = false
-            json.encodeToStream(name, output)
-            literal(":")
+        // Json.encodeToStream allocates an escaped buffer proportional to each String. JsonWriter
+        // escapes through a bounded BufferedWriter while JsonElement keeps the original String.
+        private fun element(value: JsonElement) {
+            when (value) {
+                is JsonObject -> {
+                    writer.beginObject()
+                    value.forEach { (name, item) -> writer.name(name); element(item) }
+                    writer.endObject()
+                }
+                is JsonArray -> {
+                    writer.beginArray()
+                    value.forEach(::element)
+                    writer.endArray()
+                }
+                JsonNull -> writer.nullValue()
+                is JsonPrimitive -> when {
+                    value.isString -> writer.value(value.content)
+                    value.booleanOrNull != null -> writer.value(requireNotNull(value.booleanOrNull))
+                    else -> writer.value(BigDecimal(value.content))
+                }
+            }
         }
-
-        private fun literal(value: String) = output.write(value.toByteArray(Charsets.UTF_8))
     }
 
     internal class LimitedInput(

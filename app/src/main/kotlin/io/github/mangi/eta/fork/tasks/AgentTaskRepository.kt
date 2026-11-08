@@ -35,6 +35,7 @@ internal class AgentTaskRepository(
                 localHour = rule.localHour,
                 localMinute = rule.localMinute,
                 weekdaysMask = rule.weekdaysMask,
+                monthDay = rule.monthDay,
                 timeZoneId = rule.timeZoneId,
                 missedRunPolicy = draft.missedRunPolicy,
                 lastScheduledFor = null,
@@ -65,7 +66,7 @@ internal class AgentTaskRepository(
         if (!definition.enabled) return null
         val now = clock()
         val runId = idFactory()
-        val inserted = dao.insertRunIfAbsent(
+        val inserted = dao.enqueueManual(
             AgentTaskRunEntity(
                 id = runId,
                 definitionId = definition.id,
@@ -78,7 +79,7 @@ internal class AgentTaskRepository(
                 updatedAt = now,
             ),
         )
-        return runId.takeIf { inserted >= 0 }
+        return runId.takeIf { inserted }
     }
 
     private fun nextAfterStart(rule: AgentScheduleRule): Long? =
@@ -99,5 +100,6 @@ internal class AgentTaskRepository(
         localMinute = localMinute,
         weekdaysMask = weekdaysMask,
         timeZoneId = timeZoneId,
+        monthDay = monthDay,
     )
 }

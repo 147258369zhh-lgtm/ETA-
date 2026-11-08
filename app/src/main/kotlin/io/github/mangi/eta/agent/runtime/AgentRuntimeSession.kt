@@ -19,6 +19,7 @@ internal class AgentRuntimeSession(
     resultSink: ((AgentRuntimeWire.RunResult) -> Unit)? = null,
     private val operation: String = AgentRuntimeWire.OP_CHAT,
     private val beforeTerminalPublish: (AgentRuntimeWire.RunResult) -> Unit = {},
+    val telemetry: AgentRunTelemetry? = null,
 ) {
     private enum class State {
         RUNNING,
@@ -112,6 +113,7 @@ internal class AgentRuntimeSession(
         }
 
     private fun recordForReplay(event: AgentEvent) {
+        telemetry?.accept(event)
         val projected = event.replayProjection() ?: return
         if (projected is AgentEvent.SubagentProgress) {
             val existingIndex = replayEvents.indexOfLast {
@@ -163,6 +165,7 @@ internal class AgentRuntimeSession(
         val commitFailure = runCatching(beforePublish).exceptionOrNull()
         lock.withLock {
             state = State.TERMINAL
+            telemetry?.finish(result.ok, controller.isCancelled)
         }
         // 客户端收到结果即可续发；释放会话占用不能晚于结果，也不能持锁回调宿主。
         beforeTerminalPublish(result)
@@ -191,6 +194,7 @@ internal class AgentRuntimeSession(
             )
         }
         controller.cancel()
+        telemetry?.finish(ok = false, cancelled = true)
         beforeTerminalPublish(result)
         lock.withLock {
             subscribers.forEach { it.resultSink(result) }

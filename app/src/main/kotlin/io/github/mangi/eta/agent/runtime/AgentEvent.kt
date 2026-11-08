@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.core.toSafeLogToken
+import io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase
 
 internal sealed interface AgentEvent {
     fun toLogLine(): String
@@ -9,6 +10,10 @@ internal sealed interface AgentEvent {
         TEXT,
         THINKING,
         TOOL_CALL,
+    }
+
+    data class AccessibilityWaiting(val outage: Int, val phase: AccessibilityWaitPhase) : AgentEvent {
+        override fun toLogLine(): String = "accessibility_wait outage=$outage phase=${phase.wireValue}"
     }
 
     data class GuiControlChanged(val status: GuiControlStatus) : AgentEvent {
@@ -64,7 +69,9 @@ internal sealed interface AgentEvent {
         val reasonCode: String,
     ) : AgentEvent {
         val displayMessage: String
-            get() = "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。"
+            get() = if (reasonCode.startsWith("fallback_")) {
+                "主模型暂时不可用，正在使用已配置的备用模型提供文字答复。"
+            } else "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。"
 
         override fun toLogLine(): String =
             "model_retry_scheduled round=$round, attempt=$attempt, delay_ms=$delayMs, code=${reasonCode.toSafeLogToken()}"

@@ -219,6 +219,9 @@ class SkillIndexService(
     private val indexLock = Any()
     private val registryStore = SkillRegistryStore(context.applicationContext)
     private val builtinStore = BuiltinSkillAssetStore(context.applicationContext, skillsRoot)
+    private val provenanceStore = SkillProvenanceStore(context.applicationContext)
+    private val usageStore = SkillUsageStore(context.applicationContext)
+    private val versionStore = SkillVersionStore(context.applicationContext)
 
     @Volatile
     private var builtinsSeeded = false
@@ -332,6 +335,11 @@ class SkillIndexService(
                     }
                     invalidateIndexLocked()
                     journal.clear()
+                    if (entry.source != BUILTIN_SOURCE) {
+                        runCatching { provenanceStore.remove(entry.id) }
+                        runCatching { usageStore.remove(entry.id) }
+                        runCatching { versionStore.removeAll(entry.id) }
+                    }
                     true
                 } catch (error: Exception) {
                     val journalExists = Files.exists(
@@ -464,11 +472,16 @@ class SkillIndexService(
             .filter { it.id !in installedIds && registry[it.id]?.installState == INSTALL_STATE_REMOVED_BUILTIN }
             .map { buildBuiltinPlaceholder(it, registry[it.id]) }
             .toList()
-        return (installed + removedBuiltins).sortedWith(
+        val provenance = provenanceStore.readAll()
+        return (installed + removedBuiltins)
+            .map { entry ->
+                if (entry.installed) entry.copy(provenance = provenance[entry.id]) else entry
+            }
+            .sortedWith(
             compareByDescending<SkillIndexEntry> { it.installed }
                 .thenBy { sourceRank(it.source) }
                 .thenBy { it.name.lowercase() },
-        )
+            )
     }
 
     private fun invalidateIndexLocked() {
@@ -518,6 +531,7 @@ class SkillIndexService(
             id = id,
             name = frontmatter["name"]?.ifBlank { id } ?: id,
             description = frontmatter["description"]?.trim().orEmpty(),
+            dependencies = SkillDependencyParser.parse(frontmatter, metadata),
             compatibility = frontmatter["compatibility"]?.trim(),
             metadata = metadata,
             rootPath = canonicalDir.absolutePath,
@@ -649,6 +663,9 @@ object SkillRuntime {
     @Volatile
     private var sharedIndexService: SkillIndexService? = null
 
+    @androidx.annotation.VisibleForTesting
+    internal fun resetForTests() { synchronized(this) { sharedIndexService = null } }
+
     fun skillsRoot(context: Context): File = File(context.filesDir, "skills")
 
     fun createIndexService(context: Context): SkillIndexService {
@@ -672,4 +689,7 @@ object SkillRuntime {
 
     fun createResourceReader(context: Context): SkillResourceReader =
         SkillResourceReader(skillsRoot(context))
+
+    internal fun createProvenanceStore(context: Context): SkillProvenanceStore =
+        SkillProvenanceStore(context.applicationContext)
 }

@@ -17,6 +17,7 @@ data class ConversationFolderUi(
     val id: String,
     val name: String,
     val sortOrder: Long,
+    val parentId: String? = null,
 )
 
 @Immutable
@@ -37,6 +38,7 @@ data class ConversationSummaryUi(
     val isArchived: Boolean = false,
     val isAutoArchived: Boolean = false,
     val autoArchiveExempt: Boolean = false,
+    val folderSortOrder: Long = 0L,
 )
 
 @Immutable

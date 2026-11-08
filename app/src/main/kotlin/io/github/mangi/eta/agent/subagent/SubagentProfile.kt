@@ -172,10 +172,13 @@ internal data class SubagentProfile(
             "skills_list",
             "skills_read",
             "skills_read_resource",
+            "skills_list_curated",
+            "skills_inspect_github",
+            "schedule_list",
         )
 
         private val CODER_EXTRA_TOOLS =
-            (AgentFileToolCatalog.names + AgentTerminalToolCatalog.names) - FORBIDDEN_TOOLS
+            (AgentFileToolCatalog.names + AgentTerminalToolCatalog.names + setOf("voice_synthesize")) - FORBIDDEN_TOOLS
 
         val EXPLORE = SubagentProfile(
             name = TYPE_EXPLORE,

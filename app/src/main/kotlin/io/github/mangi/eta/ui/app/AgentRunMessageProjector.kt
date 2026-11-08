@@ -28,6 +28,14 @@ internal class AgentRunMessageProjector(
         event: AgentEvent,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> = when (event) {
+        is AgentEvent.AccessibilityWaiting -> {
+            val id = "assistant-$runId-accessibility-${event.outage}"
+            val notice = SystemNoticeMessageUi(
+                id = id, code = SystemNoticeCode.AccessibilityWaiting, detail = event.phase.wireValue,
+                running = event.phase == io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase.WAITING,
+            )
+            if (messages.any { it.id == id }) messages.map { if (it.id == id) notice else it } else messages + notice
+        }
         is AgentEvent.GuiControlChanged -> messages
         is AgentEvent.AssistantBlockStart -> startAssistantBlock(runId, event, messages)
         is AgentEvent.AssistantBlockDelta -> when (event.kind) {
@@ -62,11 +70,11 @@ internal class AgentRunMessageProjector(
             )
         }
         is AgentEvent.ModelRetryScheduled -> scheduleModelRetry(runId, event, messages)
-        is AgentEvent.RunFailed -> failRunningTools(event.reason, finalizeText(runId, finalizeThinking(runId, messages)))
+        is AgentEvent.RunFailed -> failRunningTools(event.reason, finalizeText(runId, finalizeThinking(runId, finishAccessibilityWaiting(runId, messages))))
         is AgentEvent.AssistantReceived -> if (event.reasoningContent.isBlank()) messages else {
             ensureCompletedThinking(runId, event.round, event.reasoningContent, messages)
         }
-        is AgentEvent.RunFinished -> finalizeText(runId, finalizeThinking(runId, messages))
+        is AgentEvent.RunFinished -> finalizeText(runId, finalizeThinking(runId, finishAccessibilityWaiting(runId, messages)))
         is AgentEvent.UserSupplementReceived,
         is AgentEvent.RunStarted,
         is AgentEvent.ProviderRequestStarted,
@@ -156,15 +164,18 @@ internal class AgentRunMessageProjector(
         event: AgentEvent.ModelRetryScheduled,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
-        val finalized = finalizeTextRound(
-            runId, event.round, finalizeThinkingRound(runId, event.round, messages),
-        )
+        // Remove the failed streaming attempt before retrying. Keeping its partial answer in the
+        // timeline makes the later successful response look like one response duplicated.
+        val withoutFailedAttempt = messages.filterNot { message ->
+            (message is AgentMessageUi && isAssistantMessageForRound(message.id, runId, event.round)) ||
+                (message is ThinkingMessageUi && isThinkingMessageForRound(message.id, runId, event.round))
+        }
         val notice = SystemNoticeMessageUi(
             id = "assistant-$runId-retry-${event.round}",
             code = SystemNoticeCode.ModelRetry,
             detail = event.displayMessage,
         )
-        return finalized.filterNot { it.id == notice.id } + notice
+        return withoutFailedAttempt.filterNot { it.id == notice.id } + notice
     }
 
     fun startAssistantBlock(
@@ -685,6 +696,14 @@ internal class AgentRunMessageProjector(
          * 用终态补全最后一条回答：notice 为 null 时写入正文，否则替换为系统提示。
          * 同一轮已有多个文本块时，流式内容已完整，终态正文只在当前块为空时补写。
          */
+        fun finishAccessibilityWaiting(runId: String, messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> =
+            messages.map { message ->
+                if (message is SystemNoticeMessageUi && message.code == SystemNoticeCode.AccessibilityWaiting &&
+                    message.running && isAssistantMessageForRun(message.id, runId)) {
+                    message.copy(running = false, detail = "cancelled")
+                } else message
+            }
+
         fun applyResult(
             runId: String,
             messages: List<AgentChatMessageUi>,
@@ -695,13 +714,13 @@ internal class AgentRunMessageProjector(
             // A retry can succeed after an earlier terminal result had already rendered a
             // runtime-failure notice. A successful answer supersedes that stale notice.
             val visibleMessages = if (notice == null) {
-                messages.filterNot { message ->
+                finishAccessibilityWaiting(runId, messages).filterNot { message ->
                     message is SystemNoticeMessageUi &&
                         message.code == SystemNoticeCode.RuntimeFailed &&
                         isAssistantMessageForRun(message.id, runId)
                 }
             } else {
-                messages
+                finishAccessibilityWaiting(runId, messages)
             }
             val targetIndex = resultTargetIndex(runId, visibleMessages)
             if (targetIndex < 0) {

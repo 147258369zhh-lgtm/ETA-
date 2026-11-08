@@ -53,7 +53,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.terminal.FileToolException
+import io.github.mangi.eta.fork.files.WorkspaceSearchResult
 import io.github.mangi.eta.ui.app.WorkspaceEntry
+import io.github.mangi.eta.ui.app.WorkspaceArtifact
+import io.github.mangi.eta.ui.app.WorkspaceArtifactStore
 import io.github.mangi.eta.ui.app.WorkspaceFileStore
 import io.github.mangi.eta.ui.app.WorkspacePreview
 import io.github.mangi.eta.ui.components.EtaMonospace
@@ -64,6 +67,10 @@ import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import java.io.IOException
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
@@ -75,6 +82,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -83,14 +91,23 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val resources = LocalResources.current
     val store = remember(context.applicationContext) { WorkspaceFileStore(context) }
+    val artifactStore = remember(context.applicationContext) { WorkspaceArtifactStore(context) }
     val scope = rememberCoroutineScope()
     var path by rememberSaveable { mutableStateOf("") }
     var pendingExport by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingFolderExport by rememberSaveable { mutableStateOf<String?>(null) }
     var entries by remember { mutableStateOf<List<WorkspaceEntry>?>(null) }
     var revision by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<WorkspaceMessage?>(null) }
     var searchText by rememberSaveable { mutableStateOf("") }
+    var searchSubfolders by rememberSaveable { mutableStateOf(false) }
+    var searchContents by rememberSaveable { mutableStateOf(false) }
+    val deepSearch = searchSubfolders && searchText.isNotBlank()
+    var searchState by remember(path, searchText, searchSubfolders, searchContents, revision) {
+        mutableStateOf<WorkspaceSearchState>(WorkspaceSearchState.Loading)
+    }
+    var searchJob by remember(path, searchText, searchSubfolders, searchContents, revision) { mutableStateOf<Job?>(null) }
     var sortField by rememberSaveable { mutableStateOf(WorkspaceSortField.NAME) }
     var descending by rememberSaveable { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
@@ -102,6 +119,7 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
     var previewTarget by remember { mutableStateOf<WorkspaceEntry?>(null) }
     var clipboard by remember { mutableStateOf<WorkspaceClipboard?>(null) }
     var publicAccess by remember { mutableStateOf(Environment.isExternalStorageManager()) }
+    var artifacts by remember { mutableStateOf<List<WorkspaceArtifact>>(emptyList()) }
 
     fun reportError(error: Throwable) {
         if (error is CancellationException) throw error
@@ -165,6 +183,13 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
             }
         }
     }
+    val folderExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val source = pendingFolderExport
+        pendingFolderExport = null
+        if (uri != null && source != null) perform(resources.getString(R.string.capability_workspace_exported)) {
+            store.exportFolder(source, uri)
+        }
+    }
 
     LaunchedEffect(path) { entries = null }
     LaunchedEffect(path, revision) {
@@ -178,10 +203,33 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
         }
     }
 
-    val visibleEntries = remember(entries, searchText, sortField, descending) {
+    LaunchedEffect(revision) {
+        artifacts = artifactStore.list()
+    }
+
+    LaunchedEffect(path, searchText, searchSubfolders, searchContents, revision) {
+        if (!deepSearch || searchState == WorkspaceSearchState.Cancelled) return@LaunchedEffect
+        searchJob = currentCoroutineContext().job
+        try {
+            delay(300)
+            searchState = WorkspaceSearchState.Complete(store.search(path, searchText, searchContents))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            searchState = WorkspaceSearchState.Failed
+            reportError(error)
+        }
+    }
+
+    val searchResult = (searchState as? WorkspaceSearchState.Complete)?.result.takeIf { deepSearch }
+    val currentEntries = if (deepSearch) searchResult?.hits?.map {
+        WorkspaceEntry(it.path, it.path.substringAfterLast('/'), it.directory, it.size)
+    } else entries
+    val searchHits = remember(searchResult) { searchResult?.hits?.associateBy { it.path }.orEmpty() }
+    val visibleEntries = remember(currentEntries, searchText, deepSearch, sortField, descending) {
         val terms = searchText.trim().lowercase(Locale.ROOT).split(Regex("\\s+")).filter(String::isNotBlank)
-        val filtered = entries.orEmpty().filter { entry ->
-            terms.isEmpty() || terms.all { term ->
+        val filtered = currentEntries.orEmpty().filter { entry ->
+            deepSearch || terms.isEmpty() || terms.all { term ->
                 entry.name.lowercase(Locale.ROOT).contains(term) || entry.path.lowercase(Locale.ROOT).contains(term)
             }
         }
@@ -218,6 +266,36 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                 )
             }
         }
+        if (artifacts.isNotEmpty()) {
+            item(key = "workspace-artifacts") {
+                Card(
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .padding(bottom = 12.dp),
+                ) {
+                    BasicComponent(
+                        title = stringResource(R.string.capability_workspace_artifacts),
+                        summary = stringResource(R.string.capability_workspace_artifacts_summary),
+                    )
+                    artifacts.take(5).forEach { artifact ->
+                        val status = when (artifact.status) {
+                            WorkspaceArtifact.STATUS_VERIFIED -> stringResource(R.string.capability_workspace_artifact_verified)
+                            WorkspaceArtifact.STATUS_FAILED -> stringResource(R.string.capability_workspace_artifact_failed)
+                            else -> stringResource(R.string.capability_workspace_artifact_pending)
+                        }
+                        ArrowPreference(
+                            title = artifact.label,
+                            summary = "${artifact.path} · $status",
+                            onClick = {
+                                val parent = artifact.path.substringBeforeLast('/', "")
+                                if (parent.isNotBlank()) path = parent
+                                searchText = ""
+                            },
+                        )
+                    }
+                }
+            }
+        }
         item(key = "search") {
             Card(
                 modifier = Modifier
@@ -227,11 +305,56 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                 TextField(
                     value = searchText,
                     onValueChange = { searchText = it.take(MAX_SEARCH_CHARS) },
-                    label = stringResource(R.string.capability_workspace_search),
+                    label = stringResource(
+                        if (searchSubfolders) R.string.capability_workspace_search_subfolders else R.string.capability_workspace_search,
+                    ),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !busy,
                 )
+                SwitchPreference(
+                    title = stringResource(R.string.capability_workspace_search_subfolders),
+                    summary = stringResource(R.string.capability_workspace_search_scope),
+                    checked = searchSubfolders,
+                    onCheckedChange = { searchSubfolders = it },
+                    enabled = !busy,
+                )
+                if (searchSubfolders) {
+                    SwitchPreference(
+                        title = stringResource(R.string.capability_workspace_search_contents),
+                        summary = stringResource(R.string.capability_workspace_search_contents_summary),
+                        checked = searchContents,
+                        onCheckedChange = { searchContents = it },
+                        enabled = !busy,
+                    )
+                }
+                if (deepSearch) {
+                    BasicComponent(
+                        title = when (val state = searchState) {
+                            WorkspaceSearchState.Loading -> stringResource(R.string.capability_workspace_search_running)
+                            WorkspaceSearchState.Cancelled -> stringResource(R.string.capability_workspace_search_cancelled)
+                            WorkspaceSearchState.Failed -> stringResource(R.string.capability_workspace_failed)
+                            is WorkspaceSearchState.Complete -> stringResource(
+                                R.string.capability_workspace_search_count, state.result.hits.size, state.result.visited,
+                            )
+                        },
+                        summary = searchResult?.let { result ->
+                            when {
+                                result.limited -> stringResource(R.string.capability_workspace_search_limited, result.skipped)
+                                result.skipped > 0 -> stringResource(R.string.capability_workspace_search_skipped, result.skipped)
+                                else -> null
+                            }
+                        },
+                        endActions = {
+                            if (searchState == WorkspaceSearchState.Loading) IconButton(onClick = {
+                                searchState = WorkspaceSearchState.Cancelled
+                                searchJob?.cancel()
+                            }) {
+                                Icon(Icons.Rounded.Close, contentDescription = stringResource(R.string.action_cancel))
+                            }
+                        },
+                    )
+                }
             }
         }
         item(key = "actions") {
@@ -343,7 +466,6 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
         item(key = "path") {
             SmallTitle(if (path.isBlank()) stringResource(R.string.capability_workspace_files) else path)
         }
-        val currentEntries = entries
         val hasParent = path.isNotBlank()
         if (hasParent) {
             item(key = "parent") {
@@ -367,6 +489,17 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
             }
         }
         when {
+            deepSearch && (searchState == WorkspaceSearchState.Cancelled || searchState == WorkspaceSearchState.Failed) ->
+                item(key = "search-stopped") {
+                    ListEmptyState(
+                        title = stringResource(
+                            if (searchState == WorkspaceSearchState.Cancelled) R.string.capability_workspace_search_cancelled
+                            else R.string.capability_workspace_failed,
+                        ),
+                        summary = stringResource(R.string.capability_workspace_search_restart),
+                        icon = Icons.Rounded.SearchOff,
+                    )
+                }
             currentEntries == null -> item(key = "loading") {
                 Box(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
@@ -391,7 +524,12 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                 ) {
                     ArrowPreference(
                         title = entry.name,
-                        summary = if (entry.directory) {
+                        summary = if (deepSearch) {
+                            val hit = searchHits[entry.path]
+                            if (hit?.snippet != null) stringResource(
+                                R.string.capability_workspace_search_hit, entry.path, hit.line ?: 1, hit.snippet,
+                            ) else entry.path
+                        } else if (entry.directory) {
                             stringResource(R.string.capability_workspace_directory)
                         } else {
                             stringResource(
@@ -437,9 +575,18 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
             entry = entry,
             onDismiss = { selectedEntry = null },
             onPreview = { previewTarget = entry },
+            onOpenParent = if (deepSearch) ({
+                searchText = ""
+                path = entry.path.substringBeforeLast('/', "")
+            }) else null,
             onExport = {
-                pendingExport = entry.path
-                exportLauncher.launch(entry.name)
+                if (entry.directory) {
+                    pendingFolderExport = entry.path
+                    folderExportLauncher.launch("${entry.name}.zip")
+                } else {
+                    pendingExport = entry.path
+                    exportLauncher.launch(entry.name)
+                }
             },
             onShare = {
                 scope.launch {
@@ -555,6 +702,7 @@ private fun WorkspaceActionDialog(
     entry: WorkspaceEntry,
     onDismiss: () -> Unit,
     onPreview: () -> Unit,
+    onOpenParent: (() -> Unit)?,
     onExport: () -> Unit,
     onShare: () -> Unit,
     onRename: () -> Unit,
@@ -575,10 +723,21 @@ private fun WorkspaceActionDialog(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
+            if (onOpenParent != null) WorkspaceActionRow(
+                stringResource(R.string.capability_workspace_open_parent), Icons.Rounded.FolderOpen, onDismiss, onOpenParent,
+            )
             if (!entry.directory) {
                 WorkspaceActionRow(stringResource(R.string.capability_workspace_preview), Icons.Rounded.Visibility, onDismiss, onPreview)
                 WorkspaceActionRow(stringResource(R.string.capability_workspace_export), Icons.AutoMirrored.Rounded.InsertDriveFile, onDismiss, onExport)
                 WorkspaceActionRow(stringResource(R.string.capability_workspace_share), Icons.Rounded.Share, onDismiss, onShare)
+            } else {
+                WorkspaceActionRow(stringResource(R.string.capability_workspace_export_folder), Icons.Rounded.FolderOpen, onDismiss, onExport)
+                Text(
+                    stringResource(R.string.capability_workspace_export_folder_summary),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
             }
             WorkspaceActionRow(stringResource(R.string.action_rename), Icons.Rounded.Edit, onDismiss, onRename)
             WorkspaceActionRow(stringResource(R.string.capability_workspace_copy), Icons.Rounded.ContentCopy, onDismiss, onCopy)
@@ -762,6 +921,9 @@ private fun WorkspaceSortRow(label: String, selected: Boolean, onClick: () -> Un
 }
 
 private fun workspaceErrorMessage(resources: Resources, error: Throwable): String = when {
+    error.message == "WORKSPACE_ARCHIVE_LIMIT" -> resources.getString(R.string.capability_workspace_export_folder_limit)
+    error.message == "WORKSPACE_LINK_UNSUPPORTED" -> resources.getString(R.string.capability_workspace_export_folder_link)
+    error.message == "WORKSPACE_FILE_CHANGED" -> resources.getString(R.string.capability_workspace_file_changed)
     error is FileToolException && error.code == "DESTINATION_EXISTS" ->
         resources.getString(R.string.capability_workspace_conflict)
     error.message == "WORKSPACE_ROOT_PROTECTED" ->
@@ -775,6 +937,12 @@ private fun workspaceErrorMessage(resources: Resources, error: Throwable): Strin
 }
 
 private data class WorkspaceMessage(val text: String, val isError: Boolean)
+private sealed interface WorkspaceSearchState {
+    data object Loading : WorkspaceSearchState
+    data object Cancelled : WorkspaceSearchState
+    data object Failed : WorkspaceSearchState
+    data class Complete(val result: WorkspaceSearchResult) : WorkspaceSearchState
+}
 private data class WorkspaceClipboard(val entry: WorkspaceEntry, val move: Boolean)
 private enum class WorkspaceSortField { NAME, SIZE, KIND }
 

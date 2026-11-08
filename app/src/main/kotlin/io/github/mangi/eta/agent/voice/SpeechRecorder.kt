@@ -22,7 +22,7 @@ internal interface SpeechAudioCapture {
 }
 
 internal class SpeechRecorder : SpeechAudioCapture {
-    override val frames = Channel<ByteArray>(10)
+    override val frames = speechFrameChannel()
     private val finishing = AtomicBoolean(false)
     @Volatile private var recorder: AudioRecord? = null
 
@@ -84,15 +84,29 @@ internal class SpeechRecorder : SpeechAudioCapture {
     }
 }
 
-internal fun pcmToWav(pcm: ByteArray): ByteArray = ByteBuffer.allocate(44 + pcm.size)
-    .order(ByteOrder.LITTLE_ENDIAN).apply {
+/** PCM is memory-bounded by [SpeechRecorder.MAX_BYTES], so inference latency must not drop frames. */
+internal fun speechFrameChannel(): Channel<ByteArray> = Channel(Channel.UNLIMITED)
+
+internal fun pcmToWav(pcm: ByteArray, sampleRate: Int = SpeechRecorder.RATE): ByteArray {
+    require(sampleRate > 0) { "Sample rate must be positive" }
+    return ByteBuffer.allocate(44 + pcm.size)
+        .order(ByteOrder.LITTLE_ENDIAN).apply {
         put("RIFF".toByteArray()); putInt(36 + pcm.size); put("WAVEfmt ".toByteArray())
-        putInt(16); putShort(1); putShort(1); putInt(SpeechRecorder.RATE)
-        putInt(SpeechRecorder.RATE * 2); putShort(2); putShort(16)
+        putInt(16); putShort(1); putShort(1); putInt(sampleRate)
+        putInt(sampleRate * 2); putShort(2); putShort(16)
         put("data".toByteArray()); putInt(pcm.size); put(pcm)
-    }.array()
+        }.array()
+}
 
 internal suspend fun collectSpeechAudio(frames: kotlinx.coroutines.channels.ReceiveChannel<ByteArray>): ByteArray {
+    val pcm = collectSpeechPcm(frames)
+    return pcmToWav(pcm)
+}
+
+/** 本地语音适配器直接消费 16 kHz、16-bit、单声道 PCM。 */
+internal suspend fun collectSpeechPcm(
+    frames: kotlinx.coroutines.channels.ReceiveChannel<ByteArray>,
+): ByteArray {
     val out = ByteArrayOutputStream()
     for (frame in frames) {
         if (out.size() + frame.size > SpeechRecorder.MAX_BYTES) {
@@ -101,5 +115,5 @@ internal suspend fun collectSpeechAudio(frames: kotlinx.coroutines.channels.Rece
         out.write(frame)
     }
     if (out.size() == 0) throw SpeechFailure(SpeechErrorCode.NO_SPEECH, "没有录到语音，请重试")
-    return pcmToWav(out.toByteArray())
+    return out.toByteArray()
 }

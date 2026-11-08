@@ -35,9 +35,10 @@ internal enum class EndpointKind {
 }
 
 internal enum class ProviderRequestPurpose {
-    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE;
+    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE, FALLBACK, MEMORY_EXTRACTION;
 
     val allowsTools: Boolean get() = this == CHAT
+    val acceptsSteering: Boolean get() = this == CHAT || this == FALLBACK
 }
 
 internal data class ProviderRequest(
@@ -61,7 +62,12 @@ internal data class ProviderRequest(
             connected.copy(hostedWebSearchEnabled = false, extraBodyJson = "", customBody = emptyList())
         } else connected
     }
-    val effectiveTools: JSONArray get() = if (purpose.allowsTools) tools else JSONArray()
+    val effectiveTools: JSONArray
+        get() = if (purpose.allowsTools && config.supportsTools) {
+            AgentToolSchema.sanitizeFunctionCatalog(tools)
+        } else {
+            JSONArray()
+        }
 }
 
 internal data class ProviderResponse(

@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -24,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -125,11 +127,31 @@ internal fun MeetingRoomsScreen(
                                 }
                             },
                             endActions = {
-                                Text(
-                                    text = stringResource(R.string.meeting_settings_parallel_value, room.participantCount),
-                                    style = MiuixTheme.textStyles.footnote2,
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = stringResource(R.string.meeting_settings_parallel_value, room.participantCount),
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            scope.launch {
+                                                MeetingRepository.setRoomPinned(context, room.id, room.pinnedAt == null)
+                                            }
+                                        },
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.PushPin,
+                                            contentDescription = stringResource(
+                                                if (room.pinnedAt == null) R.string.meeting_room_pin else R.string.meeting_room_unpin,
+                                            ),
+                                            modifier = Modifier.size(18.dp),
+                                            tint = if (room.pinnedAt == null) {
+                                                MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                            } else MiuixTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
                             },
                             onClick = { onOpenRoom(room.id) },
                         )
@@ -182,6 +204,8 @@ internal fun MeetingRoomCreateDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val createFailedMessage by rememberUpdatedState(stringResource(R.string.meeting_room_create_failed))
+    val invalidDraftMessage = stringResource(R.string.meeting_room_invalid_draft)
     var title by rememberSaveable { mutableStateOf("") }
     var options by remember { mutableStateOf<MeetingRoomCreationOptions?>(null) }
     var hostProfile by rememberSaveable { mutableStateOf("") }
@@ -203,7 +227,7 @@ internal fun MeetingRoomCreateDialog(
             }
             .onFailure { throwable ->
                 loading = false
-                error = throwable.message ?: context.getString(R.string.meeting_room_create_failed)
+                error = throwable.message ?: createFailedMessage
             }
     }
 
@@ -299,7 +323,7 @@ internal fun MeetingRoomCreateDialog(
                         modelOverrides = modelOverrides,
                     )
                     if (!draft.validate()) {
-                        error = context.getString(R.string.meeting_room_invalid_draft)
+                        error = invalidDraftMessage
                     } else {
                         scope.launch {
                             creating = true
@@ -309,7 +333,7 @@ internal fun MeetingRoomCreateDialog(
                             }.onSuccess(onCreated)
                                 .onFailure { throwable ->
                                     error = throwable.message
-                                        ?: context.getString(R.string.meeting_room_create_failed)
+                                        ?: createFailedMessage
                                     creating = false
                                 }
                         }

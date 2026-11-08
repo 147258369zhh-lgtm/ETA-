@@ -14,8 +14,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ConversationExtensionEntity::class,
         ConversationArchiveEventEntity::class,
         ConversationArchiveSettingsEntity::class,
+        io.github.mangi.eta.data.db.BranchSetupReceiptEntity::class,
     ],
-    version = 2,
+    version = 5,
     exportSchema = false,
 )
 internal abstract class ConversationExtensionDatabase : RoomDatabase() {
@@ -34,7 +35,7 @@ internal abstract class ConversationExtensionDatabase : RoomDatabase() {
                     ConversationExtensionDatabase::class.java,
                     DATABASE_NAME,
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { instance = it }
             }
@@ -82,3 +83,19 @@ internal val MIGRATION_1_2 = object : Migration(1, 2) {
         )
     }
 }
+
+internal val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE conversation_folders ADD COLUMN parent_id TEXT")
+        database.execSQL("DROP INDEX IF EXISTS index_conversation_folders_name")
+        database.execSQL("CREATE UNIQUE INDEX index_conversation_folders_parent_id_name ON conversation_folders(parent_id, name)")
+    }
+}
+
+internal val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE conversation_extensions ADD COLUMN context_window_override INTEGER")
+    }
+}
+
+internal val MIGRATION_4_5 = Migration(4, 5) { io.github.mangi.eta.data.db.createBranchSetupReceipts(it) }

@@ -6,12 +6,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -66,6 +68,7 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
@@ -90,6 +93,12 @@ internal fun ModelProviderDetailScreen(
                 id = "",
                 name = "",
                 baseUrl = "",
+                endpointMode = OpenAiEndpointMode.CHAT_COMPLETIONS,
+            )
+            NewProviderType.LocalRuntime -> CustomProviderSetting(
+                id = "",
+                name = "本地模型服务",
+                baseUrl = "http://127.0.0.1:11434/v1",
                 endpointMode = OpenAiEndpointMode.CHAT_COMPLETIONS,
             )
             NewProviderType.Anthropic -> AnthropicProviderSetting(
@@ -132,6 +141,11 @@ internal fun ModelProviderDetailScreen(
     val initial = provider ?: draft!!
     val isNew = provider == null
     var currentTab by remember { mutableIntStateOf(0) }
+    LaunchedEffect(provider?.id, createdId, providerId) {
+        if (providerId == null && createdId != null && provider?.id == createdId) {
+            currentTab = 1
+        }
+    }
     var configDraft by rememberSaveable(
         initial.id,
         stateSaver = ProviderConfigDraftSaver,
@@ -147,6 +161,12 @@ internal fun ModelProviderDetailScreen(
                 .horizontalCutoutPadding()
                 .padding(top = paddingValues.calculateTopPadding()),
         ) {
+            if (!isNew) {
+                ProviderDetailStatusCard(
+                    provider = initial,
+                    modifier = Modifier.padding(horizontal = sidePadding + 12.dp, vertical = 6.dp),
+                )
+            }
             if (!isNew) {
                 TabRow(
                     tabs = listOf(context.getString(R.string.page_configuration_d7d7ce), context.getString(R.string.page_model_98fd0c)),
@@ -181,6 +201,46 @@ internal fun ModelProviderDetailScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ProviderDetailStatusCard(
+    provider: ProviderSetting,
+    modifier: Modifier = Modifier,
+) {
+    Card(modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .squircleSurface(MiuixTheme.colorScheme.secondaryContainer, 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                ProviderIcon(provider)
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = if (provider.isEnabled) "连接已启用" else "连接已停用",
+                    style = MiuixTheme.textStyles.body1,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = provider.baseUrl,
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                )
+            }
+            TagChip(
+                text = if (provider.isEnabled) "可用" else "停用",
+                tone = if (provider.isEnabled) TagChipTone.Emphasized else TagChipTone.Normal,
+            )
         }
     }
 }

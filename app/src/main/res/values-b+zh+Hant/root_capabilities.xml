@@ -49,6 +49,11 @@
     <string name="capability_workspace_summary">匯入、匯出與目錄存取</string>
     <string name="capability_workspace_private">私有工作區</string>
     <string name="capability_workspace_private_summary">終端與一般 Linux 環境的預設檔案目錄，無需儲存空間權限</string>
+    <string name="capability_workspace_artifacts">最近任務檔案</string>
+    <string name="capability_workspace_artifacts_summary">顯示最近執行產生且已驗證的檔案，點擊可開啟所在資料夾。</string>
+    <string name="capability_workspace_artifact_verified">已驗證</string>
+    <string name="capability_workspace_artifact_pending">待驗證</string>
+    <string name="capability_workspace_artifact_failed">失敗</string>
     <string name="capability_workspace_import">匯入檔案</string>
     <string name="capability_workspace_public">公共目錄存取</string>
     <string name="capability_workspace_public_summary">在系統設定中允許存取所有檔案後，可使用共用儲存空間中的目錄</string>

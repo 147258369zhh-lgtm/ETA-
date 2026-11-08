@@ -1,6 +1,9 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -10,6 +13,7 @@ internal class AgentContextCompactor(
     private val provider: AgentProviderClient,
     private val controller: AgentRunController,
     private val roleplay: Boolean = false,
+    private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
 ) {
     var lastDemotedToolResults: Int = 0
         private set
@@ -18,6 +22,7 @@ internal class AgentContextCompactor(
         messages: JSONArray,
         systemCount: Int,
         sensitiveIds: Set<String>,
+        selection: IntRange? = null,
     ): JSONArray {
         controller.throwIfCancelled()
         if (SignedToolContext.hasPendingResponse(messages)) {
@@ -25,13 +30,25 @@ internal class AgentContextCompactor(
         }
         val history = (systemCount until messages.length()).map { messages.getJSONObject(it) }
         val latestUser = history.indexOfLast {
-            it.optString("role") == "user" && !it.has("_eta_observation")
+            it.optString("role") == "user" && !it.has("_eta_observation") &&
+                !it.optBoolean(PROMPT_INJECTION_MARKER)
         }
-        // 最新用户请求及其后尚在进行的工具链必须可以继续；长任务允许压缩该请求之后的已完成批次。
-        val end = (history.size downTo 1).firstOrNull { canSplit(history, it) }
-            ?: throw failure("CONTEXT_NOT_COMPACTABLE", "没有可安全压缩的完整历史批次。")
-        val protectedUser = history.getOrNull(latestUser)?.takeIf { latestUser < end }
-        val source = JSONArray(history.take(end).filterNot { it === protectedUser })
+        val selected = if (selection == null) {
+            // 最新用户请求及其后尚在进行的工具链必须可以继续；长任务允许压缩该请求之前的已完成批次。
+            val automaticEnd = (history.size downTo 1).firstOrNull { canSplit(history, it) }
+                ?: throw failure("CONTEXT_NOT_COMPACTABLE", "没有可安全压缩的完整历史批次。")
+            ContextCompactionSelection.Range(systemCount, systemCount + automaticEnd)
+        } else {
+            runCatching { ContextCompactionSelection.resolve(messages, systemCount, selection) }
+                .getOrElse { throw failure("CONTEXT_RANGE_INVALID", it.message ?: "压缩范围不安全。") }
+        }
+        val start = selected.start - systemCount
+        val end = selected.endExclusive - systemCount
+        val protectedUser = if (selection == null) {
+            // 最新用户请求及其后尚在进行的工具链必须可以继续；长任务允许压缩该请求之后的已完成批次。
+            history.getOrNull(latestUser)?.takeIf { latestUser < end }
+        } else null
+        val source = JSONArray(history.subList(start, end).filterNot { it === protectedUser })
         val durable = AgentConversationCodec.transcript(source, 0, sensitiveIds)
         if (durable.isEmpty()) throw failure("CONTEXT_NOT_COMPACTABLE", "没有可压缩的历史内容。")
         val normalized = durable.map { message ->
@@ -48,7 +65,7 @@ internal class AgentContextCompactor(
         val demoted = ContextBudgetPolicy.demoteOversizedToolResults(normalized)
         lastDemotedToolResults = demoted.demotedCount
         val safe = demoted.messages
-        val summarizer = AgentContextSummarizer(config, provider, controller, roleplay)
+        val summarizer = AgentContextSummarizer(config, provider, controller, roleplay, metricsScope)
         val budget = ContextBudgetPolicy.forCompaction(config.knownContextWindow)
         val summary = summarizeInChunks(summarizer, safe, budget)
         val covered = safe.sumOf { it.compactedUserTurns + if (it.role == "user") 1 else 0 }
@@ -59,6 +76,9 @@ internal class AgentContextCompactor(
             .joinToString(", ")
         val result = JSONArray()
         for (index in 0 until systemCount) result.put(messages.getJSONObject(index))
+        history.take(start).forEach { result.put(GeminiEphemeralState.withoutState(
+            AnthropicEphemeralState.withoutContentBlocks(it),
+        )) }
         result.put(AgentConversationCodec.toJsonObject(AgentModelClient.ConversationMessage(
             role = "assistant",
             content = buildString {
@@ -97,8 +117,12 @@ internal class AgentContextCompactor(
         history: List<AgentModelClient.ConversationMessage>,
         budget: ContextBudget,
     ): String {
-        var summaries = ContextBudgetPolicy.chunk(history, budget.summaryInputTokens)
-            .map { chunk -> summarizer.summarize(chunk) }
+        val maxSummaryChars = AgentContextSummarizer.summaryCharLimit(config.knownContextWindow)
+        var summaries = summarizeChunks(
+            summarizer = summarizer,
+            chunks = ContextBudgetPolicy.chunk(history, budget.summaryInputTokens),
+            maxSummaryChars = maxSummaryChars,
+        )
         var level = 0
         while (
             summaries.size > 1 &&
@@ -114,20 +138,84 @@ internal class AgentContextCompactor(
             }
             val chunks = ContextBudgetPolicy.chunk(summaryMessages, budget.summaryInputTokens)
             if (chunks.size >= summaries.size) break
-            summaries = chunks.map { chunk -> summarizer.summarize(chunk) }
+            summaries = summarizeChunks(summarizer, chunks, maxSummaryChars)
             level += 1
         }
         return summaries.joinToString(separator = "\n\n")
     }
 
+    private fun summarizeChunks(
+        summarizer: AgentContextSummarizer,
+        chunks: List<List<AgentModelClient.ConversationMessage>>,
+        maxSummaryChars: Int,
+    ): List<String> {
+        if (chunks.isEmpty()) return emptyList()
+        if (chunks.size == 1) {
+            return listOf(summarizeChunkOrFallback(summarizer, chunks.single(), maxSummaryChars))
+        }
+        val executor = Executors.newFixedThreadPool(minOf(MAX_PARALLEL_SUMMARY_REQUESTS, chunks.size)) { work ->
+            Thread(work, "eta-context-summary").apply { isDaemon = true }
+        }
+        return try {
+            chunks.map { chunk ->
+                executor.submit<String> { summarizer.summarize(chunk) }
+            }.mapIndexed { index, future ->
+                try {
+                    future.get()
+                } catch (failure: ExecutionException) {
+                    controller.throwIfCancelled()
+                    localFallbackSummary(chunks[index], maxSummaryChars, failure.cause)
+                }
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    private fun summarizeChunkOrFallback(
+        summarizer: AgentContextSummarizer,
+        chunk: List<AgentModelClient.ConversationMessage>,
+        maxSummaryChars: Int,
+    ): String = try {
+        summarizer.summarize(chunk)
+    } catch (failure: Throwable) {
+        controller.throwIfCancelled()
+        localFallbackSummary(chunk, maxSummaryChars, failure)
+    }
+
+    private fun localFallbackSummary(
+        chunk: List<AgentModelClient.ConversationMessage>,
+        maxSummaryChars: Int,
+        failure: Throwable?,
+    ): String {
+        val fallbackBudget = (maxSummaryChars - LOCAL_FALLBACK_PREFIX.length).coerceAtLeast(128)
+        val body = buildString {
+            chunk.forEach { message ->
+                val content = message.content.trim()
+                if (content.isNotBlank()) append(message.role).append(": ").append(content).append('\n')
+            }
+        }.ifBlank { "此前历史仅保留结构性记录，没有可用正文。" }
+        val reason = if (failure is AgentModelFailure) failure.code else "SUMMARY_UNAVAILABLE"
+        return LOCAL_FALLBACK_PREFIX + "reason=$reason]\n" + AgentContextSummarizer.boundedSummary(
+            body,
+            fallbackBudget,
+        )
+    }
+
     companion object {
         private const val MAX_SUMMARY_SOURCE_REFERENCES = 24
         private const val MAX_SUMMARY_HIERARCHY_LEVELS = 4
+        private const val MAX_PARALLEL_SUMMARY_REQUESTS = 3
+        private const val LOCAL_FALLBACK_PREFIX =
+            "[本地回退摘要：模型分块摘要失败，已保留该分块首尾原文；"
 
         fun canSplit(history: List<JSONObject>, end: Int): Boolean {
             if (end <= 0 || end > history.size) return false
             val last = history[end - 1]
-            if (last.optString("role") == "user" || history.getOrNull(end)?.optString("role") == "tool") return false
+            if (
+                (last.optString("role") == "user" && !last.optBoolean(PROMPT_INJECTION_MARKER)) ||
+                history.getOrNull(end)?.optString("role") == "tool"
+            ) return false
             val open = linkedSetOf<String>()
             history.take(end).forEach { message ->
                 AgentConversationCodec.parseToolCalls(message).forEach { open += it.id }

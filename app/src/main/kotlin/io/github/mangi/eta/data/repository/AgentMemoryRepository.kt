@@ -61,8 +61,9 @@ internal class AgentMemoryException(
 /** 单一 MEMORY.md 的有界、原子文件存储。 */
 internal class AgentMemoryStore(
     rootDir: File,
+    directoryName: String = DIRECTORY_NAME,
 ) {
-    private val memoryDir = File(rootDir, DIRECTORY_NAME)
+    private val memoryDir = File(rootDir, directoryName)
     private val atomicFile = AtomicFile(File(memoryDir, FILE_NAME))
     private val lock = Any()
 
@@ -351,9 +352,13 @@ internal object AgentMemoryRepository {
     @Volatile
     private lateinit var store: AgentMemoryStore
 
+    private val scopedStores = java.util.concurrent.ConcurrentHashMap<String, AgentMemoryStore>()
+
     fun init(context: Context) {
         if (!::store.isInitialized) {
-            store = AgentMemoryStore(context.applicationContext.filesDir)
+            val root = context.applicationContext.filesDir
+            storeRootRef = root
+            store = AgentMemoryStore(root)
         }
     }
 
@@ -361,6 +366,8 @@ internal object AgentMemoryRepository {
         ensureInitialized()
         return store.snapshot()
     }
+
+    fun snapshot(scope: AgentMemoryScope): AgentMemorySnapshot = scopedStore(scope).snapshot()
 
     fun read(
         query: String? = null,
@@ -371,14 +378,61 @@ internal object AgentMemoryRepository {
         return store.read(query, startLine, maxChars)
     }
 
+    fun read(
+        scope: AgentMemoryScope,
+        query: String? = null,
+        startLine: Int = 1,
+        maxChars: Int = AgentMemoryStore.DEFAULT_READ_CHARS,
+    ): AgentMemoryReadResult = scopedStore(scope).read(query, startLine, maxChars)
+
     fun mutate(mutation: AgentMemoryMutation): AgentMemoryWriteResult {
         ensureInitialized()
         return store.mutate(mutation)
     }
 
+    fun mutate(scope: AgentMemoryScope, mutation: AgentMemoryMutation): AgentMemoryWriteResult =
+        scopedStore(scope).mutate(mutation)
+
     fun replaceAll(content: String): AgentMemorySnapshot {
         ensureInitialized()
         return store.replaceAll(content)
+    }
+
+    fun replaceAll(scope: AgentMemoryScope, content: String): AgentMemorySnapshot =
+        scopedStore(scope).replaceAll(content)
+
+    fun replaceAllIfRevision(scope: AgentMemoryScope, content: String, revision: String): AgentMemoryWriteResult =
+        scopedStore(scope).replaceAllIfRevision(content, revision)
+
+    fun clearScopedScopes() {
+        ensureInitialized()
+        scopedStores.clear()
+        File(storeRoot(), "memory/scopes").deleteRecursively()
+    }
+
+    fun listScopes(): List<AgentMemoryScope> {
+        ensureInitialized()
+        val root = File(storeRoot(), "memory/scopes")
+        if (!root.isDirectory) return emptyList()
+        return root.walkTopDown().filter { it.isFile && it.name == "MEMORY.md" }.mapNotNull { file ->
+            val relative = file.parentFile?.relativeToOrNull(root)?.path?.replace(File.separatorChar, '/') ?: return@mapNotNull null
+            val parts = relative.split('/').filter { it.isNotBlank() }
+            if (parts.size != 2) return@mapNotNull null
+            AgentMemoryScope.fromPath(parts[0], parts[1])
+        }.toList()
+    }
+
+    fun combinedSnapshot(scopes: List<AgentMemoryScope>): AgentMemorySnapshot {
+        ensureInitialized()
+        val distinct = scopes.distinctBy { it.key }
+        if (distinct.isEmpty()) return store.snapshot()
+        val pieces = distinct.mapNotNull { scope ->
+            val content = scopedStore(scope).snapshot().content.trim()
+            content.takeIf { it.isNotEmpty() }?.let { "<!-- eta-memory-scope:${scope.key} -->\n$it" }
+        }
+        val content = pieces.joinToString("\n\n")
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        return AgentMemorySnapshot(content, sha256(bytes), bytes.size, if (content.isEmpty()) 0 else content.split('\n').size)
     }
 
     fun enabledFlow(): Flow<Boolean> = SettingsDataStore.memoryEnabledFlow()
@@ -392,4 +446,22 @@ internal object AgentMemoryRepository {
             "AgentMemoryRepository.init(context) must be called in Application.onCreate()"
         }
     }
+
+    private fun scopedStore(scope: AgentMemoryScope): AgentMemoryStore {
+        ensureInitialized()
+        if (scope.type == AgentMemoryScopeType.GLOBAL) return store
+        val key = scope.key
+        return scopedStores.computeIfAbsent(key) {
+            val scopeDirectory = File(storeRoot(), "memory/scopes/${scope.type.path}/${scope.id}")
+            AgentMemoryStore(scopeDirectory.parentFile ?: storeRoot(), scopeDirectory.name)
+        }
+    }
+
+    private fun storeRoot(): File = storeRootRef
+
+    private fun sha256(bytes: ByteArray): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(bytes).joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+
+    @Volatile
+    private lateinit var storeRootRef: File
 }

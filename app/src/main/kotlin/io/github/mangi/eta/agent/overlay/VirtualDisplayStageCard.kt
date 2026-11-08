@@ -182,9 +182,11 @@ internal fun VirtualDisplayStageSection(
                         val downAt = SystemClock.uptimeMillis()
                         var lastPos = startPos
                         var dragged = false
+                        var multiTouch = false
 
                         do {
                             val event = awaitPointerEvent()
+                            if (event.changes.size > 1) multiTouch = true
                             val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
                             if (change != null) {
                                 lastPos = change.position
@@ -195,24 +197,27 @@ internal fun VirtualDisplayStageSection(
                             }
                         } while (event.changes.any { it.pressed })
 
-                        val w = size.width.toFloat().coerceAtLeast(1f)
-                        val h = size.height.toFloat().coerceAtLeast(1f)
+                        if (multiTouch) return@awaitEachGesture
+                        val viewport = io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayViewport.fit(size.width, size.height, snapshot.width, snapshot.height)
+                            ?: return@awaitEachGesture
+                        val start = viewport.toDisplay(startPos.x, startPos.y) ?: return@awaitEachGesture
+                        val end = viewport.toDisplay(lastPos.x, lastPos.y) ?: return@awaitEachGesture
                         if (!snapshot.userControlling && !isPaused) {
                             onTakeOver()
                         }
                         val elapsed = (SystemClock.uptimeMillis() - downAt).toInt()
                         if (dragged) {
                             onSwipeCanvas(
-                                (startPos.x / w).coerceIn(0f, 1f),
-                                (startPos.y / h).coerceIn(0f, 1f),
-                                (lastPos.x / w).coerceIn(0f, 1f),
-                                (lastPos.y / h).coerceIn(0f, 1f),
+                                start.x.toFloat() / (snapshot.width - 1).coerceAtLeast(1),
+                                start.y.toFloat() / (snapshot.height - 1).coerceAtLeast(1),
+                                end.x.toFloat() / (snapshot.width - 1).coerceAtLeast(1),
+                                end.y.toFloat() / (snapshot.height - 1).coerceAtLeast(1),
                                 elapsed.coerceIn(180, 900),
                             )
                         } else {
                             onTapCanvas(
-                                (lastPos.x / w).coerceIn(0f, 1f),
-                                (lastPos.y / h).coerceIn(0f, 1f),
+                                end.x.toFloat() / (snapshot.width - 1).coerceAtLeast(1),
+                                end.y.toFloat() / (snapshot.height - 1).coerceAtLeast(1),
                                 elapsed >= longPressTimeoutMs,
                             )
                         }
@@ -227,7 +232,7 @@ internal fun VirtualDisplayStageSection(
                     contentDescription = snapshot.appName.ifBlank {
                         stringResource(R.string.overlay_virtual_canvas_auto)
                     },
-                    contentScale = ContentScale.FillBounds,
+                    contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {

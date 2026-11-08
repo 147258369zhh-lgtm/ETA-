@@ -173,6 +173,16 @@ class ConversationMarkdownExporterTest {
     }
 
     @Test
+    fun accessibilityNoticeExportUsesLocalizedStatusInsteadOfWirePhase() {
+        val result = ConversationMarkdownExporter.export("Conversation",
+            listOf(SystemNoticeMessageUi("wait", SystemNoticeCode.AccessibilityWaiting, "restored")),
+            labels.copy(noticeAccessibility = "无障碍恢复", accessibilityPhases = mapOf("restored" to "已恢复，重新观察")))
+        assertTrue(result.contains("无障碍恢复"))
+        assertTrue(result.contains("已恢复，重新观察"))
+        assertFalse(result.contains("restored"))
+    }
+
+    @Test
     fun exportSanitizesMultilineTitle() {
         val result = ConversationMarkdownExporter.export(
             "第一行\n第二行",

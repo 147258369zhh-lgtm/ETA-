@@ -8,13 +8,15 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 /**
  * 在 GUI 工具执行前确认 Eta 无障碍服务已经真实连接。
  *
- * 持久保护、Secure Settings 写入与断连重绑均由 system_server 后端负责。这里不申请
- * Root，也不直接改系统设置；保护关闭或后端不可用时 fail closed。
+ * 优先使用用户开启的独立 Root 恢复；已有系统保护后端保留兼容。
+ * 读取与普通操作不会申请 Root，恢复失败时不执行屏幕动作。
  */
 object AgentAccessibilityKeeper {
     internal fun ensureEnabledForGuiOperation(context: Context): AccessibilityEnableResult {
         val startedAt = SystemClock.elapsedRealtime()
-        val result = ensureAvailable(
+        val result = if (!AgentAccessibilityService.isAvailable() && RootAccessibilityRecovery.canRecover(context) &&
+            !(EtaApp.serviceInstance != null && AccessibilityProtectionClient.isEnabled(context))
+        ) RootAccessibilityRecovery.recoverBlocking(context) else ensureAvailable(
             serviceAvailable = AgentAccessibilityService::isAvailable,
             protectionEnabled = { AccessibilityProtectionClient.isEnabled(context) },
             requestRecovery = {
@@ -23,6 +25,7 @@ object AgentAccessibilityKeeper {
             },
             awaitServiceBinding = ::awaitServiceBinding,
             protectionAvailable = { EtaApp.serviceInstance != null },
+            serviceConfigured = { AgentAccessibilityHealth.configured(context) == true },
         )
         val elapsedMs = SystemClock.elapsedRealtime() - startedAt
         if (result.available) {
@@ -47,14 +50,20 @@ object AgentAccessibilityKeeper {
         requestRecovery: () -> Boolean,
         awaitServiceBinding: () -> Boolean,
         protectionAvailable: () -> Boolean = { true },
+        serviceConfigured: () -> Boolean = { false },
     ): AccessibilityEnableResult {
         if (serviceAvailable()) {
             return AccessibilityEnableResult.available(recoveryRequested = false)
         }
         if (!protectionAvailable() || !protectionEnabled()) {
+            val disconnected = serviceConfigured()
             return AccessibilityEnableResult.failure(
-                code = "ACCESSIBILITY_UNAVAILABLE",
-                message = "Eta 无障碍服务未连接；请在系统设置中开启 Eta 无障碍服务",
+                code = if (disconnected) "ACCESSIBILITY_DISCONNECTED" else "ACCESSIBILITY_UNAVAILABLE",
+                message = if (disconnected) {
+                    "Eta 无障碍已启用但服务未连接；请在系统无障碍设置中重新开启，本次 GUI 操作未执行"
+                } else {
+                    "Eta 无障碍服务未连接；请在系统设置中开启 Eta 无障碍服务"
+                },
                 recoveryRequested = false,
             )
         }
@@ -77,6 +86,7 @@ object AgentAccessibilityKeeper {
 
     private fun awaitServiceBinding(): Boolean {
         repeat(SERVICE_BIND_ATTEMPTS) {
+            if (Thread.currentThread().isInterrupted) return false
             if (AgentAccessibilityService.isAvailable()) return true
             SystemClock.sleep(SERVICE_BIND_POLL_MS)
         }

@@ -199,6 +199,8 @@ class AnthropicMessagesProviderTest {
             assertEquals(1_050, last.contextInputTokens)
             assertEquals(100, last.usage.inputTokens)
             assertEquals(900, last.usage.cachedTokens)
+            assertEquals(50, last.usage.cacheWriteTokens)
+            assertEquals(io.github.mangi.eta.agent.runtime.AgentBillingTokens.ANTHROPIC, last.usage.billingBasis)
             assertEquals(42, last.usage.outputTokens)
         }
     }

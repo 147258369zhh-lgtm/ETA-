@@ -1,10 +1,23 @@
 package io.github.mangi.eta.ui.app
 
+import android.app.Application
 import android.content.Context
+import android.content.ComponentName
+import android.net.Uri
+import java.io.ByteArrayInputStream
+import java.util.concurrent.CountDownLatch
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.ConversationMessageEntity
+import io.github.mangi.eta.data.model.ConversationSubject
+import io.github.mangi.eta.data.repository.ConversationDraft
+import io.github.mangi.eta.data.repository.ConversationDraftRepository
+import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.repository.AgentMemoryRepository
+import io.github.mangi.eta.data.datastore.SettingsDataStore
+import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.ui.IncomingShareRequest
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
 import io.github.mangi.eta.ui.model.UserMessageUi
@@ -27,9 +40,10 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLooper
+import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36], qualifiers = "en-rUS")
+@Config(sdk = [36], application = Application::class, qualifiers = "en-rUS")
 class AgentAppStateConversationLoadingTest {
     private lateinit var context: Context
     private val job = SupervisorJob()
@@ -39,8 +53,18 @@ class AgentAppStateConversationLoadingTest {
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
         shadowOf(RuntimeEnvironment.getApplication()).declareActionUnbindable(AgentRuntimeWire.ACTION_BIND)
+        // This fixture exercises local stores, not Binder. Robolectric's default bind succeeds
+        // with a null ComponentName, which Room's optional metrics invalidation client rejects.
+        shadowOf(RuntimeEnvironment.getApplication()).declareComponentUnbindable(
+            ComponentName(context, "androidx.room.MultiInstanceInvalidationService"),
+        )
         EtaDatabase.closeForTests()
         context.deleteDatabase("eta.db")
+        // Keep startup migration/scheduler/metrics workers out of this local state fixture.
+        Prefs.initLocal(context)
+        SettingsDataStore.init(context)
+        ProviderRepository.init(context)
+        AgentMemoryRepository.init(context)
     }
 
     @After
@@ -309,6 +333,120 @@ class AgentAppStateConversationLoadingTest {
         assertEquals("run-a", runs.activeRunId("first"))
         awaitCondition { runs.observedRunIds == setOf("run-a") }
         state.completeRunForTest("run-a", "前台任务完成")
+    }
+
+    @Test
+    fun shareMergesTheLiveEditorInsteadOfTheStaleBusinessInputAndIsConsumedOnce() {
+        seed("first" to conversation("first", count = 0))
+        val state = AgentAppState(context, scope)
+        val store = ConversationDraftRepository.get(context)
+        val subject = ConversationSubject.chat("first")
+        store.registerActive(store.open(subject)) { ConversationDraft("typed locally") }.use {
+            state.acceptSharedContent(IncomingShareRequest(text = "incoming share"))
+            assertEquals("first", state.conversationPaneState.selectedConversationId)
+            assertEquals("typed locally\nincoming share", state.homeState.input)
+            val version = state.homeState.inputSyncVersion
+            // Equivalent to the mounted editor's explicit handoff before acknowledging the model.
+            runBlocking { store.save(store.open(subject), ConversationDraft(state.homeState.input)).await() }
+            state.consumeInputSync("first", version, state.homeState.input)
+            assertEquals("", state.homeState.input)
+            assertEquals("typed locally\nincoming share", runBlocking { store.load(store.open(subject)) }!!.text)
+        }
+    }
+
+    @Test
+    fun incomingShareWithoutARestoredEditorOpensAnotherChatAndKeepsTheUnseenDraft() {
+        seed("first" to conversation("first", count = 0))
+        val state = AgentAppState(context, scope)
+        val store = ConversationDraftRepository.get(context)
+        val subject = ConversationSubject.chat("first")
+        runBlocking { store.save(store.open(subject), ConversationDraft("unseen draft")).await() }
+        state.acceptSharedContent(IncomingShareRequest(text = "new share"))
+        assertTrue(state.conversationPaneState.selectedConversationId != "first")
+        assertEquals("new share", state.homeState.input)
+        assertEquals("unseen draft", runBlocking { store.load(store.open(subject)) }!!.text)
+    }
+
+    @Test
+    fun delayedInputAcknowledgementCannotClearANewerShareOrAnotherConversation() {
+        seed("first" to conversation("first", count = 0))
+        val state = AgentAppState(context, scope)
+        state.acceptSharedContent(IncomingShareRequest(text = "first share"))
+        val previousId = state.conversationPaneState.selectedConversationId
+        val previousVersion = state.homeState.inputSyncVersion
+        state.acceptSharedContent(IncomingShareRequest(text = "second share"))
+        val currentId = state.conversationPaneState.selectedConversationId
+        state.consumeInputSync(previousId, previousVersion, "first share")
+        state.consumeInputSync(currentId, state.homeState.inputSyncVersion - 1, "second share")
+        state.consumeInputSync(currentId, state.homeState.inputSyncVersion, "wrong text")
+        assertEquals("second share", state.homeState.input)
+        state.consumeInputSync(currentId, state.homeState.inputSyncVersion, "second share")
+        assertEquals("", state.homeState.input)
+    }
+
+    @Test
+    fun rejectedBlankInputHasNoReceiptButAQueuedMessageIsAcceptedByItsOwningRun() {
+        seed("first" to conversation("first"))
+        val state = AgentAppState(context, scope)
+        assertFalse(state.sendCurrentMessage(" \n "))
+        state.registerRunForTest("running", "first")
+        assertTrue(state.sendCurrentMessage("next task"))
+        assertEquals(listOf("next task"), state.homeState.queuedMessages.map { it.content })
+        state.stopCurrentRun()
+        state.completeRunForTest("running", "stopped")
+    }
+
+    @Test
+    fun deletingAChatInvalidatesItsDraftAfterCommitAndKeepsTheSameIdMeetingDraft() {
+        seed("first" to conversation("first"), "second" to conversation("second"))
+        val state = AgentAppState(context, scope)
+        val store = ConversationDraftRepository.get(context)
+        val old = store.open(ConversationSubject.chat("first"))
+        val other = store.open(ConversationSubject.meeting("first"))
+        runBlocking {
+            store.save(old, ConversationDraft("deleted chat")).await()
+            store.save(other, ConversationDraft("meeting remains")).await()
+        }
+        store.registerActive(old) { ConversationDraft("mounted editor") }.use {
+            state.deleteConversation("first")
+            awaitCondition { store.activeDraft(old.subject) == null }
+            runBlocking { store.save(old, ConversationDraft("late disposal")).await(); store.flush() }
+            assertEquals(null, runBlocking { store.load(store.open(old.subject)) })
+            assertEquals("meeting remains", runBlocking { store.load(other) }!!.text)
+        }
+    }
+
+    @Test
+    fun slowImageResultIsDiscardedEvenWhenTheUserSwitchesAwayAndBackToTheSameChat() {
+        seed("first" to conversation("first"), "second" to conversation("second"))
+        val state = AgentAppState(context, scope)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val uri = Uri.parse("content://draft-image/slow.png")
+        val png = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jOioAAAAASUVORK5CYII=")
+        shadowOf(context.contentResolver).registerInputStream(uri, object : ByteArrayInputStream(png) {
+            override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                return super.read(bytes, offset, length)
+            }
+        })
+        try {
+            state.attachImage(uri.toString())
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            state.selectConversation("second")
+            awaitLoaded(state, "second")
+            state.selectConversation("first")
+            awaitLoaded(state, "first")
+            release.countDown()
+            awaitCondition {
+                ShadowToast.getTextOfLatestToast() == context.getString(io.github.mangi.eta.R.string.state_ui_conversation_switched_selected_path_not_added_5bf91e)
+            }
+            assertTrue(state.homeState.pendingImages.isEmpty())
+            state.selectConversation("second")
+            awaitLoaded(state, "second")
+            assertTrue(state.homeState.pendingImages.isEmpty())
+        } finally { release.countDown() }
     }
 
     private fun AgentAppState.runStoreForTest(): AgentRunStore =

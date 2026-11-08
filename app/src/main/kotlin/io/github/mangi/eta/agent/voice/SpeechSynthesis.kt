@@ -13,6 +13,7 @@ import org.json.JSONObject
 internal suspend fun synthesizeSpeech(settings: SpeechSettings, credentials: SpeechCredentials,
     text: String, onAudio: (ByteArray) -> Unit) = withTimeout(90_000) {
     when (settings.tts) {
+        TtsProvider.LOCAL -> return@withTimeout LocalSpeechRuntime.synthesize(settings, text, onAudio)
         TtsProvider.GEMINI -> return@withTimeout synthesizeGemini(settings.geminiTts, credentials.geminiTts, text, onAudio)
         TtsProvider.MINIMAX -> return@withTimeout synthesizeMiniMax(settings.minimaxTts, credentials.minimaxTts, text, onAudio)
         TtsProvider.NONE -> throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "请先选择语音播报服务")

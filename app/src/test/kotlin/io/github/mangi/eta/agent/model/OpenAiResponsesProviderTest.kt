@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.JsonPrimitive
 import org.json.JSONArray
@@ -24,6 +25,51 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiResponsesProviderTest {
+    @Test
+    fun emptyStreamRetriesOnceAsNonStreamingJson() {
+        val attempts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newSingleThreadExecutor()
+        server.createContext("/responses") { exchange ->
+            exchange.requestBody.close()
+            if (attempts.getAndIncrement() == 0) {
+                exchange.responseHeaders.add("Content-Type", "text/event-stream")
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.close()
+            } else {
+                val body = JSONObject()
+                    .put("object", "response")
+                    .put("status", "completed")
+                    .put("output", JSONArray().put(messageItem("msg_json", "Responses 非流式回复")))
+                    .put(
+                        "usage",
+                        JSONObject().put("input_tokens", 9).put("output_tokens", 5).put("total_tokens", 14),
+                    )
+                    .toString()
+                    .toByteArray(Charsets.UTF_8)
+                exchange.responseHeaders.add("Content-Type", "application/json")
+                exchange.sendResponseHeaders(200, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            }
+        }
+        server.start()
+        try {
+            val result = OpenAiResponsesProvider.complete(
+                ProviderRequest(
+                    config("http://127.0.0.1:${server.address.port}"),
+                    JSONArray().put(JSONObject().put("role", "user").put("content", "测试兼容")),
+                    JSONArray(),
+                ),
+                AgentRunController(),
+            )
+
+            assertEquals("Responses 非流式回复", result.assistantMessage.getString("content"))
+            assertEquals(2, attempts.get())
+        } finally {
+            server.stop(0)
+        }
+    }
+
     @Test
     fun hostedSearchDeclarationExcludesSameNamedFunctionAndPreservesOtherTools() {
         val functions = JSONArray().also { AgentWebToolCatalog.appendTo(it) }

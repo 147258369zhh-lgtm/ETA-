@@ -13,7 +13,7 @@ import okhttp3.Request
 import org.json.JSONObject
 
 internal fun supportsSpeechSession(provider: TtsProvider): Boolean = when (provider) {
-    TtsProvider.QWEN, TtsProvider.DOUBAO -> true
+    TtsProvider.QWEN, TtsProvider.DOUBAO, TtsProvider.LOCAL -> true
     TtsProvider.NONE, TtsProvider.GEMINI, TtsProvider.MINIMAX -> false
 }
 
@@ -29,6 +29,7 @@ internal suspend fun streamSpeech(
     onAudio: (ByteArray) -> Unit,
 ) = withTimeout(STREAM_TIMEOUT_MS) {
     when (settings.tts) {
+        TtsProvider.LOCAL -> LocalSpeechRuntime.synthesize(settings, chunks.joinToString(""), onAudio)
         TtsProvider.QWEN -> streamQwen(settings, credentials, chunks, onAudio)
         TtsProvider.DOUBAO -> streamDoubao(settings, credentials, chunks, onAudio)
         TtsProvider.NONE -> throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "请先选择语音播报服务")

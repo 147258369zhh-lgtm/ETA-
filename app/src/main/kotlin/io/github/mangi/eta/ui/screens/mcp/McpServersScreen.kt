@@ -1,6 +1,10 @@
 package io.github.mangi.eta.ui.screens.mcp
 
+import android.content.Context
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,7 +17,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,18 +37,24 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.mcp.McpServerManager
 import io.github.mangi.eta.agent.mcp.validateMcpEndpoint
+import io.github.mangi.eta.agent.capability.McpPortableCodec
+import io.github.mangi.eta.agent.capability.McpPortableConfigService
 import io.github.mangi.eta.data.model.McpAuthorizationType
 import io.github.mangi.eta.data.model.McpProtocolMode
 import io.github.mangi.eta.data.model.McpServerSetting
 import io.github.mangi.eta.data.model.McpToolDefinition
 import io.github.mangi.eta.data.repository.McpServerRepository
+import io.github.mangi.eta.data.repository.McpCredentialStatus
 import io.github.mangi.eta.ui.components.ListEmptyState
+import io.github.mangi.eta.ui.components.DetailListRow
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.navigation.AppRoute
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -55,6 +68,7 @@ import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
+import org.json.JSONObject
 
 @Composable
 internal fun McpServersScreen(
@@ -71,12 +85,69 @@ internal fun McpServersScreen(
     var token by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val portableService = remember(context.applicationContext) {
+        McpPortableConfigService(context.applicationContext)
+    }
+    var batchWorking by remember { mutableStateOf(false) }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null || batchWorking) return@rememberLauncherForActivityResult
+        scope.launch {
+            batchWorking = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    portableService.importJson(readBoundedMcpConfig(context, uri))
+                }
+            }
+            batchWorking = false
+            result.onSuccess { imported ->
+                val credentialHint = if (imported.credentialRequired > 0) {
+                    "；${imported.credentialRequired} 个连接需要配置令牌后才能使用"
+                } else ""
+                val duplicateHint = if (imported.skippedDuplicates > 0) {
+                    "；跳过 ${imported.skippedDuplicates} 个重复地址"
+                } else ""
+                Toast.makeText(
+                    context,
+                    "已导入 ${imported.imported} 个 MCP 连接$credentialHint$duplicateHint",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }.onFailure {
+                Toast.makeText(context, it.message ?: "MCP 连接导入失败", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null || batchWorking) return@rememberLauncherForActivityResult
+        scope.launch {
+            batchWorking = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val json = portableService.exportJson()
+                    val output = context.contentResolver.openOutputStream(uri)
+                        ?: error("无法写入所选文件")
+                    output.bufferedWriter(Charsets.UTF_8).use { it.write(json) }
+                    servers.size
+                }
+            }
+            batchWorking = false
+            Toast.makeText(
+                context,
+                result.fold(
+                    onSuccess = { "已导出 $it 个 MCP 连接，未包含任何令牌" },
+                    onFailure = { it.message ?: "MCP 连接导出失败" },
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
 
     MiuixScaffoldPage(
         title = stringResource(R.string.route_mcp_servers),
         onBack = onBack,
         actions = {
-            IconButton(onClick = { showAdd = true }) {
+            IconButton(enabled = !batchWorking, onClick = { showAdd = true }) {
                 Icon(
                     imageVector = Icons.Rounded.Add,
                     contentDescription = stringResource(R.string.mcp_add_server),
@@ -116,6 +187,35 @@ internal fun McpServersScreen(
                         )
                     }
                 }
+            }
+        }
+        item(key = "portable") {
+            SmallTitle("批量迁移")
+            Card(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .padding(bottom = 12.dp),
+            ) {
+                DetailListRow(
+                    title = "导入 MCP 连接",
+                    subtitle = "读取 eta-mcp-connections/v1 JSON；令牌和本机凭据不会随文件导入",
+                    icon = Icons.Rounded.Upload,
+                    value = if (batchWorking) "处理中" else "选择 JSON",
+                    enabled = !batchWorking,
+                    onClick = {
+                        importLauncher.launch(
+                            arrayOf("application/json", "text/plain", "application/octet-stream"),
+                        )
+                    },
+                )
+                DetailListRow(
+                    title = "导出 MCP 连接",
+                    subtitle = "仅导出名称、地址、协议、认证类型和工具偏好，不导出 Bearer Token",
+                    icon = Icons.Rounded.Download,
+                    value = if (servers.isEmpty()) "暂无连接" else "${servers.size} 个连接",
+                    enabled = servers.isNotEmpty() && !batchWorking,
+                    onClick = { exportLauncher.launch("eta-mcp-connections.json") },
+                )
             }
         }
     }
@@ -227,10 +327,28 @@ internal fun McpServersScreen(
     }
 }
 
+private fun readBoundedMcpConfig(context: Context, uri: Uri): String {
+    val input = context.contentResolver.openInputStream(uri) ?: error("无法读取所选文件")
+    input.use { stream ->
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = stream.read(buffer)
+            if (count < 0) break
+            if (output.size() + count > McpPortableCodec.MAX_BYTES) {
+                error("MCP 配置文件超过 256 KiB 上限")
+            }
+            output.write(buffer, 0, count)
+        }
+        return output.toString(Charsets.UTF_8.name())
+    }
+}
+
 @Composable
 internal fun McpServerDetailScreen(
     serverId: String,
     onBack: () -> Unit,
+    onOpenCatalog: () -> Unit,
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
@@ -242,6 +360,20 @@ internal fun McpServerDetailScreen(
     var showDelete by remember { mutableStateOf(false) }
     var showToken by remember { mutableStateOf(false) }
     var token by remember { mutableStateOf("") }
+    var tokenError by remember(serverId) { mutableStateOf<String?>(null) }
+    var credentialStatus by remember(serverId) { mutableStateOf<McpCredentialStatus?>(null) }
+    var debugTool by remember(serverId) { mutableStateOf<McpToolDefinition?>(null) }
+    var debugArgs by remember(serverId) { mutableStateOf("{}") }
+    var debugResult by remember(serverId) { mutableStateOf<String?>(null) }
+    var debugWorking by remember { mutableStateOf(false) }
+
+    LaunchedEffect(server, working) {
+        if (working) return@LaunchedEffect
+        credentialStatus = null
+        if (server?.authorizationType == McpAuthorizationType.BEARER) {
+            credentialStatus = withContext(Dispatchers.IO) { McpServerRepository.credentialStatus(serverId) }
+        }
+    }
 
     MiuixScaffoldPage(
         title = server?.name ?: stringResource(R.string.route_mcp_server_detail),
@@ -300,13 +432,20 @@ internal fun McpServerDetailScreen(
                 ArrowPreference(
                     title = stringResource(R.string.mcp_update_token),
                     summary = stringResource(
-                        if (server.authorizationType == McpAuthorizationType.BEARER) {
-                            R.string.mcp_token_configured
-                        } else {
-                            R.string.mcp_no_authentication
+                        when {
+                            server.authorizationType == McpAuthorizationType.NONE -> R.string.mcp_no_authentication
+                            credentialStatus == McpCredentialStatus.UNAVAILABLE -> R.string.mcp_credentials_unavailable
+                            credentialStatus == McpCredentialStatus.MISSING -> R.string.mcp_credentials_missing
+                            credentialStatus == McpCredentialStatus.AVAILABLE -> R.string.mcp_token_configured
+                            else -> R.string.mcp_credentials_checking
                         }
                     ),
-                    onClick = { showToken = true },
+                    onClick = { if (!working) { tokenError = null; showToken = true } },
+                )
+                ArrowPreference(
+                    title = stringResource(R.string.mcp_browse_resources),
+                    summary = stringResource(R.string.mcp_catalog_not_loaded),
+                    onClick = onOpenCatalog,
                 )
             }
         }
@@ -326,6 +465,12 @@ internal fun McpServerDetailScreen(
                 } else {
                     server.tools.forEach { tool ->
                         val checked = tool.name in server.enabledToolNames
+                        ArrowPreference(
+                            title = stringResource(R.string.mcp_debug_tool),
+                            summary = tool.name,
+                            enabled = checked && !working,
+                            onClick = { debugTool = tool; debugArgs = "{}"; debugResult = null },
+                        )
                         SwitchPreference(
                             title = tool.title.ifBlank { tool.name },
                             summary = toolSummary(tool),
@@ -381,46 +526,117 @@ internal fun McpServerDetailScreen(
         }
     }
 
+    debugTool?.let { tool ->
+        WindowDialog(
+            show = true,
+            title = stringResource(R.string.mcp_debug_tool),
+            summary = tool.name,
+            onDismissRequest = { if (!debugWorking) debugTool = null },
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                TextField(
+                    value = debugArgs,
+                    onValueChange = { debugArgs = it.take(64_000) },
+                    label = stringResource(R.string.mcp_debug_arguments),
+                    enabled = !debugWorking,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
+                )
+                debugResult?.let { result ->
+                    Text(result, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                }
+                MiuixDialogActions(
+                    confirmText = stringResource(if (debugWorking) R.string.mcp_debug_running else R.string.mcp_debug_call),
+                    confirmEnabled = !debugWorking,
+                    onCancel = { if (!debugWorking) debugTool = null },
+                    onConfirm = {
+                        val current = debugTool ?: return@MiuixDialogActions
+                        val parsed = runCatching { JSONObject(debugArgs) }.getOrElse {
+                            debugResult = resources.getString(R.string.mcp_debug_invalid_json)
+                            return@MiuixDialogActions
+                        }
+                        scope.launch {
+                            debugWorking = true
+                            debugResult = runCatching {
+                                withContext(Dispatchers.IO) { McpServerManager.callTool(serverId, current.name, parsed) }
+                            }.fold(
+                                onSuccess = { it.toString(2).take(8_000) },
+                                onFailure = { it.message ?: resources.getString(R.string.mcp_debug_failed) },
+                            )
+                            debugWorking = false
+                        }
+                    },
+                )
+            }
+        }
+    }
+
     WindowDialog(
         show = showToken,
         title = stringResource(R.string.mcp_update_token),
         summary = stringResource(R.string.mcp_update_token_summary),
-        onDismissRequest = { showToken = false },
+        onDismissRequest = { if (!working) { showToken = false; token = ""; tokenError = null } },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            TextField(
-                value = token,
-                onValueChange = { token = it },
-                label = stringResource(R.string.mcp_bearer_token),
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-            )
+        Column(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                TextField(
+                    value = token,
+                    onValueChange = { token = it },
+                    label = stringResource(R.string.mcp_bearer_token),
+                    singleLine = true,
+                    enabled = !working,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                tokenError?.let { message ->
+                    Text(text = message, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.error)
+                }
+            }
             MiuixDialogActions(
-                confirmText = stringResource(R.string.action_save),
-                onCancel = { showToken = false },
+                modifier = Modifier.padding(top = 16.dp),
+                confirmText = stringResource(if (working) R.string.page_saving_d70d42 else R.string.action_save),
+                cancelEnabled = !working,
+                confirmEnabled = !working,
+                onCancel = { if (!working) { showToken = false; token = ""; tokenError = null } },
                 onConfirm = {
                     server?.let { current ->
-                        scope.launch(Dispatchers.IO) {
-                            McpServerRepository.update(
-                                current.copy(
-                                    authorizationType = if (token.isBlank()) {
-                                        McpAuthorizationType.NONE
-                                    } else {
-                                        McpAuthorizationType.BEARER
-                                    },
-                                ),
-                                bearerToken = token,
-                            )
+                        val enteredToken = token
+                        scope.launch {
+                            working = true
+                            tokenError = null
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    McpServerRepository.update(
+                                        current.copy(
+                                            authorizationType = if (enteredToken.isBlank()) {
+                                                McpAuthorizationType.NONE
+                                            } else {
+                                                McpAuthorizationType.BEARER
+                                            },
+                                        ),
+                                        bearerToken = enteredToken,
+                                    )
+                                }
+                                token = ""
+                                showToken = false
+                            } catch (failure: CancellationException) {
+                                throw failure
+                            } catch (failure: Exception) {
+                                tokenError = failure.message?.take(500) ?: resources.getString(R.string.mcp_connection_failed)
+                            } finally {
+                                working = false
+                            }
                         }
-                        token = ""
-                        showToken = false
                     }
                 },
             )
         }
     }
+
 
     WindowDialog(
         show = showDelete,

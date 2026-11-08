@@ -44,18 +44,21 @@ internal class AgentModelRetry(
                 val classified = AgentModelFailure.transport(failure) ?: throw failure
                 if (hostedToolStarted) throw AgentModelFailure(
                     classified.code, false, classified.message.orEmpty(), classified,
+                    classified.localRuntime,
                 )
                 if (!classified.retryable) throw classified
-                if (retries == MAX_RETRIES) {
+                val maxRetries = maxRetriesFor(classified)
+                if (retries == maxRetries) {
                     throw AgentModelFailure(
                         classified.code, false,
-                        "${classified.message} 已重试 $MAX_RETRIES 次仍未恢复，已保留此前完成的工具结果。",
+                        "${classified.message} 已重试 $maxRetries 次仍未恢复，已保留此前完成的工具结果。",
                         classified,
+                        classified.localRuntime,
                     )
                 }
                 retries += 1
                 val delayMs = BASE_DELAY_MS shl (retries - 1)
-                onEvent(AgentEvent.ModelRetryScheduled(round, retries, MAX_RETRIES, delayMs.toInt(), classified.code))
+                onEvent(AgentEvent.ModelRetryScheduled(round, retries, maxRetries, delayMs.toInt(), classified.code))
                 waitBeforeRetry(controller, delayMs)
                 controller.throwIfCancelled()
                 // 展示保留失败尝试，模型上下文与最终思考摘要只接纳成功尝试。
@@ -66,7 +69,15 @@ internal class AgentModelRetry(
     }
 
     companion object {
-        private const val MAX_RETRIES = 3
+        private const val DEFAULT_MAX_RETRIES = 3
         private const val BASE_DELAY_MS = 2_000L
+
+        private fun maxRetriesFor(failure: AgentModelFailure): Int = when (failure.code) {
+            // The provider first retries these as a non-stream request. If that also fails,
+            // another multi-minute sequence only makes chat feel hung.
+            "MODEL_TIMEOUT", "HTTP_408", "STREAM_INCOMPLETE" -> 1
+            "MODEL_CONNECTION_FAILED" -> 2
+            else -> DEFAULT_MAX_RETRIES
+        }
     }
 }

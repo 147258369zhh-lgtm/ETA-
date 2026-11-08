@@ -79,6 +79,11 @@ internal class A2AAgentRepository(
         secretStore.delete(current.authSecretAlias)
     }
 
+    suspend fun setAgentEnabled(agentId: String, enabled: Boolean) {
+        if (dao.agent(agentId) == null) throw A2AProtocolException("Unknown A2A agent")
+        dao.setAgentEnabled(agentId, enabled, clock())
+    }
+
     suspend fun sendMessage(
         agentId: String,
         message: A2AMessage,

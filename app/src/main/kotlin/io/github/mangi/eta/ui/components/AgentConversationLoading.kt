@@ -7,12 +7,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
@@ -26,11 +28,12 @@ internal fun AgentConversationLoadState(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val tokens = LocalEtaDesignTokens.current
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
-            modifier = Modifier.padding(24.dp),
+            modifier = Modifier.padding(tokens.stateContentPadding),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(tokens.cardContentPadding),
         ) {
             if (isLoading || !failed) {
                 CircularProgressIndicator()
@@ -39,11 +42,10 @@ internal fun AgentConversationLoadState(
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             } else {
-                Text(text = stringResource(R.string.conversation_load_failed))
-                TextButton(
-                    text = stringResource(R.string.action_retry),
-                    onClick = onRetry,
-                )
+                EtaStateMessage(title = stringResource(R.string.conversation_load_failed), centered = true) {
+                    TextButton(text = stringResource(R.string.action_retry), onClick = onRetry,
+                        modifier = Modifier.defaultMinSize(minHeight = tokens.minimumTouchTarget))
+                }
             }
         }
     }
@@ -55,8 +57,9 @@ internal fun AgentHistoryLoadStatus(
     enabled: Boolean,
     onRetry: () -> Unit,
 ) {
+    val tokens = LocalEtaDesignTokens.current
     Box(
-        modifier = Modifier.fillMaxWidth().height(48.dp),
+        modifier = Modifier.fillMaxWidth().height(tokens.minimumTouchTarget),
         contentAlignment = Alignment.Center,
     ) {
         when (state) {

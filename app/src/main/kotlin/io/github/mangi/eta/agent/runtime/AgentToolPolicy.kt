@@ -14,9 +14,47 @@ internal data class AgentToolPolicy(
     private val allowed = allowedTools?.map(String::trim)?.toSet()
     private val denied = disallowedTools.map(String::trim).toSet()
 
+    fun intersect(other: AgentToolPolicy): AgentToolPolicy {
+        val next = when {
+            allowedTools == null -> other.allowedTools
+            other.allowedTools == null -> allowedTools
+            else -> allowedTools.flatMap { left -> other.allowedTools.mapNotNull { right ->
+                when {
+                    left == "*" -> right
+                    right == "*" -> left
+                    left == right -> left
+                    left.endsWith("*") && right.endsWith("*") -> when {
+                        left.dropLast(1).startsWith(right.dropLast(1)) -> left
+                        right.dropLast(1).startsWith(left.dropLast(1)) -> right
+                        else -> null
+                    }
+                    left.endsWith("*") && matches(left, right) -> right
+                    right.endsWith("*") && matches(right, left) -> left
+                    else -> null
+                }
+            } }.distinct()
+        }
+        return AgentToolPolicy(next, (disallowedTools + other.disallowedTools).distinct())
+    }
+
+    /**
+     * Combines capabilities contributed by independently active Skills. Parent and global
+     * boundaries must still be intersected afterwards; denylists remain effective.
+     */
+    fun union(other: AgentToolPolicy): AgentToolPolicy {
+        val next = when {
+            allowedTools == null || other.allowedTools == null -> null
+            else -> (allowedTools + other.allowedTools)
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .distinct()
+        }
+        return AgentToolPolicy(next, (disallowedTools + other.disallowedTools).distinct())
+    }
+
     fun isAllowed(toolName: String): Boolean {
         val name = toolName.trim()
-        if (name.isEmpty() || name in denied) return false
+        if (name.isEmpty() || denied.any { matches(it, name) }) return false
         val allow = allowed ?: return true
         return "*" in allow || name in allow || allow.any { pattern ->
             pattern.endsWith("*") && pattern.length > 1 && name.startsWith(pattern.dropLast(1))
@@ -32,6 +70,8 @@ internal data class AgentToolPolicy(
     }
 
     companion object {
+        private fun matches(pattern: String, name: String): Boolean = pattern == "*" || pattern == name ||
+            pattern.endsWith("*") && pattern.length > 1 && name.startsWith(pattern.dropLast(1))
         val UNRESTRICTED = AgentToolPolicy()
     }
 }

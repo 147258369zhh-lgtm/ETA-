@@ -18,29 +18,43 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.preference.OverlaySpinnerPreference
 
-/** 播报音色：预设音色或自定义音色 ID。 */
 @Composable
-internal fun SpeechVoiceSection(store: SpeechSettingsStore) {
+internal fun SpeechVoiceSection(
+    store: SpeechSettingsStore,
+    onOpenLocalModels: () -> Unit,
+) {
+    when (store.settings.tts) {
+        TtsProvider.NONE -> Unit
+        TtsProvider.LOCAL -> LocalSpeechVoiceSection(store, onOpenLocalModels)
+        else -> CloudSpeechVoiceSection(store)
+    }
+}
+
+/** 云端播报保留自定义音色 ID；本地播报使用模型目录，避免发送不存在的声线。 */
+@Composable
+private fun CloudSpeechVoiceSection(store: SpeechSettingsStore) {
     val settings = store.settings
     val voice = when (settings.tts) {
-        TtsProvider.NONE -> return
         TtsProvider.QWEN -> settings.qwenVoice
         TtsProvider.DOUBAO -> settings.doubaoVoice
         TtsProvider.GEMINI -> settings.geminiTts.voice
         TtsProvider.MINIMAX -> settings.minimaxTts.voice
+        TtsProvider.LOCAL, TtsProvider.NONE -> return
     }
     val presets = SpeechVoicePresets.forProvider(settings.tts)
     val presetIndex = presets.indexOfFirst { it.id == voice }
     var editingCustom by rememberSaveable(settings.tts) { mutableStateOf(false) }
     val custom = editingCustom || presetIndex < 0
     val change: (String) -> Unit = {
-        store.edit(when (settings.tts) {
-            TtsProvider.NONE -> settings
-            TtsProvider.QWEN -> settings.copy(qwenVoice = it)
-            TtsProvider.DOUBAO -> settings.copy(doubaoVoice = it)
-            TtsProvider.GEMINI -> settings.copy(geminiTts = settings.geminiTts.copy(voice = it))
-            TtsProvider.MINIMAX -> settings.copy(minimaxTts = settings.minimaxTts.copy(voice = it))
-        })
+        store.edit(
+            when (settings.tts) {
+                TtsProvider.QWEN -> settings.copy(qwenVoice = it)
+                TtsProvider.DOUBAO -> settings.copy(doubaoVoice = it)
+                TtsProvider.GEMINI -> settings.copy(geminiTts = settings.geminiTts.copy(voice = it))
+                TtsProvider.MINIMAX -> settings.copy(minimaxTts = settings.minimaxTts.copy(voice = it))
+                TtsProvider.LOCAL, TtsProvider.NONE -> settings
+            },
+        )
     }
 
     Column {
@@ -80,7 +94,7 @@ internal fun SpeechVoiceSection(store: SpeechSettingsStore) {
                     TtsProvider.DOUBAO -> R.string.speech_doubao_voice_note
                     TtsProvider.GEMINI -> R.string.speech_gemini_voice_note
                     TtsProvider.MINIMAX -> R.string.speech_minimax_voice_note
-                    TtsProvider.NONE -> error("No synthesis provider")
+                    TtsProvider.LOCAL, TtsProvider.NONE -> error("Not a cloud synthesis provider")
                 },
             ),
         )

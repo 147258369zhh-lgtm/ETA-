@@ -3,8 +3,6 @@ package io.github.mangi.eta.ui.screens.meeting
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateContentSize
-import android.text.format.DateFormat
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -29,7 +27,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -37,15 +34,16 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Archive
-import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -82,8 +80,28 @@ import io.github.mangi.eta.fork.meeting.MeetingTaskEntity
 import io.github.mangi.eta.fork.meeting.MeetingTaskStatus
 import io.github.mangi.eta.fork.meeting.toUiState
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.ConversationSubject
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.EtaChoiceChip
+import io.github.mangi.eta.ui.components.ConversationStage
+import io.github.mangi.eta.ui.components.AgentConversationMessages
+import io.github.mangi.eta.ui.components.toTimelineEntries
+import io.github.mangi.eta.ui.components.ConversationTextEditor
+import io.github.mangi.eta.ui.components.ConversationDraftFeedback
+import io.github.mangi.eta.ui.components.ConversationEditorState
+import io.github.mangi.eta.ui.components.ConversationDraftStatus
+import io.github.mangi.eta.ui.components.rememberConversationAttachments
+import io.github.mangi.eta.ui.components.ConversationAttachmentEditor
+import io.github.mangi.eta.ui.components.ConversationAttachmentFeedback
+import io.github.mangi.eta.ui.components.AgentAttachmentPickerButton
+import io.github.mangi.eta.ui.components.PendingImageStrip
+import io.github.mangi.eta.ui.components.PendingFileReferenceStrip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.mutableIntStateOf
+import io.github.mangi.eta.ui.components.rememberConversationEditor
+import androidx.compose.ui.text.TextRange
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffold
@@ -120,7 +138,7 @@ internal fun MeetingRoomScreen(
     val context = LocalContext.current
     val snapshot by MeetingRepository.snapshot(context, roomId)
         .collectAsState(initial = null)
-    val state = snapshot?.toUiState()
+    val state = snapshot?.takeIf { it.room.id == roomId }?.toUiState()
 
     MiuixScaffold(
         title = state?.room?.title ?: stringResource(R.string.meeting_room_title),
@@ -140,16 +158,18 @@ internal fun MeetingRoomScreen(
                     .padding(horizontal = sidePadding),
             )
         } else {
-            MeetingRoomContent(
-                state = state,
-                onDeleted = onDeleted,
-                onArchived = onArchived,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = padding.calculateTopPadding())
-                    .padding(horizontal = sidePadding)
-                    .imePadding(),
-            )
+            ConversationStage(ConversationSubject.meeting(roomId)) {
+                MeetingRoomContent(
+                    state = state,
+                    onDeleted = onDeleted,
+                    onArchived = onArchived,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = padding.calculateTopPadding())
+                        .padding(horizontal = sidePadding)
+                        .imePadding(),
+                )
+            }
         }
     }
 }
@@ -165,18 +185,20 @@ internal fun MeetingRoomConversationStage(
     val context = LocalContext.current
     val snapshot by MeetingRepository.snapshot(context, roomId)
         .collectAsState(initial = null)
-    val state = snapshot?.toUiState()
+    val state = snapshot?.takeIf { it.room.id == roomId }?.toUiState()
     if (state == null) {
         MeetingRoomLoading(modifier = modifier.fillMaxSize())
     } else {
-        MeetingRoomContent(
-            state = state,
-            onDeleted = onDeleted,
-            onArchived = onArchived,
-            modifier = modifier
-                .fillMaxSize()
-                .imePadding(),
-        )
+        ConversationStage(ConversationSubject.meeting(roomId)) {
+            MeetingRoomContent(
+                state = state,
+                onDeleted = onDeleted,
+                onArchived = onArchived,
+                modifier = modifier
+                    .fillMaxSize()
+                    .imePadding(),
+            )
+        }
     }
 }
 
@@ -194,11 +216,13 @@ private fun MeetingRoomContent(
         MeetingSettingsStore.get(context.applicationContext)
     }
     val meetingSettings by settingsStore.settings.collectAsState()
-    var input by rememberSaveable(state.room.id) { mutableStateOf("") }
+    val editor = rememberConversationEditor(ConversationSubject.meeting(state.room.id))
+    val attachments = rememberConversationAttachments(ConversationSubject.meeting(state.room.id))
+    val input = editor.field.text.toString()
     var selectedParticipantName by rememberSaveable(state.room.id) { mutableStateOf<String?>(null) }
     var showParticipantDetails by rememberSaveable(state.room.id) { mutableStateOf(false) }
-    var hasPositionedTimeline by remember(state.room.id) { mutableStateOf(false) }
-    var followNextTimelineChange by remember(state.room.id) { mutableStateOf(false) }
+    var keepBottomAnchored by rememberSaveable(state.room.id) { mutableStateOf(true) }
+    var followAfterSortIndex by remember(state.room.id) { mutableStateOf<Int?>(null) }
     var managementOpen by rememberSaveable(state.room.id) { mutableStateOf(false) }
     var renameOpen by rememberSaveable(state.room.id) { mutableStateOf(false) }
     var deleteOpen by rememberSaveable(state.room.id) { mutableStateOf(false) }
@@ -231,7 +255,9 @@ private fun MeetingRoomContent(
             }
         }
     }
-    val activeMention = MeetingComposerState.activeMention(input, input.length)
+    val activeMention = if (editor.field.selection.collapsed) {
+        MeetingComposerState.activeMention(input, editor.field.selection.end)
+    } else null
     val mentionMatches = remember(activeMention?.query, state.mentionCandidates) {
         val query = activeMention?.query.orEmpty()
         state.mentionCandidates.filter { participant ->
@@ -239,9 +265,17 @@ private fun MeetingRoomContent(
                 participant.displayName.contains(query, ignoreCase = true)
         }
     }
-    val latestSummary = state.latestSummary
-    val timeline = state.messages.filterNot { it.id == latestSummary?.id }
-    val timelineItemCount = timeline.size + if (latestSummary == null) 0 else 1
+    val toolInterruptedDetail = stringResource(R.string.meeting_tool_interrupted)
+    val sensitiveToolDetail = stringResource(R.string.meeting_tool_sensitive_hidden)
+    val streamPreviewDetail = stringResource(R.string.meeting_stream_preview_truncated)
+    val streamInterruptedDetail = stringResource(R.string.meeting_stream_interrupted)
+    val previousTimeline = remember(state.room.id) { arrayOf<MeetingConversationTimeline?>(null) }
+    val timeline = remember(state.messages, state.timelineEvents, state.messageAttachments, state.latestRoundTasks, state.room.status,
+        meetingSettings.summaryPreviewLines, toolInterruptedDetail, sensitiveToolDetail, streamPreviewDetail, streamInterruptedDetail) {
+        state.conversationTimeline(meetingSettings.summaryPreviewLines, toolInterruptedDetail, sensitiveToolDetail,
+            streamPreviewDetail, streamInterruptedDetail, previous = previousTimeline[0])
+    }
+    SideEffect { previousTimeline[0] = timeline }
     val isRunning = state.isRunning
     val routing = remember(input, state.mentionCandidates) {
         input.takeIf(String::isNotBlank)?.let { text ->
@@ -256,20 +290,13 @@ private fun MeetingRoomContent(
         it.profileName == selectedParticipantName
     } ?: state.host ?: state.participants.firstOrNull()
 
-    LaunchedEffect(timelineItemCount, latestSummary?.id) {
-        if (timelineItemCount > 0) {
-            val visibleItems = listState.layoutInfo.visibleItemsInfo
-            val lastVisibleIndex = visibleItems.lastOrNull()?.index ?: -1
-            val lastIndex = timelineItemCount - 1
-            val nearBottom = visibleItems.isEmpty() || lastVisibleIndex >= lastIndex - 1
-            if (!hasPositionedTimeline || followNextTimelineChange ||
-                (meetingSettings.autoFollowMessages && nearBottom)
-            ) {
-                listState.animateScrollToItem(lastIndex)
-            }
-            hasPositionedTimeline = true
+    LaunchedEffect(state.messages, followAfterSortIndex) {
+        val after = followAfterSortIndex
+        if (after != null && state.messages.any { it.authorType == MeetingAuthorType.USER && it.sortIndex > after }) {
+            keepBottomAnchored = true
+            listState.requestScrollToItem(timeline.messages.toTimelineEntries(workGroups = timeline.identities.mapValues { it.value.workGroup }).size)
+            followAfterSortIndex = null
         }
-        followNextTimelineChange = false
     }
 
     Column(modifier = modifier) {
@@ -282,9 +309,14 @@ private fun MeetingRoomContent(
             },
             onOpenParticipantDetails = { showParticipantDetails = true },
             onOpenManagement = { managementOpen = true },
+            onStop = {
+                if (MeetingRunCoordinator.stop(state.room.id)) {
+                    Toast.makeText(context, "正在停止本轮运行", Toast.LENGTH_SHORT).show()
+                }
+            },
         )
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            if (timelineItemCount == 0) {
+            if (timeline.messages.isEmpty()) {
                 ListEmptyState(
                     title = stringResource(R.string.meeting_room_no_messages),
                     summary = stringResource(R.string.meeting_room_topology_summary),
@@ -292,44 +324,32 @@ private fun MeetingRoomContent(
                     modifier = Modifier.align(Alignment.Center),
                 )
             } else {
-                LazyColumn(
-                    state = listState,
+                AgentConversationMessages(
+                    visibleMessages = timeline.messages,
+                    messageIdentities = timeline.identities,
+                    completedReplyMessageIds = timeline.completedReplyIds,
+                    allowMessageChanges = false,
+                    scrollState = listState,
+                    isStreaming = isRunning,
+                    bottomInset = 0.dp,
+                    keepBottomAnchored = keepBottomAnchored,
+                    onBottomAnchorChanged = { keepBottomAnchored = it },
+                    followIncomingMessages = meetingSettings.autoFollowMessages,
+                    initiallyScrollToBottom = true,
+                    onStopWaiting = { MeetingRunCoordinator.stop(state.room.id) },
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        start = 12.dp,
-                        end = 12.dp,
-                        top = 8.dp,
-                        bottom = 10.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(timeline, key = MeetingMessageEntity::id) { message ->
-                        MeetingMessageBubble(
-                            message = message,
-                            task = message.authorProfile?.let(state::latestTaskFor),
-                            roomStatus = state.room.status,
-                        )
-                    }
-                    latestSummary?.let { summary ->
-                        item(key = "meeting-summary-${summary.id}") {
-                            MeetingSummaryCard(
-                                summary = summary,
-                                previewLines = meetingSettings.summaryPreviewLines,
-                            )
-                        }
-                    }
-                }
+                )
             }
         }
         if (activeMention != null && mentionMatches.isNotEmpty()) {
             MentionSuggestions(
                 participants = mentionMatches,
                 onSelect = { participant ->
-                    input = MeetingComposerState.completeMention(
-                        text = input,
-                        active = activeMention,
-                        profileName = participant.profileName,
-                    )
+                    val current = editor.field.text.toString()
+                    val active = MeetingComposerState.activeMention(current, editor.field.selection.end)
+                        ?: return@MentionSuggestions
+                    val completed = MeetingComposerState.completeMention(current, active, participant.profileName)
+                    editor.replace(completed, TextRange(active.replaceStart + participant.profileName.length + 2))
                 },
             )
         }
@@ -341,17 +361,21 @@ private fun MeetingRoomContent(
             )
         }
         MeetingComposer(
-            value = input,
-            enabled = !isRunning,
-            submitting = isRunning,
+            editor = editor,
+            attachments = attachments,
+            running = isRunning,
             canSend = routing !is MeetingRoutingDecision.UnknownMentions,
-            onValueChange = { input = it.take(32_000) },
+            onStop = { MeetingRunCoordinator.stop(state.room.id) },
             onSend = {
-                val message = input.trim()
-                if (message.isNotEmpty() && !isRunning) {
-                    if (MeetingRunCoordinator.start(context, state.room.id, message)) {
-                        input = ""
-                        followNextTimelineChange = true
+                val message = editor.field.text.toString().trim()
+                if ((message.isNotEmpty() || !attachments.value.isEmpty) && attachments.ready && attachments.pending == 0) {
+                    val submitted = attachments.value
+                    val accepted = if (isRunning) MeetingRunCoordinator.enqueue(context, state.room.id, message, submitted)
+                    else MeetingRunCoordinator.start(context, state.room.id, message, submitted)
+                    if (accepted) {
+                        editor.replace("")
+                        attachments.clearSubmitted(submitted)
+                        followAfterSortIndex = state.messages.lastOrNull()?.sortIndex ?: -1
                     }
                 }
             },
@@ -369,11 +393,11 @@ private fun MeetingRoomContent(
                 {
                     showParticipantDetails = false
                     selectedParticipantName = null
-                    input = if (input.isBlank()) {
+                    editor.replace(if (input.isBlank()) {
                         "@${participant.profileName} "
                     } else {
                         input.trimEnd() + " @${participant.profileName} "
-                    }
+                    })
                 }
             } else {
                 null
@@ -618,6 +642,7 @@ private fun MeetingRoomOverview(
     onParticipantClick: (MeetingParticipantEntity) -> Unit,
     onOpenParticipantDetails: () -> Unit,
     onOpenManagement: () -> Unit,
+    onStop: () -> Unit,
 ) {
     val selectedTask = selectedParticipant?.let { state.latestTaskFor(it.profileName) }
     val selectedActivity = selectedParticipant?.let { state.latestActivityFor(it.profileName) }
@@ -667,6 +692,16 @@ private fun MeetingRoomOverview(
                     else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
                 },
             )
+            if (state.isRunning) {
+                IconButton(onClick = onStop, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        imageVector = Icons.Rounded.Stop,
+                        contentDescription = "停止本轮运行",
+                        modifier = Modifier.size(18.dp),
+                        tint = MiuixTheme.colorScheme.error,
+                    )
+                }
+            }
             IconButton(onClick = onOpenManagement, modifier = Modifier.size(32.dp)) {
                 Icon(
                     imageVector = Icons.Rounded.MoreHoriz,
@@ -1040,145 +1075,6 @@ private fun MeetingStatusBadge(status: String) {
 }
 
 @Composable
-private fun MeetingSummaryCard(summary: MeetingMessageEntity, previewLines: Int) {
-    var expanded by rememberSaveable(summary.id) { mutableStateOf(false) }
-    val canExpand = previewLines != 0
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 5.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .animateContentSize()
-                .squircleSurface(MiuixTheme.colorScheme.tertiaryContainer, 15.dp)
-                .clickable(enabled = canExpand) { expanded = !expanded }
-                .padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = if (expanded) Icons.Rounded.Groups else Icons.Rounded.CheckCircle,
-                    contentDescription = null,
-                    tint = MiuixTheme.colorScheme.onTertiaryContainer,
-                    modifier = Modifier.size(15.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = stringResource(R.string.meeting_room_summary_title),
-                    style = MiuixTheme.textStyles.footnote1,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MiuixTheme.colorScheme.onTertiaryContainer,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = if (canExpand) {
-                        if (expanded) "收起" else "展开"
-                    } else {
-                        summary.authorName
-                    },
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (expanded || previewLines != 0) {
-                SelectionContainer {
-                    Text(
-                        text = summary.content,
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.9f),
-                        maxLines = if (expanded || previewLines == 0) Int.MAX_VALUE else previewLines,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MeetingMessageBubble(
-    message: MeetingMessageEntity,
-    task: MeetingTaskEntity?,
-    roomStatus: String,
-) {
-    val isUser = message.authorType == MeetingAuthorType.USER
-    val isSystem = message.authorType == MeetingAuthorType.SYSTEM
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(if (isUser) 0.86f else 0.92f)
-                .squircleSurface(
-                    color = when {
-                        isUser -> MiuixTheme.colorScheme.primaryContainer
-                        isSystem -> MiuixTheme.colorScheme.errorContainer
-                        else -> MiuixTheme.colorScheme.surfaceContainer
-                    },
-                    cornerRadius = 16.dp,
-                )
-                .padding(horizontal = 13.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!isUser) {
-                    MeetingAgentAvatar(
-                        displayName = message.authorName,
-                        task = task,
-                        roomStatus = roomStatus,
-                        size = 22.dp,
-                    )
-                    Spacer(Modifier.width(7.dp))
-                }
-                if (isSystem) {
-                    Icon(
-                        imageVector = Icons.Rounded.Warning,
-                        contentDescription = null,
-                        tint = MiuixTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Spacer(Modifier.width(5.dp))
-                }
-                Text(
-                    text = message.authorName,
-                    style = MiuixTheme.textStyles.footnote2,
-                    fontWeight = FontWeight.Medium,
-                    color = when {
-                        isUser -> MiuixTheme.colorScheme.onPrimaryContainer
-                        isSystem -> MiuixTheme.colorScheme.onErrorContainer
-                        else -> MiuixTheme.colorScheme.primary
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = DateFormat.getTimeFormat(LocalContext.current).format(message.createdAt),
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-            }
-            SelectionContainer {
-                Text(
-                    text = message.content,
-                    style = MiuixTheme.textStyles.body2,
-                    color = when {
-                        isUser -> MiuixTheme.colorScheme.onPrimaryContainer
-                        isSystem -> MiuixTheme.colorScheme.onErrorContainer
-                        else -> MiuixTheme.colorScheme.onSurface
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun MentionSuggestions(
     participants: List<MeetingParticipantEntity>,
     onSelect: (MeetingParticipantEntity) -> Unit,
@@ -1249,45 +1145,74 @@ private fun MeetingRoutePreview(
 
 @Composable
 private fun MeetingComposer(
-    value: String,
-    enabled: Boolean,
-    submitting: Boolean,
+    editor: ConversationEditorState,
+    attachments: ConversationAttachmentEditor,
+    running: Boolean,
     canSend: Boolean,
-    onValueChange: (String) -> Unit,
+    onStop: () -> Unit,
     onSend: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .navigationBarsPadding()
-            .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 20.dp)
-            .squircleBorder(
-                width = 0.5.dp,
-                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                cornerRadius = 20.dp,
+    val draftStatus by editor.status.collectAsState()
+    var anchorTop by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val maxHeight = with(density) { anchorTop.toDp() }.coerceAtLeast(200.dp)
+    Column {
+        ConversationDraftFeedback(editor, Modifier.padding(horizontal = 12.dp))
+        ConversationAttachmentFeedback(attachments, Modifier.padding(horizontal = 20.dp))
+        if (attachments.value.images.isNotEmpty()) PendingImageStrip(attachments.value.images, attachments::removeImage,
+            Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+        if (attachments.value.files.isNotEmpty()) PendingFileReferenceStrip(attachments.value.files, attachments::removeFile,
+            Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .onGloballyPositioned { anchorTop = it.positionInWindow().y.toInt() }
+                .navigationBarsPadding()
+                .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 20.dp)
+                .squircleBorder(
+                    width = 0.5.dp,
+                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
+                    cornerRadius = 20.dp,
+                )
+                .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (attachments.ready) AgentAttachmentPickerButton(
+                popupAnchorTopPx = anchorTop,
+                popupMaxHeight = maxHeight,
+                onAttachImage = attachments::image,
+                onAttachFiles = attachments::files,
+                onAttachFolder = attachments::folder,
+                onAttachFilePath = attachments::path,
+                modifier = Modifier.size(48.dp),
             )
-            .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        TextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = stringResource(R.string.meeting_room_mention_hint),
-            enabled = enabled,
-            maxLines = 5,
-            modifier = Modifier.weight(1f),
-        )
-        TextButton(
-            text = if (submitting) {
-                stringResource(R.string.meeting_room_running)
-            } else {
-                stringResource(R.string.meeting_room_send)
-            },
-            onClick = onSend,
-            enabled = enabled && canSend && value.isNotBlank(),
-        )
+            ConversationTextEditor(
+                state = editor.field,
+                onUserEdit = editor::onUserEdit,
+                placeholder = stringResource(if (running) R.string.meeting_room_queue_hint else R.string.meeting_room_mention_hint),
+                maxLines = 5,
+                maxLength = 32_000,
+                modifier = Modifier.weight(1f),
+            )
+            if (running) IconButton(onClick = onStop, minWidth = 48.dp, minHeight = 48.dp) {
+                Icon(Icons.Rounded.Stop, contentDescription = stringResource(R.string.chat_stop))
+            }
+            IconButton(
+                onClick = onSend,
+                enabled = canSend && (editor.field.text.isNotBlank() || !attachments.value.isEmpty) && attachments.ready && attachments.pending == 0 &&
+                    (draftStatus == ConversationDraftStatus.READY || draftStatus == ConversationDraftStatus.SAVE_FAILED),
+                minWidth = 48.dp,
+                minHeight = 48.dp,
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.Send,
+                    contentDescription = if (running) "排队发送" else stringResource(R.string.meeting_room_send),
+                    tint = if (canSend) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+        }
     }
 }
 

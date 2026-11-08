@@ -17,6 +17,7 @@ internal class AgentTaskWorker(
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
+            AutomationTriggers.poll(applicationContext, inputData.getString("eventType"), inputData.getString("eventKey").orEmpty())
             val runtimeClient = AgentRuntimeClient(applicationContext, AndroidAgentLogger)
             val coordinator = AgentTaskCoordinator(
                 dao = AgentTaskDatabase.get(applicationContext).agentTaskDao(),
@@ -24,6 +25,7 @@ internal class AgentTaskWorker(
                 runtimeCanceller = AgentTaskRuntimeCanceller(runtimeClient::cancelRun),
             )
             val summary = coordinator.tick(maxRuns = 1)
+            AutomationTriggers.poll(applicationContext)
             AgentTaskWorkScheduler.refreshNextDeadline(applicationContext)
             if (summary.executedRuns > 0) {
                 // Keep draining overdue schedules one long-running task at a time instead of making

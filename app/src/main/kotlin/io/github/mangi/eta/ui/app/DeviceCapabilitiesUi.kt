@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.app
 import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,6 +20,9 @@ import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.device.RootAccessState
 import io.github.mangi.eta.agent.device.RootAccessStatus
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealth
+import io.github.mangi.eta.agent.accessibility.RootAccessibilityRecovery
+import kotlinx.coroutines.flow.collect
 
 internal data class DeviceCapabilitiesUi(
     val root: RootAccessState,
@@ -34,8 +38,17 @@ internal data class DeviceCapabilitiesUi(
 internal fun rememberDeviceCapabilities(): DeviceCapabilitiesUi {
     val context = LocalContext.current.applicationContext
     val root by RootAccess.state.collectAsState()
+    val recovery by RootAccessibilityRecovery.state.collectAsState()
     var xposedConnected by remember { mutableStateOf(EtaApp.serviceInstance != null) }
     var tools by remember { mutableStateOf(AgentToolCapabilities.capture(context)) }
+    LaunchedEffect(root, xposedConnected, recovery) {
+        tools = AgentToolCapabilities.capture(context)
+    }
+    LaunchedEffect(context) {
+        AgentAccessibilityHealth.observeChanges(context).collect {
+            tools = AgentToolCapabilities.capture(context)
+        }
+    }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner, context) {
         val listener = object : EtaApp.ServiceStateListener {
@@ -56,7 +69,11 @@ internal fun rememberDeviceCapabilities(): DeviceCapabilitiesUi {
             owner.lifecycle.removeObserver(observer)
         }
     }
-    return DeviceCapabilitiesUi(root, xposedConnected, tools.copy(rootAvailable = root.isGranted))
+    return DeviceCapabilitiesUi(root, xposedConnected, tools.copy(
+        rootAvailable = root.isGranted,
+        rootState = root,
+        lsposedAvailable = xposedConnected,
+    ))
 }
 
 internal fun RootAccessState.description(context: Context): String = context.getString(

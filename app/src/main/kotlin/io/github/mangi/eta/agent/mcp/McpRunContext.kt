@@ -1,11 +1,14 @@
 package io.github.mangi.eta.agent.mcp
 
 import android.util.Base64
+import io.github.mangi.eta.agent.capability.CapabilityToolProvider
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.McpProtocolMode
 import io.github.mangi.eta.data.model.McpServerSetting
 import io.github.mangi.eta.data.model.McpToolDefinition
 import io.github.mangi.eta.data.repository.McpServerRepository
+import io.github.mangi.eta.data.repository.McpCredentialsUnavailable
+import io.github.mangi.eta.core.AndroidAgentLogger
 import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
@@ -54,7 +57,12 @@ internal class McpRunSnapshot(
             val projected = mutableListOf<McpRunTool>()
             val now = System.currentTimeMillis()
             McpServerRepository.enabledServers().forEach { configured ->
-                val bearerToken = McpServerRepository.bearerToken(configured.id)
+                val bearerToken = try {
+                    McpServerRepository.bearerToken(configured)
+                } catch (_: McpCredentialsUnavailable) {
+                    AndroidAgentLogger.warn("MCP server excluded: code=MCP_CREDENTIALS_UNAVAILABLE")
+                    return@forEach
+                }
                 val needsRefresh = configured.lastProtocolVersion == null ||
                     configured.lastProtocolVersion == McpProtocolMode.LATEST &&
                     (configured.toolsExpireAt == null || configured.toolsExpireAt <= now)
@@ -68,7 +76,7 @@ internal class McpRunSnapshot(
                 } else {
                     configured
                 }
-                server.activeTools.forEach { tool ->
+                server.activeTools.filter { McpToolGovernance.assess(it).accepted }.forEach { tool ->
                     if (projected.size >= MAX_RUN_TOOLS) return@forEach
                     projected += McpRunTool(
                         modelName = modelToolName(server.id, tool.name),
@@ -101,7 +109,7 @@ internal class McpRunSnapshot(
 
 internal class McpToolExecutor(
     private val snapshot: McpRunSnapshot,
-) : AgentModelClient.ToolExecutor, AutoCloseable {
+) : CapabilityToolProvider {
     private val lifecycleLock = Any()
     private val clients = mutableMapOf<String, McpHttpClient>()
     private var closed = false
@@ -127,7 +135,7 @@ internal class McpToolExecutor(
         }
     }
 
-    fun contains(toolName: String): Boolean = snapshot.resolve(toolName) != null
+    override fun contains(toolName: String): Boolean = snapshot.resolve(toolName) != null
 
     override fun close() {
         val closing = synchronized(lifecycleLock) {
@@ -282,13 +290,19 @@ internal class McpToolExecutor(
 
 internal class RoutingToolExecutor(
     private val local: AgentModelClient.ToolExecutor,
-    private val mcp: McpToolExecutor,
+    private val providers: List<CapabilityToolProvider>,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
+    constructor(
+        local: AgentModelClient.ToolExecutor,
+        mcp: McpToolExecutor,
+    ) : this(local, listOf(mcp))
+
     override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult =
-        if (mcp.contains(toolCall.name)) mcp.execute(toolCall) else local.execute(toolCall)
+        providers.firstOrNull { it.contains(toolCall.name) }?.execute(toolCall)
+            ?: local.execute(toolCall)
 
     override fun close() {
-        runCatching { mcp.close() }
+        providers.forEach { provider -> runCatching { provider.close() } }
         (local as? AutoCloseable)?.let { runCatching { it.close() } }
     }
 }

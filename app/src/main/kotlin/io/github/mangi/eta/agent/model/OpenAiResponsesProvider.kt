@@ -6,11 +6,13 @@ import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.ByteArrayInputStream
 import org.json.JSONArray
 import org.json.JSONObject
 
 internal object OpenAiResponsesProvider : AgentProviderClient {
     private const val MAX_ERROR_CHARS = 600
+    private const val MAX_COMPATIBILITY_RETRIES = 2
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
     override val id: String = "openai_responses"
@@ -34,12 +36,12 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         require(config.openAiEndpointMode == OpenAiEndpointMode.RESPONSES) {
             "当前 Provider 未配置为 Responses API"
         }
-        val body = buildRequestJson(config, request.messages, request.effectiveTools)
-            .toString()
-            .toRequestBody(JSON_MEDIA_TYPE)
+        var candidate = buildRequestJson(config, request.messages, request.effectiveTools)
+        var compatibilityAttempt = 0
+        var transportFallback = false
         val headers = okhttp3.Headers.Builder()
             .add("Content-Type", "application/json; charset=utf-8")
-            .add("Accept", "text/event-stream")
+            .add("Accept", "text/event-stream, application/json")
             .apply {
                 if (config.apiKey.isNotBlank()) add("Authorization", "Bearer ${config.apiKey}")
             }
@@ -49,39 +51,156 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 )
             }
             .build()
-        val httpRequest = Request.Builder()
-            .url(ProviderUrls.openAiResponsesUrl(config.baseUrl))
-            .headers(headers)
-            .post(body)
-            .build()
-        runController.throwIfCancelled()
-        onEvent(ProviderEvent.RequestStarted)
-        return AuthorizedProviderHttp.execute(
-            client = AgentHttpClient.modelClient(request.purpose),
-            providerId = config.providerId,
-            authMode = config.authMode,
-            request = httpRequest,
-            controller = runController,
-        ) { response ->
-            onEvent(ProviderEvent.ResponseHeaders(response.code))
-            if (!response.isSuccessful) {
-                throw AgentModelFailure.http(response.code, response.peekBody(16_384).string())
+        while (true) {
+            val httpRequest = Request.Builder()
+                .url(ProviderUrls.openAiResponsesUrl(config.baseUrl))
+                .headers(headers)
+                .post(candidate.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            runController.throwIfCancelled()
+            onEvent(ProviderEvent.RequestStarted)
+            var responseOutputStarted = false
+            val outcome = runCatching {
+                AuthorizedProviderHttp.execute(
+                    client = AgentHttpClient.modelClient(request.purpose),
+                    providerId = config.providerId,
+                    authMode = config.authMode,
+                    request = httpRequest,
+                    controller = runController,
+                ) { response ->
+                    onEvent(ProviderEvent.ResponseHeaders(response.code))
+                    if (!response.isSuccessful) {
+                        val body = response.peekBody(16_384).string()
+                        if (response.code == 400 && compatibilityAttempt < MAX_COMPATIBILITY_RETRIES) {
+                            throw OpenAiCompatibilityRetry(body)
+                        }
+                        throw AgentModelFailure.http(
+                            response.code,
+                            body,
+                            includeParameterDetails = response.code == 400,
+                        )
+                    }
+                    val eventSink: (ProviderEvent) -> Unit = { event ->
+                        if (event is ProviderEvent.BlockStart || event is ProviderEvent.HostedToolStarted) {
+                            responseOutputStarted = true
+                        }
+                        onEvent(event)
+                    }
+                    val contentType = response.header("Content-Type").orEmpty().lowercase()
+                    val assistant = if (
+                        contentType.contains("application/json") ||
+                        !candidate.optBoolean("stream", true)
+                    ) {
+                        readNonStreamingResponse(
+                            body = response.body.string(),
+                            runController = runController,
+                            onEvent = eventSink,
+                        )
+                    } else {
+                        readStreamingResponse(
+                            stream = response.body.byteStream(),
+                            runController = runController,
+                            onEvent = eventSink,
+                        )
+                    }
+                    onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))
+                    ProviderResponse(assistant)
+                }
             }
-            val assistant = readStreamingResponse(
-                stream = response.body.byteStream(),
-                runController = runController,
-                onEvent = onEvent,
-            )
-            onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))
-            ProviderResponse(assistant)
+            val failure = outcome.exceptionOrNull()
+            if (failure is OpenAiCompatibilityRetry) {
+                val repaired = when (compatibilityAttempt) {
+                    0 -> conservativePayload(candidate, failure.body)
+                    1 -> payloadWithoutTools(candidate)
+                    else -> null
+                }
+                if (repaired != null) {
+                    candidate = repaired
+                    compatibilityAttempt += 1
+                    continue
+                }
+                throw AgentModelFailure.http(
+                    status = 400,
+                    body = failure.body,
+                    includeParameterDetails = true,
+                )
+            }
+            if (
+                failure != null &&
+                !transportFallback &&
+                candidate.optBoolean("stream", true) &&
+                !responseOutputStarted &&
+                failure.canRetryAsNonStreaming()
+            ) {
+                candidate = JSONObject(candidate.toString()).put("stream", false)
+                transportFallback = true
+                continue
+            }
+            return outcome.getOrThrow()
         }
+    }
+
+    private class OpenAiCompatibilityRetry(val body: String) : RuntimeException()
+
+    private fun conservativePayload(source: JSONObject, errorBody: String): JSONObject {
+        val payload = JSONObject(source.toString())
+        val lower = errorBody.lowercase()
+        if (listOf("reasoning", "thinking", "effort").any(lower::contains)) {
+            payload.remove("reasoning")
+        }
+        if (listOf("store", "previous_response").any(lower::contains)) {
+            payload.remove("store")
+        }
+        if (lower.contains("tool_choice")) payload.remove("tool_choice")
+        return payload
+    }
+
+    private fun payloadWithoutTools(source: JSONObject): JSONObject? {
+        val tools = source.optJSONArray("tools") ?: return null
+        if (tools.length() == 0) return null
+        return JSONObject(source.toString()).also { payload ->
+            payload.remove("tools")
+            payload.remove("tool_choice")
+            payload.remove("parallel_tool_calls")
+        }
+    }
+
+    private fun readNonStreamingResponse(
+        body: String,
+        runController: AgentRunController,
+        onEvent: (ProviderEvent) -> Unit,
+    ): JSONObject {
+        val payload = JSONObject(body)
+        payload.optJSONObject("error")?.let { error ->
+            throw AgentModelFailure.stream(
+                error,
+                "模型接口返回错误：${error.optString("message").ifBlank { "未提供错误信息" }}",
+            )
+        }
+        val type = payload.optString("type")
+        val event = when {
+            type in setOf("response.completed", "response.done", "response.incomplete", "response.failed") -> payload
+            else -> JSONObject()
+                .put("type", "response.completed")
+                .put("response", payload)
+        }
+        val syntheticSse = "data: ${event}\n\n".toByteArray(Charsets.UTF_8)
+        return readStreamingResponse(
+            stream = ByteArrayInputStream(syntheticSse),
+            runController = runController,
+            onEvent = onEvent,
+        )
     }
 
     internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray,
-    ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools)
+    ): JSONObject = ResponsesRequestBuilder.build(
+        config,
+        messages,
+        if (config.supportsTools) AgentToolSchema.sanitizeFunctionCatalog(tools) else JSONArray(),
+    )
 
     internal fun readStreamingResponse(
         stream: java.io.InputStream?,
@@ -611,6 +730,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 ?: usage.optJSONObject("prompt_tokens_details")?.intValue("cached_tokens"),
             reasoningTokens = usage.optJSONObject("output_tokens_details")?.intValue("reasoning_tokens")
                 ?: usage.optJSONObject("completion_tokens_details")?.intValue("reasoning_tokens"),
+            billingBasis = io.github.mangi.eta.agent.runtime.AgentBillingTokens.OPENAI,
         ).takeUnless { it.isEmpty }
     }
 

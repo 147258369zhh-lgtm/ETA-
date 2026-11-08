@@ -19,6 +19,7 @@ class AppRouteSerializationTest {
     fun allRoutesRoundTripWithMiuixNavJsonConfiguration() {
         val routes = listOf<AppRoute>(
             AppRoute.Home,
+            AppRoute.AppControlCenter,
             AppRoute.Browser(),
             AppRoute.Browser("conversation-a"),
             AppRoute.Browser("conversation-b"),
@@ -26,6 +27,9 @@ class AppRouteSerializationTest {
             AppRoute.Tools,
             AppRoute.WebToolsSettings,
             AppRoute.Skills,
+            AppRoute.PromptInjection,
+            AppRoute.CapabilityCenter,
+            AppRoute.ApiConnectors,
             AppRoute.Subagents,
             AppRoute.Characters,
             AppRoute.CharacterDetail("character"),
@@ -48,6 +52,7 @@ class AppRouteSerializationTest {
             AppRoute.Workspace,
             AppRoute.LinuxFiles("alpine"),
             AppRoute.ModelProviders,
+            AppRoute.LocalModels,
             AppRoute.CommunityCatalog,
             AppRoute.CommunityCatalogProvider("provider"),
             AppRoute.McpServers,

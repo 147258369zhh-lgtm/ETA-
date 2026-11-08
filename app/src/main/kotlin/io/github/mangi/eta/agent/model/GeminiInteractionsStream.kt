@@ -303,6 +303,8 @@ internal class GeminiInteractionsStream(
             outputTokens = token("total_output_tokens", usage.outputTokens),
             reasoningTokens = token("total_thought_tokens", usage.reasoningTokens),
             cachedTokens = token("total_cached_tokens", usage.cachedTokens),
+            billingBasis = io.github.mangi.eta.agent.runtime.AgentBillingTokens.GEMINI_INTERACTIONS,
+            toolUseTokens = token("total_tool_use_tokens", usage.toolUseTokens),
         )
     }
 

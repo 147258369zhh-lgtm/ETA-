@@ -19,6 +19,7 @@ import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
 import io.github.mangi.eta.data.model.SpeechSettings
 import io.github.mangi.eta.data.model.SubagentSettings
+import io.github.mangi.eta.data.model.ModelFallbackSettings
 import io.github.mangi.eta.data.model.WebToolsSettings
 import kotlinx.serialization.json.Json
 import io.github.mangi.eta.data.model.Settings
@@ -32,6 +33,7 @@ internal object SettingsDataStore {
     private val SPEECH_SETTINGS = stringPreferencesKey("speech_settings_v1")
     private val WEB_TOOLS_SETTINGS = stringPreferencesKey("web_tools_settings_v1")
     private val SUBAGENT_SETTINGS = stringPreferencesKey("subagent_settings_v1")
+    private val MODEL_FALLBACK_SETTINGS = stringPreferencesKey("model_fallback_settings_v1")
     private val speechJson = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -91,6 +93,24 @@ internal object SettingsDataStore {
     suspend fun setSubagentSettings(settings: SubagentSettings) {
         ensureInitialized()
         dataStore.edit { it[SUBAGENT_SETTINGS] = speechJson.encodeToString(settings) }
+    }
+
+    fun modelFallbackSettingsFlow(): Flow<ModelFallbackSettings> {
+        ensureInitialized()
+        return dataStore.data
+            .catch { cause -> if (cause is IOException) emit(emptyPreferences()) else throw cause }
+            .map { prefs ->
+                prefs[MODEL_FALLBACK_SETTINGS]?.let { raw ->
+                    runCatching { speechJson.decodeFromString<ModelFallbackSettings>(raw).normalized() }.getOrNull()
+                } ?: ModelFallbackSettings()
+            }
+    }
+
+    suspend fun modelFallbackSettings(): ModelFallbackSettings = modelFallbackSettingsFlow().first()
+
+    suspend fun setModelFallbackSettings(settings: ModelFallbackSettings) {
+        ensureInitialized()
+        dataStore.edit { it[MODEL_FALLBACK_SETTINGS] = speechJson.encodeToString(settings.normalized()) }
     }
 
     private const val STORE_NAME = "eta_settings"

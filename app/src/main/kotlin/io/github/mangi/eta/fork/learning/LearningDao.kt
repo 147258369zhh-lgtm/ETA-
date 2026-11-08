@@ -24,6 +24,9 @@ internal interface LearningDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertCandidate(candidate: LearningCandidateEntity)
 
+    @Update
+    suspend fun updateCandidate(candidate: LearningCandidateEntity)
+
     @Query(
         "UPDATE learning_candidates SET status = :status, updated_at = :updatedAt, " +
             "promoted_rule_id = :promotedRuleId, confirmed_at = :confirmedAt WHERE id = :id",

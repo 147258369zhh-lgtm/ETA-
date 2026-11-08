@@ -54,6 +54,7 @@ class SubagentTest {
             deviceDirectTools = true,
             deviceSensitiveReadTools = true,
             deviceSensitiveActionTools = true,
+            skillGitHubDiscovery = true,
             memoryTools = true,
             capabilities = AgentToolCapabilities(rootAvailable = true),
         ).also { it.put(AgentSubagentToolCatalog.schema()) }
@@ -70,6 +71,9 @@ class SubagentTest {
             assertTrue("glob_files" in allowed)
             assertTrue("grep_files" in allowed)
             assertTrue("web_search" in allowed)
+            assertTrue("skills_list_curated" in allowed)
+            assertTrue("skills_inspect_github" in allowed)
+            assertTrue("schedule_list" in allowed)
         }
 
         val exploreTools = SubagentProfile.EXPLORE.filterTools(fullCatalog).toolNames()

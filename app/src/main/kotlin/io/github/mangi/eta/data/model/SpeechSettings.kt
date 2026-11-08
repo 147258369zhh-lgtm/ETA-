@@ -3,10 +3,10 @@ package io.github.mangi.eta.data.model
 import kotlinx.serialization.Serializable
 
 @Serializable
-enum class AsrProvider { QWEN_REALTIME, QWEN_FLASH, QWEN_FILE, DOUBAO }
+enum class AsrProvider { QWEN_REALTIME, QWEN_FLASH, QWEN_FILE, DOUBAO, LOCAL }
 
 @Serializable
-enum class TtsProvider { NONE, QWEN, DOUBAO, GEMINI, MINIMAX }
+enum class TtsProvider { NONE, QWEN, DOUBAO, GEMINI, MINIMAX, LOCAL }
 
 @Serializable
 enum class SpeechRegion { BEIJING, SINGAPORE }
@@ -71,6 +71,8 @@ data class SpeechSettings(
     val asr: AsrProvider = AsrProvider.QWEN_REALTIME,
     val tts: TtsProvider = TtsProvider.NONE,
     val autoSpeak: Boolean = false,
+    /** 助手浮窗播报结束后继续监听下一轮；仅用于用户主动发起的语音会话。 */
+    val continuousConversation: Boolean = true,
     /** 聊天页回答完成后自动朗读最终回答；与助手浮窗的自动播报分开保存。 */
     val chatAutoSpeak: Boolean = false,
     val language: String = "",
@@ -83,6 +85,12 @@ data class SpeechSettings(
     val geminiTts: GeminiTtsConfig = GeminiTtsConfig(),
     val minimaxTts: MiniMaxTtsConfig = MiniMaxTtsConfig(),
     val oss: SpeechOssConfig = SpeechOssConfig(),
+    /** Installed LocalModelRecord ids. Binding an artifact is independent from chat model selection. */
+    val localAsrModelId: String = "",
+    val localTtsModelId: String = "",
+    val localTtsVoiceId: String = "zf_xiaoxiao",
+    val localTtsLocale: String = "zh-CN",
+    val localTtsRate: Float = 1f,
     /** 助手浮窗停顿多久后自动发送；0 表示只在用户点击完成或松手时发送。 */
     val autoSendSilenceMs: Int = DEFAULT_AUTO_SEND_SILENCE_MS,
     /** 识别结果交付前使用当前对话模型保守纠错。 */

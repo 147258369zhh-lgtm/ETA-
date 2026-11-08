@@ -31,15 +31,31 @@ class AgentNotificationHistoryService : NotificationListenerService() {
     }
 
     private fun record(sbn: StatusBarNotification) {
+        // Notification access sees Eta's own foreground-service and run status updates. Recording
+        // them pollutes real notification history and can recursively expose Agent run text.
+        if (sbn.packageName == packageName) return
         val extras = sbn.notification.extras
         repository.record(
             key = sbn.key,
             packageName = sbn.packageName,
             title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
-            text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+            text = notificationText(extras),
             subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
             postedAt = sbn.postTime,
         )
+    }
+
+    private fun notificationText(extras: android.os.Bundle): String? {
+        extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            ?.takeIf(String::isNotBlank)
+            ?.let { return it }
+        extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?.takeIf(String::isNotBlank)
+            ?.let { return it }
+        return extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+            ?.mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }
+            ?.joinToString("\n")
+            ?.takeIf(String::isNotBlank)
     }
 
     companion object {

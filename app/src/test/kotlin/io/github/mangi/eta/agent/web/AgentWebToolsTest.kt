@@ -313,6 +313,37 @@ class AgentWebToolsTest {
         }
     }
 
+    @Test fun failedConfiguredSearchFallsBackToBuiltinAndMarksTheSource() {
+        val html = """
+            <div id="links"><div class="web-result">
+              <a class="result__a" href="https://example.test/fallback">回退结果</a>
+              <div class="result__snippet">来自公开搜索页的回退摘要</div>
+            </div></div>
+        """.trimIndent()
+        val client = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
+            val request = chain.request()
+            if (request.url.host == "search.example.test") {
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(503).message("Unavailable")
+                    .body("{}".toResponseBody()).build()
+            } else {
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                    .header("Content-Type", "text/html; charset=utf-8")
+                    .body(html.toResponseBody()).build()
+            }
+        }).build()
+        val config = WebToolsRuntimeConfig(
+            searchBackend = WebToolBackend.CUSTOM,
+            customSearch = CustomWebSearchConfig(url = "https://search.example.test/search"),
+        )
+        AgentWebTools(WebHttpTransport(client), runtimeConfig = { config }).use { tools ->
+            val result = call(tools, "web_search", JSONObject().put("query", "fallback"))
+            assertTrue(result.toString(), result.getBoolean("ok"))
+            assertEquals("duckduckgo_html", result.getString("provider"))
+            assertEquals("custom", result.getString("fallback_from"))
+            assertEquals("回退结果", result.getJSONArray("results").getJSONObject(0).getString("title"))
+        }
+    }
+
     private fun tools() = AgentWebTools(WebHttpTransport(OkHttpClient()), now = { Instant.parse("2026-10-05T08:00:00Z") })
     private fun call(tools: AgentWebTools, name: String, args: JSONObject): JSONObject = JSONObject(tools.execute(name, args))
 }

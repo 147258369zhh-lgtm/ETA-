@@ -100,22 +100,75 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var deltaFlushJob: Job? = null
     private var speechLevel by mutableFloatStateOf(0f)
     private var speechState by mutableStateOf(EtaSpeechState())
+    /**
+     * 识别侧与播报侧分别维护自己的状态，再由 [publishSpeechState] 合成一份界面状态：
+     * 朗读中麦克风是闭合的，两边的字段不会互相覆盖，也不会把“正在朗读”误显示成“正在聆听”。
+     */
+    private var asrSpeech by mutableStateOf(EtaSpeechState())
+    private var playbackSpeaking by mutableStateOf(false)
+    private var bargeInArmed by mutableStateOf(false)
     private var speechSettings by mutableStateOf<SpeechSettings?>(null)
     private var speechHeld = false
+    private var pendingHoldToTalk = false
+    private var continuousVoiceConversation = false
+    private var awaitingVoiceFollowUp = false
     private val speechForeground by lazy { AssistantSpeechForeground(this) }
+    private val wakeWordStore by lazy { WakeWordStore(this) }
+    private val voiceprintStore by lazy { VoiceprintProfileStore(this) }
+    private var speechSpeakerFeatures: ByteArray? = null
     private val playback by lazy {
-        SpeechPlaybackController(this, scope, beforePlayback = speechForeground::playback, afterPlayback = speechForeground::stop)
+        SpeechPlaybackController(this, scope, beforePlayback = speechForeground::playback, afterPlayback = speechForeground::playbackStopped)
+    }
+    private val voiceSession by lazy {
+        LocalVoiceSessionCoordinator(
+            scope = scope,
+            stopSpeaking = { fadeMs -> playback.stopSmoothly(fadeMs) },
+            startListening = { startSpeechInternal() },
+            monitorFactory = { SpeechBargeInMonitor(this) },
+            onMonitorLevel = { level -> speechLevel = level },
+            onMonitoringChanged = { active ->
+                if (active) speechForeground.monitoring() else speechForeground.monitoringStopped()
+            },
+        )
     }
     private val speechInput by lazy {
         SpeechInputController(
             context = this,
             scope = scope,
             automaticEndpoint = true,
+            captureSpeakerFeatures = true,
+            onSpeakerFeatures = { features -> speechSpeakerFeatures = features },
             beforeCapture = speechForeground::recording,
-            afterCapture = speechForeground::stop,
+            afterCapture = speechForeground::recordingStopped,
             onResult = { text ->
-                speechState = EtaSpeechState()
-                submitPromptInternal(text, fromSpeech = true)
+                updateSpeechState(EtaSpeechState())
+                if (!WakeWordMatcher.matches(text, wakeWordStore.read())) {
+                    updateSpeechState(EtaSpeechState(message = getString(R.string.speech_wake_word_not_detected)))
+                    scope.launch(Dispatchers.Main.immediate) {
+                        delay(650L)
+                        if (activeRunId == null && windowView != null) startSpeech()
+                    }
+                } else if (wakeWordStore.read().voiceprintEnabled) {
+                    val wakeConfig = wakeWordStore.read()
+                    val verification = voiceprintStore.verify(
+                        featureVector = speechSpeakerFeatures,
+                        threshold = wakeConfig.voiceprintThreshold,
+                    )
+                    speechSpeakerFeatures = null
+                    updateSpeechState(EtaSpeechState(message = getString(
+                        when (verification) {
+                            VoiceprintVerification.VERIFIED -> R.string.speech_voiceprint_verified
+                            VoiceprintVerification.REJECTED -> R.string.speech_voiceprint_rejected
+                            VoiceprintVerification.NO_PROFILE -> R.string.speech_voiceprint_profile_required
+                            VoiceprintVerification.DISABLED -> R.string.speech_voiceprint_unavailable
+                            VoiceprintVerification.UNAVAILABLE -> R.string.speech_voiceprint_unavailable
+                        },
+                    )))
+                    if (verification == VoiceprintVerification.VERIFIED) submitPromptInternal(text, fromSpeech = true)
+                } else {
+                    speechSpeakerFeatures = null
+                    submitPromptInternal(text, fromSpeech = true)
+                }
             },
         )
     }
@@ -171,7 +224,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             speechInput.state.collect { state ->
                 speechLevel = state.level
                 if (state.preview.isNotBlank()) inputText = state.preview
-                speechState = EtaSpeechState(
+                updateSpeechState(EtaSpeechState(
                     phase = state.phase,
                     // 连接、聆听、识别中的阶段播报由语音条目与波形承担，反馈条只保留错误提示，
                     // 避免与语音界面重复叙事。
@@ -179,14 +232,50 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     configureAvailable = state.configureAvailable,
                     feedbackIsError = state.error != null,
                     holdToTalk = speechHeld && state.active,
-                )
+                ))
+                // 识别会话的生命周期就是协调器的“正在听”，开始与结束都在这里对齐。
+                if (state.active) voiceSession.onListeningStarted() else voiceSession.onListeningEnded()
+            }
+        }
+        scope.launch(Dispatchers.Main.immediate) {
+            playback.state.collect { state ->
+                // 合成一旦开始就接受打断：等首包时用户也可能改主意。
+                if (state.messageId == null) {
+                    if (playbackSpeaking) {
+                        playbackSpeaking = false
+                        publishSpeechState()
+                    }
+                    voiceSession.onSpeakingEnded()
+                } else {
+                    if (!playbackSpeaking) {
+                        playbackSpeaking = true
+                        publishSpeechState()
+                    }
+                    voiceSession.onSpeakingStarted()
+                }
+                if (awaitingVoiceFollowUp && !state.loading && state.messageId == null && state.error == null) {
+                    awaitingVoiceFollowUp = false
+                    scheduleVoiceFollowUp()
+                }
+            }
+        }
+        scope.launch(Dispatchers.Main.immediate) {
+            voiceSession.state.collect { session ->
+                if (session.bargeInArmed != bargeInArmed) {
+                    bargeInArmed = session.bargeInArmed
+                    if (playbackSpeaking) publishSpeechState()
+                }
             }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            AssistantSpeechForeground.ACTION_STOP -> { speechInput.cancel(); playback.stop() }
+            AssistantSpeechForeground.ACTION_STOP -> {
+                voiceSession.release()
+                speechInput.cancel()
+                playback.stop()
+            }
             ACTION_SHOW -> showEntry(intent.getStringExtra(EXTRA_SCREEN_CONTEXT_ID))
             ACTION_HANDOFF_READY -> finishHandoff()
             else -> Unit
@@ -196,12 +285,48 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * 内存吃紧时按 [LocalVoiceResourcePolicy] 的顺序回收本地语音模型：先播报、再识别，
+     * 文本主模型不参与；正在使用的方向当场不释放，避免打断这一轮对话。
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        val settings = speechSettings ?: return
+        val phase = voiceSession.state.value.phase
+        val targets = LocalVoiceResourcePolicy.releaseTargets(
+            level = level,
+            speaking = phase == VoiceSessionPhase.SPEAKING || phase == VoiceSessionPhase.STOPPING,
+            listening = phase == VoiceSessionPhase.LISTENING,
+        )
+        if (targets.isEmpty()) return
+        val speakingNow = playbackSpeaking
+        scope.launch(Dispatchers.Default) {
+            if (LocalSpeechKind.TTS in targets && speakingNow) {
+                withContext(Dispatchers.Main.immediate) {
+                    playback.stop()
+                    voiceSession.onSpeakingEnded()
+                }
+            }
+            targets.forEach { kind ->
+                val id = when (kind) {
+                    LocalSpeechKind.TTS -> settings.localTtsModelId
+                    LocalSpeechKind.ASR -> settings.localAsrModelId
+                }
+                if (id.isNotBlank()) runCatching { LocalSpeechRuntime.release(id) }
+            }
+            AndroidAgentLogger.info(
+                "Eta local speech released for memory: kinds=${targets.joinToString(",")}",
+            )
+        }
+    }
+
     override fun onDestroy() {
         entryGeneration++
         EtaAssistantScreenContexts.release(entryScreenContext?.id)
         entryScreenContext = null
         cancelCurrentRun()
         removeWindow()
+        speechForeground.stop()
         scope.cancel()
         cancellationExecutor.shutdown()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
@@ -263,23 +388,57 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             startSpeech()
         } else {
             if (settings.recognitionEnabled) {
-                speechState = EtaSpeechState(errorRes = R.string.voice_audio_permission)
+                updateSpeechState(EtaSpeechState(errorRes = R.string.voice_audio_permission))
             }
             showKeyboard()
         }
     }
 
+    private fun updateSpeechState(value: EtaSpeechState) {
+        asrSpeech = value
+        publishSpeechState()
+    }
+
+    private fun publishSpeechState() {
+        speechState = if (playbackSpeaking) {
+            asrSpeech.copy(
+                phase = EtaSpeechPhase.IDLE,
+                speaking = true,
+                bargeInArmed = bargeInArmed,
+            )
+        } else {
+            asrSpeech
+        }
+    }
+
     private fun startSpeech(holdToTalk: Boolean = false) {
         if (activeRunId != null || speechSettings?.recognitionEnabled != true) return
+        pendingHoldToTalk = holdToTalk
+        when (voiceSession.state.value.phase) {
+            VoiceSessionPhase.SPEAKING -> {
+                // 朗读中点麦克风：与语音打断走同一条收尾链，淡出后再开麦。
+                voiceSession.requestListening()
+                return
+            }
+            VoiceSessionPhase.LISTENING, VoiceSessionPhase.STOPPING -> return
+            else -> Unit
+        }
+        startSpeechInternal(holdToTalk)
+    }
+
+    private fun startSpeechInternal(holdToTalk: Boolean = pendingHoldToTalk) {
+        if (activeRunId != null || speechSettings?.recognitionEnabled != true) return
+        if (speechInput.state.value.active) return
         entryInputPending = false
-        playback.stop()
+        awaitingVoiceFollowUp = false
+        if (playbackSpeaking) playback.stop()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             try {
                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 dismissAndStop()
             } catch (_: RuntimeException) {
-                speechState = EtaSpeechState(errorRes = R.string.voice_audio_permission)
+                updateSpeechState(EtaSpeechState(errorRes = R.string.voice_audio_permission))
             }
             return
         }
@@ -293,19 +452,46 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
         speechLevel = 0f
         speechHeld = holdToTalk
-        speechState = EtaSpeechState(phase = EtaSpeechPhase.STARTING, holdToTalk = holdToTalk)
+        updateSpeechState(EtaSpeechState(phase = EtaSpeechPhase.STARTING, holdToTalk = holdToTalk))
+        voiceSession.onListeningStarted()
         speechInput.start(holdToTalk = holdToTalk)
     }
 
+    private fun scheduleVoiceFollowUp() {
+        scope.launch(Dispatchers.Main.immediate) {
+            delay(320L)
+            if (continuousVoiceConversation &&
+                activeRunId == null &&
+                windowView?.isShown == true &&
+                !hiddenForForegroundOperation &&
+                !speechInput.state.value.active &&
+                !playbackSpeaking &&
+                speechSettings?.recognitionEnabled == true &&
+                getSystemService(PowerManager::class.java).isInteractive &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            ) {
+                startSpeech()
+            }
+        }
+    }
+
     private fun cancelSpeech() {
+        voiceSession.stopSpeakingNow()
         speechInput.cancel()
         speechHeld = false
-        speechState = EtaSpeechState()
+        continuousVoiceConversation = false
+        awaitingVoiceFollowUp = false
+        updateSpeechState(EtaSpeechState())
+        voiceSession.onListeningEnded()
     }
 
     private fun switchToKeyboard() {
+        voiceSession.stopSpeakingNow()
         speechInput.cancel()
-        speechState = EtaSpeechState()
+        continuousVoiceConversation = false
+        awaitingVoiceFollowUp = false
+        updateSpeechState(EtaSpeechState())
+        voiceSession.onListeningEnded()
         showKeyboard()
     }
 
@@ -346,13 +532,14 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         onInputFocus = {
                             entryInputPending = false
                             if (!speechState.active && speechState.hasFeedback) {
-                                speechState = EtaSpeechState()
+                                updateSpeechState(EtaSpeechState())
                             }
                         },
                         speechLevel = { speechLevel },
                         onMicrophone = ::startSpeech,
                         onCancelSpeech = ::cancelSpeech,
                         onFinishSpeech = { speechInput.finish() },
+                        onStopSpeaking = { voiceSession.stopSpeakingNow() },
                         onOpenSpeechSettings = {
                             openSpeechSettings(this)
                             dismissAndStop()
@@ -363,7 +550,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         onInputChange = {
                             inputText = it
                             if (!speechState.active && speechState.hasFeedback) {
-                                speechState = EtaSpeechState()
+                                updateSpeechState(EtaSpeechState())
                             }
                         },
                         onSuggestionClick = ::submitPrompt,
@@ -472,11 +659,19 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private fun submitPromptInternal(prompt: String, fromSpeech: Boolean) {
         val normalized = prompt.trim()
         if (normalized.isBlank() || activeRunId != null) return
+        continuousVoiceConversation = fromSpeech && speechSettings?.continuousConversation == true
+        awaitingVoiceFollowUp = false
         entryInputPending = false
         inputFocusRequestKey = -1
         speechInput.cancel()
-        speechState = EtaSpeechState()
-        playback.stop()
+        updateSpeechState(EtaSpeechState())
+        // 打字提交同样结束朗读，只是不需要接着开麦。
+        if (voiceSession.state.value.phase == VoiceSessionPhase.SPEAKING) {
+            voiceSession.stopSpeakingNow()
+        } else {
+            playback.stop()
+        }
+        voiceSession.onThinking()
         val capture = entryScreenContext
         inputText = ""
         activeRunId = UUID.randomUUID().toString()
@@ -546,11 +741,27 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     speechConfig?.autoSpeak == true && speechConfig.tts != TtsProvider.NONE) {
                     val messageId = uiState.messages.filterIsInstance<AgentMessageUi>().lastOrNull()?.id ?: runId
                     playback.speak(messageId, result.content, settings = speechConfig)
+                    awaitingVoiceFollowUp = continuousVoiceConversation
+                } else if (continuousVoiceConversation && result.ok && !hiddenForForegroundOperation &&
+                    getSystemService(PowerManager::class.java).isInteractive
+                ) {
+                    awaitingVoiceFollowUp = true
+                    scheduleVoiceFollowUp()
+                } else if (!result.ok && fromSpeech) {
+                    continuousVoiceConversation = false
                 }
                 if (!hiddenForForegroundOperation) {
                     updateSoftInput(visible = false)
                 }
-                hiddenForForegroundOperation
+                // A foreground tool temporarily removes the overlay so the target app can
+                // receive input. Keep the assistant service alive and restore its panel after
+                // the tool result, allowing a voice conversation to continue without returning
+                // to Eta manually.
+                val restoreAfterForeground = hiddenForForegroundOperation
+                if (restoreAfterForeground) {
+                    resumeAfterForegroundOperation()
+                }
+                false
             }
             runtimeClient.ackResult(runId)
             if (shouldStopAfterResult) {
@@ -560,6 +771,22 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         stopSelf()
                     }
                 }
+            }
+        }
+    }
+
+    private fun resumeAfterForegroundOperation() {
+        hiddenForForegroundOperation = false
+        entryInputPending = true
+        entryEntranceComplete = true
+        entryContentReady = true
+        presentedEntryGeneration = -1L
+        entryGeneration++
+        scope.launch(Dispatchers.Main.immediate) {
+            delay(220L)
+            if (activeRunId == null && windowView == null) {
+                showWindow()
+                presentEntryInput()
             }
         }
     }
@@ -683,9 +910,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun cancelCurrentRun() {
+        voiceSession.release()
         playback.stop()
         speechInput.cancel()
-        speechState = EtaSpeechState()
+        updateSpeechState(EtaSpeechState())
         val runId = activeRunId ?: return
         flushPendingDelta(runId)
         activeRunId = null
@@ -721,9 +949,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     private fun removeWindow(onComplete: ((Boolean) -> Unit)? = null) {
         entryInputPending = false
+        voiceSession.release()
         playback.stop()
         speechInput.cancel()
-        speechState = EtaSpeechState()
+        speechForeground.stop()
+        updateSpeechState(EtaSpeechState())
         unregisterSystemBackCallback()
         detachingWindowView?.let { detachingView ->
             onComplete?.let(windowDetachCallbacks::add)

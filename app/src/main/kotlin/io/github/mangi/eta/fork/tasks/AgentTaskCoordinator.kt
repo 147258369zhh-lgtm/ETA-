@@ -170,6 +170,9 @@ internal class AgentTaskCoordinator(
 
         val now = clock()
         return when (result) {
+            is AgentTaskExecutionResult.Deferred -> if (now - run.createdAt >= 86400000L) {
+                dao.fail(runId, ownerId, "CONDITION_EXPIRED", "等待设备条件超过 24 小时，本次未执行", now)
+            } else dao.defer(runId, ownerId, saturatingAdd(now, result.delayMillis.coerceIn(60000, 900000)), now)
             is AgentTaskExecutionResult.Succeeded -> dao.complete(
                 runId = runId,
                 owner = ownerId,

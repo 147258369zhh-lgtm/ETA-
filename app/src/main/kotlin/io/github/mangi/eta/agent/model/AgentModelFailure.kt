@@ -1,5 +1,7 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.device.LocalNetworkAccessException
+import io.github.mangi.eta.agent.runtime.LocalRuntimeMetrics
 import org.json.JSONObject
 import java.io.IOException
 import java.io.InterruptedIOException
@@ -12,7 +14,11 @@ internal class AgentModelFailure(
     val retryable: Boolean,
     message: String,
     cause: Throwable? = null,
+    val localRuntime: LocalRuntimeMetrics? = null,
 ) : IllegalStateException(message, cause) {
+    fun withLocalRuntime(metrics: LocalRuntimeMetrics): AgentModelFailure =
+        AgentModelFailure(code, retryable, message.orEmpty(), this, metrics)
+
     companion object {
         private val transientStatus = setOf(408, 429, 500, 502, 503, 504, 524, 529)
         private val permanentCodes = setOf(
@@ -80,9 +86,13 @@ internal class AgentModelFailure(
 
         fun transport(failure: Exception): AgentModelFailure? = when (failure) {
             is AgentModelFailure -> failure
+            is LocalNetworkAccessException -> AgentModelFailure(
+                LocalNetworkAccessException.CODE, false, failure.message.orEmpty(), failure,
+            )
             is InterruptedIOException -> AgentModelFailure(
                 "MODEL_TIMEOUT", true,
-                "模型请求等待超时（连接或写入超时，或读取响应等待超过 ${AgentHttpClient.MODEL_READ_TIMEOUT_MS / 60_000} 分钟）。",
+                "模型服务暂时没有响应：连接、发送或响应数据等待超过 " +
+                    "${AgentHttpClient.MODEL_READ_TIMEOUT_MS / 60_000} 分钟。请检查网络和服务商状态后重试。",
                 failure,
             )
             is SSLException, is ProtocolException -> null
@@ -100,7 +110,9 @@ internal class AgentModelFailure(
             val message = error.optString("message").lowercase()
             return message.contains("maximum context length") || message.contains("prompt is too long") ||
                 message.contains("exceeds the context window") || message.contains("input token count exceeds") ||
-                message.contains("input token count") && message.contains("exceeds the maximum")
+                message.contains("input token count") && message.contains("exceeds the maximum") ||
+                message.contains("context length") || message.contains("context size") ||
+                message.contains("too many tokens") || message.contains("token limit")
         }
 
         private fun authenticationFailure(error: JSONObject?): AgentModelFailure? {

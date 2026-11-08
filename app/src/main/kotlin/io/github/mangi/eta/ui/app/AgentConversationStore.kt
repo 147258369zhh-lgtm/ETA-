@@ -38,6 +38,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.json.JSONArray
@@ -59,6 +60,7 @@ internal object AgentConversationStore {
          * 重启后列表被压紧；增量保存按下标截断后缀，这些会话必须先整段重写一次。
          */
         val unalignedConversationIds: Set<String> = emptySet(),
+        val branchDrafts: List<ConversationBranchDraft> = emptyList(),
     )
 
     private val saveMutex = Mutex()
@@ -84,6 +86,7 @@ internal object AgentConversationStore {
         selectedConversationId: String?,
         current: Map<String, AgentConversationPersistence.Content>,
         previous: Map<String, AgentConversationPersistence.Content>,
+        branchDrafts: List<ConversationBranchDraft> = emptyList(),
     ) {
         val appContext = context.applicationContext
         saveMutex.withLock {
@@ -147,6 +150,7 @@ internal object AgentConversationStore {
                                 prefix++
                             }
                             if (old == null || old.messages != state.messages || old.messageStartIndex != state.messageStartIndex) {
+                                val origins = dao.messageOriginsFrom(id, state.messageStartIndex + prefix)
                                 phase = "delete_message_suffix"
                                 dao.deleteMessagesFrom(id, state.messageStartIndex + prefix)
                                 for (index in prefix until state.messages.size) {
@@ -154,6 +158,10 @@ internal object AgentConversationStore {
                                     val row = state.messages[index].toEntityOrNull(id, state.messageStartIndex + index) ?: continue
                                     phase = "write_message"
                                     dao.insertMessages(listOf(row))
+                                }
+                                // 后缀重写删除再插入同 ID 的消息时保留真实来源；真正删除的消息不恢复来源。
+                                origins.forEach { origin ->
+                                    if (dao.hasMessage(id, origin.messageId)) dao.insertMessageOrigin(origin)
                                 }
                             }
                             if (state.roleplay != null && state.roleplayMessages.revisions != old?.roleplayMessages?.revisions) {
@@ -165,6 +173,16 @@ internal object AgentConversationStore {
                                         check(updated || old == null) { "Roleplay revision message missing" }
                                     }
                                 }
+                            }
+                        }
+                        phase = "write_branches"
+                        branchDrafts.filter { it.node.conversationId in current }.forEach { draft ->
+                            draft.root?.takeIf { it.conversationId in current }?.let { dao.insertBranch(it) }
+                            val parentId = draft.node.parentConversationId?.takeIf { it in current }
+                            dao.insertBranch(draft.node.copy(parentConversationId = parentId))
+                            draft.setup?.let { dao.insertBranchSetup(it) }
+                            draft.origins.forEach { origin ->
+                                if (dao.hasMessage(origin.conversationId, origin.messageId)) dao.insertMessageOrigin(origin)
                             }
                         }
                         phase = "write_selection"
@@ -257,14 +275,16 @@ internal object AgentConversationStore {
             val history = if (checkpoint != null && checkpoint.historyJson == checkpoint.journalJson &&
                 !checkpoint.historyJson.startsWith(io.github.mangi.eta.data.db.ChunkedTextDao.REFERENCE_PREFIX)
             ) journal else decodeCheckpoint(dao, conversationId, "history", checkpoint?.historyJson)
+            val loadedHistory = history.ifEmpty { loadLegacyHistory(dao, conversationId) }
             val state = AgentChatHomeUiState(
                 roleplay = conversation.roleplayJson.takeIf(String::isNotBlank)?.let { json.decodeFromString<RoleplayBinding>(it) },
                 roleplayMessages = conversation.revisionsJson.takeIf(String::isNotBlank)?.let {
                     json.decodeFromString<RoleplayMessageState>(it)
                 } ?: RoleplayMessageState(),
-                journal = journal,
+                // 相同内容的 checkpoint 只保存 history；journal 为空时对调用方回退到同一份历史。
+                journal = journal.ifEmpty { loadedHistory },
                 messages = page.messages,
-                history = history.ifEmpty { loadLegacyHistory(dao, conversationId) },
+                history = loadedHistory,
                 appliedRuntimeRunIds = conversation.appliedRuntimeRunIdsJson.toStringList(),
                 input = "", isStreaming = false,
                 thinkingEnabled = conversation.reasoningEffortValue.enablesReasoning,
@@ -326,6 +346,46 @@ internal object AgentConversationStore {
                 }
             }
         }
+
+    data class BranchSource(val messages: List<AgentChatMessageUi>, val positions: Map<String, Int>,
+        val node: io.github.mangi.eta.data.db.ConversationBranchEntity?,
+        /** 已从第一条读到目标条，且真实库确认目标回复后没有同轮正文/工具。 */
+        val verifiedPrefix: Boolean = false)
+
+    suspend fun loadBranchSource(context: Context, id: String, messageId: String): BranchSource = withContext(Dispatchers.IO) {
+        val db = EtaDatabase.get(context.applicationContext)
+        db.withTransaction {
+            val dao = db.conversationDao()
+            val messages = mutableListOf<AgentChatMessageUi>()
+            val positions = mutableMapOf<String, Int>()
+            var count = 0
+            var after = Int.MIN_VALUE.toLong() - 1
+            val target = dao.branchPoint(id, messageId) ?: error("BRANCH_SOURCE_MESSAGE_MISSING")
+            check(target.type == TYPE_USER || target.type == TYPE_ASSISTANT) { "BRANCH_INVALID_POINT" }
+            check(dao.messagePrefixCount(id, target.sortIndex) <= 32_000) { "BRANCH_HISTORY_TOO_LARGE" }
+            if (target.type == TYPE_ASSISTANT) {
+                check(!dao.hasReplyContinuation(id, target.sortIndex, dao.nextUserMessageIndex(id, target.sortIndex))) {
+                    "BRANCH_INTERMEDIATE_REPLY"
+                }
+            }
+            var characters = 0L
+            while (true) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val rows = dao.messagePrefixRowsPage(id, after, target.sortIndex, MESSAGE_LOAD_PAGE_SIZE).map { dao.restoreMessage(it) }
+                rows.forEach { row ->
+                    characters += row.content.length.toLong() + row.imagesJson.length + row.argumentsSummary.orEmpty().length +
+                        row.resultSummary.orEmpty().length + row.toolsJson.length
+                }
+                count += rows.size
+                check(count <= 32_000 && characters <= 16L * 1024 * 1024) { "BRANCH_HISTORY_TOO_LARGE" }
+                rows.forEach { row -> row.toMessageOrNull()?.let { messages += it; positions[it.id] = row.sortIndex } }
+                if (rows.size < MESSAGE_LOAD_PAGE_SIZE) break
+                after = rows.last().sortIndex.toLong()
+            }
+            check(messages.lastOrNull()?.id == messageId) { "BRANCH_SOURCE_MESSAGE_MISSING" }
+            BranchSource(messages, positions, dao.branch(id), verifiedPrefix = true)
+        }
+    }
 
     suspend fun searchConversationIds(
         context: Context,

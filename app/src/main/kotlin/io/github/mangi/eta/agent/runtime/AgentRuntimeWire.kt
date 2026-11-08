@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import io.github.mangi.eta.BuildConfig
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.prompt.PromptRunScope
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomHeader
@@ -99,6 +100,8 @@ internal object AgentRuntimeWire {
 
     private const val KEY_TYPE = "type"
     private const val KEY_RUN_ID = "run_id"
+    private const val KEY_COMPACTION_START = "compaction_start"
+    private const val KEY_COMPACTION_END = "compaction_end"
     private const val KEY_PROMPT = "prompt"
     private const val KEY_ASSISTANT_SCREEN_CONTEXT = "assistant_screen_context"
     private const val KEY_MODEL_SESSION_ID = "model_session_id"
@@ -117,6 +120,7 @@ internal object AgentRuntimeWire {
     private const val KEY_ANTHROPIC_VERSION = "anthropic_version"
     private const val KEY_OPENAI_ENDPOINT_MODE = "openai_endpoint_mode"
     private const val KEY_SUPPORTS_SEARCH_SUGGESTIONS = "supports_search_suggestions"
+    private const val KEY_SUPPORTS_TOOLS = "supports_tools"
     private const val KEY_HOSTED_WEB_SEARCH_ENABLED = "hosted_web_search_enabled"
     private const val KEY_TERMINAL_TOOLS = "terminal_tools"
     private const val KEY_BROWSER_TOOLS = "browser_tools"
@@ -159,6 +163,7 @@ internal object AgentRuntimeWire {
         "handoff_dismiss_entry_surface_on_foreground_operation"
     private const val KEY_TOOL_ALLOWLIST = "tool_allowlist"
     private const val KEY_TOOL_DENYLIST = "tool_denylist"
+    private const val KEY_PROMPT_SCOPE_JSON = "prompt_scope_json"
     private const val LEGACY_BREENO_HANDOFF_SOURCE = "breeno"
     private const val KEY_CREATED_AT = "created_at"
     private const val KEY_RESULTS = "results"
@@ -166,7 +171,7 @@ internal object AgentRuntimeWire {
     private const val MAX_RESULT_REASONING_CHARS = 32_000
     private const val MAX_DRAIN_CONTENT_CHARS = 16_000
     private const val MAX_DRAIN_REASONING_CHARS = 4_000
-    private const val TRUNCATED_SUFFIX = "\n\n[跨进程结果过长，已截断]"
+    private const val TRUNCATED_SUFFIX = "\n\n[跨进程预览过长，已省略中段并保留结尾]\n\n"
     private const val MAX_START_REQUEST_PARCEL_BYTES = 768 * 1024
 
     data class RunRequest(
@@ -181,6 +186,8 @@ internal object AgentRuntimeWire {
         val rewriteTargetMessageId: String? = null,
         val assistantScreenContext: String = "",
         val toolPolicy: AgentToolPolicy = AgentToolPolicy.UNRESTRICTED,
+        val compactionSelection: IntRange? = null,
+        val promptScope: PromptRunScope = PromptRunScope(),
     ) {
         // 旧入口沿用会话 handoff；无持久会话的入口以首个 run 为会话起点。
         val effectiveModelSessionId: String
@@ -337,6 +344,7 @@ internal object AgentRuntimeWire {
         putString(KEY_MODEL, request.config.model)
         putString(KEY_MODEL_DISPLAY_NAME, request.config.modelDisplayName)
         putString("operation", request.operation)
+        request.compactionSelection?.let { putInt(KEY_COMPACTION_START, it.first); putInt(KEY_COMPACTION_END, it.last) }
         request.rewriteTargetMessageId?.let { putString("rewrite_target_message_id", it) }
         request.config.contextWindow?.let { putInt(KEY_CONTEXT_WINDOW, it) }
         putBoolean(KEY_AUTO_COMPACTION_ENABLED, request.config.autoCompactionEnabled)
@@ -345,6 +353,7 @@ internal object AgentRuntimeWire {
         putString(KEY_OPENAI_ENDPOINT_MODE, request.config.openAiEndpointMode)
         putBoolean(KEY_HOSTED_WEB_SEARCH_ENABLED, request.config.hostedWebSearchEnabled)
         putBoolean(KEY_SUPPORTS_SEARCH_SUGGESTIONS, request.config.supportsSearchSuggestions)
+        putBoolean(KEY_SUPPORTS_TOOLS, request.config.supportsTools)
         putBoolean(KEY_TERMINAL_TOOLS, request.config.terminalTools)
         putBoolean(KEY_BROWSER_TOOLS, request.config.browserTools)
         putBoolean(KEY_DEVICE_DIRECT_TOOLS, request.config.deviceDirectTools)
@@ -363,6 +372,7 @@ internal object AgentRuntimeWire {
             putStringArrayList(KEY_TOOL_ALLOWLIST, ArrayList(it))
         }
         putStringArrayList(KEY_TOOL_DENYLIST, ArrayList(request.toolPolicy.disallowedTools))
+        putString(KEY_PROMPT_SCOPE_JSON, request.promptScope.toJson().toString())
         request.handoff?.let { putBundle(KEY_HANDOFF, toBundle(it)) }
         putParcelableArrayList(
             KEY_HISTORY,
@@ -462,6 +472,9 @@ internal object AgentRuntimeWire {
                 require(it.length <= AssistantScreenContextProjection.MAX_CHARS) { "助理屏幕上下文超过容量预算" }
             },
             operation = bundle.getString("operation")?.also { require(it in setOf(OP_CHAT, OP_COMPACT, OP_REWRITE_REPLY)) } ?: OP_CHAT,
+            compactionSelection = if (bundle.containsKey(KEY_COMPACTION_START) && bundle.containsKey(KEY_COMPACTION_END)) {
+                bundle.getInt(KEY_COMPACTION_START)..bundle.getInt(KEY_COMPACTION_END)
+            } else null,
             rewriteTargetMessageId = bundle.getString("rewrite_target_message_id")?.also {
                 require(it.isNotBlank() && it.length <= 256) { "Invalid rewrite target" }
             },
@@ -491,6 +504,7 @@ internal object AgentRuntimeWire {
                     .ifBlank { io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS },
                 hostedWebSearchEnabled = bundle.getBoolean(KEY_HOSTED_WEB_SEARCH_ENABLED, false),
                 supportsSearchSuggestions = bundle.getBoolean(KEY_SUPPORTS_SEARCH_SUGGESTIONS, false),
+                supportsTools = bundle.getBoolean(KEY_SUPPORTS_TOOLS, true),
                 terminalTools = bundle.getBoolean(KEY_TERMINAL_TOOLS),
                 browserTools = if (bundle.containsKey(KEY_BROWSER_TOOLS)) {
                     bundle.getBoolean(KEY_BROWSER_TOOLS)
@@ -541,6 +555,7 @@ internal object AgentRuntimeWire {
                 allowedTools = bundle.getStringArrayList(KEY_TOOL_ALLOWLIST),
                 disallowedTools = bundle.getStringArrayList(KEY_TOOL_DENYLIST).orEmpty(),
             ),
+            promptScope = PromptRunScope.fromJson(bundle.getString(KEY_PROMPT_SCOPE_JSON)),
         )
 
     fun toBundle(handoff: EntryHandoff): Bundle = Bundle().apply {
@@ -686,7 +701,14 @@ internal object AgentRuntimeWire {
         bundle.getString(KEY_RUN_ID).orEmpty()
 
     private fun String.boundedText(maxChars: Int): String =
-        if (length <= maxChars) this else take((maxChars - TRUNCATED_SUFFIX.length).coerceAtLeast(0)) + TRUNCATED_SUFFIX
+        if (length <= maxChars) {
+            this
+        } else {
+            val available = (maxChars - TRUNCATED_SUFFIX.length).coerceAtLeast(2)
+            val headChars = available * 3 / 5
+            val tailChars = available - headChars
+            take(headChars) + TRUNCATED_SUFFIX + takeLast(tailChars)
+        }
 
     private fun requireStartRequestWithinBinderBudget(bundle: Bundle) {
         val parcel = Parcel.obtain()
@@ -704,6 +726,11 @@ internal object AgentRuntimeWire {
     /** 将 [AgentEvent] 打包为可跨进程传递的 [Bundle]。 */
     fun eventToBundle(event: AgentEvent): Bundle = Bundle().apply {
         when (event) {
+            is AgentEvent.AccessibilityWaiting -> {
+                putString(KEY_TYPE, "accessibility_wait")
+                putInt("outage", event.outage)
+                putString("phase", event.phase.wireValue)
+            }
             is AgentEvent.GuiControlChanged -> {
                 putString(KEY_TYPE, "gui_control_changed")
                 putString("status", event.status.wireValue)
@@ -876,6 +903,9 @@ internal object AgentRuntimeWire {
 
     /** 将 [Bundle] 还原为 [AgentEvent]，无法识别时返回 null。 */
     fun eventFromBundle(bundle: Bundle): AgentEvent? = when (bundle.getString(KEY_TYPE)) {
+        "accessibility_wait" -> io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase
+            .fromWireValue(bundle.getString("phase").orEmpty())
+            ?.let { AgentEvent.AccessibilityWaiting(bundle.getInt("outage"), it) }
         "gui_control_changed" -> GuiControlStatus.fromWireValue(bundle.getString("status").orEmpty())
             ?.let { AgentEvent.GuiControlChanged(it) }
         "run_started" -> AgentEvent.RunStarted(
@@ -1039,6 +1069,32 @@ internal object AgentRuntimeWire {
         usage.outputTokens?.let { putInt("usage_output", it) }
         usage.reasoningTokens?.let { putInt("usage_reasoning", it) }
         usage.cachedTokens?.let { putInt("usage_cache", it) }
+        putInt("usage_billing_basis", usage.billingBasis)
+        usage.cacheWriteTokens?.let { putInt("usage_cache_write", it) }
+        usage.toolUseTokens?.let { putInt("usage_tool_use", it) }
+        usage.localRuntime?.let { metrics ->
+            putString("local_runtime_backend", metrics.backend.name)
+            putString("local_runtime_format", metrics.modelFormat)
+            putString("local_runtime_model", metrics.modelId)
+            metrics.backendDetail?.let { putString("local_runtime_backend_detail", it) }
+            metrics.loadMs?.let { putLong("local_runtime_load_ms", it) }
+            metrics.firstTokenMs?.let { putLong("local_runtime_first_token_ms", it) }
+            metrics.promptTokens?.let { putInt("local_runtime_prompt_tokens", it) }
+            metrics.generatedTokens?.let { putInt("local_runtime_generated_tokens", it) }
+            metrics.tokensPerSecond?.let { putDouble("local_runtime_tps", it) }
+            metrics.promptCacheHitTokens?.let { putInt("local_runtime_cache_hit_tokens", it) }
+            metrics.promptCacheReusedTokens?.let { putInt("local_runtime_cache_reused_tokens", it) }
+            metrics.kvCacheUsedTokens?.let { putInt("local_runtime_kv_used", it) }
+            metrics.kvCacheCapacityTokens?.let { putInt("local_runtime_kv_capacity", it) }
+            metrics.contextWindow?.let { putInt("local_runtime_context_window", it) }
+            metrics.prefillMs?.let { putLong("local_runtime_prefill_ms", it) }
+            metrics.decodeMs?.let { putLong("local_runtime_decode_ms", it) }
+            metrics.totalMs?.let { putLong("local_runtime_total_ms", it) }
+            metrics.finishReason?.let { putString("local_runtime_finish_reason", it) }
+            metrics.failureCode?.let { putString("local_runtime_failure_code", it) }
+            putLong("local_runtime_started_at", metrics.startedAt)
+            putLong("local_runtime_completed_at", metrics.completedAt)
+        }
     }
 
     private fun Bundle.getTokenUsage(): AgentTokenUsage =
@@ -1048,7 +1104,48 @@ internal object AgentRuntimeWire {
             outputTokens = optionalInt("usage_output"),
             reasoningTokens = optionalInt("usage_reasoning"),
             cachedTokens = optionalInt("usage_cache"),
+            billingBasis = getInt("usage_billing_basis", AgentBillingTokens.UNKNOWN),
+            cacheWriteTokens = optionalInt("usage_cache_write"),
+            toolUseTokens = optionalInt("usage_tool_use"),
+            localRuntime = getLocalRuntimeMetrics(),
         )
+
+    private fun Bundle.getLocalRuntimeMetrics(): LocalRuntimeMetrics? {
+        val backend = getString("local_runtime_backend")
+            ?.let { runCatching { LocalRuntimeBackend.valueOf(it) }.getOrNull() }
+            ?: return null
+        val format = getString("local_runtime_format")?.takeIf { it.isNotBlank() } ?: return null
+        val model = getString("local_runtime_model")?.takeIf { it.isNotBlank() } ?: return null
+        return LocalRuntimeMetrics(
+            backend = backend,
+            modelFormat = format,
+            modelId = model,
+            backendDetail = getString("local_runtime_backend_detail"),
+            loadMs = optionalLong("local_runtime_load_ms"),
+            firstTokenMs = optionalLong("local_runtime_first_token_ms"),
+            promptTokens = optionalInt("local_runtime_prompt_tokens"),
+            generatedTokens = optionalInt("local_runtime_generated_tokens"),
+            tokensPerSecond = optionalDouble("local_runtime_tps"),
+            promptCacheHitTokens = optionalInt("local_runtime_cache_hit_tokens"),
+            promptCacheReusedTokens = optionalInt("local_runtime_cache_reused_tokens"),
+            kvCacheUsedTokens = optionalInt("local_runtime_kv_used"),
+            kvCacheCapacityTokens = optionalInt("local_runtime_kv_capacity"),
+            contextWindow = optionalInt("local_runtime_context_window"),
+            prefillMs = optionalLong("local_runtime_prefill_ms"),
+            decodeMs = optionalLong("local_runtime_decode_ms"),
+            totalMs = optionalLong("local_runtime_total_ms"),
+            finishReason = getString("local_runtime_finish_reason"),
+            failureCode = getString("local_runtime_failure_code"),
+            startedAt = optionalLong("local_runtime_started_at") ?: 0L,
+            completedAt = optionalLong("local_runtime_completed_at") ?: 0L,
+        )
+    }
+
+    private fun Bundle.optionalLong(key: String): Long? =
+        if (containsKey(key)) getLong(key) else null
+
+    private fun Bundle.optionalDouble(key: String): Double? =
+        if (containsKey(key)) getDouble(key) else null
 
     private fun decodeCustomHeaders(raw: String?): List<CustomHeader> =
         if (raw.isNullOrBlank()) emptyList()

@@ -10,6 +10,57 @@ import androidx.room.Upsert
 
 @Dao
 internal interface ConversationDao : ChunkedTextDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM conversations WHERE id = :id)")
+    suspend fun conversationExists(id: String): Boolean
+    @Query("SELECT * FROM conversation_branch_setups WHERE conversation_id = :id")
+    suspend fun branchSetup(id: String): ConversationBranchSetupEntity?
+
+    @Query("SELECT * FROM conversation_branch_setups ORDER BY conversation_id LIMIT :limit OFFSET :offset")
+    suspend fun branchSetupsPage(limit: Int, offset: Int): List<ConversationBranchSetupEntity>
+
+    @Query("SELECT * FROM conversation_branch_setups WHERE completed_at IS NULL ORDER BY created_at, conversation_id LIMIT :limit")
+    suspend fun pendingBranchSetups(limit: Int): List<ConversationBranchSetupEntity>
+
+    @Query("SELECT * FROM conversation_branch_setups")
+    fun branchSetupsFlow(): kotlinx.coroutines.flow.Flow<List<ConversationBranchSetupEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertBranchSetup(setup: ConversationBranchSetupEntity)
+
+    @Query("UPDATE conversation_branch_setups SET completed_at = :now, completion_mode = :mode, error_code = NULL " +
+        "WHERE conversation_id = :id AND setup_id = :setupId AND completed_at IS NULL")
+    suspend fun completeBranchSetup(id: String, setupId: String, now: Long, mode: String): Int
+
+    @Query("UPDATE conversation_branch_setups SET error_code = :code WHERE conversation_id = :id AND setup_id = :setupId AND completed_at IS NULL")
+    suspend fun branchSetupError(id: String, setupId: String, code: String)
+
+    @Query("SELECT * FROM conversation_branches ORDER BY created_at, conversation_id")
+    fun branchesFlow(): kotlinx.coroutines.flow.Flow<List<ConversationBranchEntity>>
+
+    @Query("SELECT * FROM conversation_branches WHERE conversation_id = :id")
+    suspend fun branch(id: String): ConversationBranchEntity?
+
+    @Query("SELECT * FROM conversation_branches ORDER BY conversation_id LIMIT :limit OFFSET :offset")
+    suspend fun branchesPage(limit: Int, offset: Int): List<ConversationBranchEntity>
+
+    @Query("SELECT * FROM conversation_message_origins ORDER BY message_id LIMIT :limit OFFSET :offset")
+    suspend fun messageOriginsPage(limit: Int, offset: Int): List<ConversationMessageOriginEntity>
+
+    @Query("SELECT * FROM conversation_message_origins WHERE conversation_id = :id")
+    suspend fun messageOrigins(id: String): List<ConversationMessageOriginEntity>
+    @Query("SELECT o.* FROM conversation_message_origins o JOIN conversation_messages m ON m.id = o.message_id " +
+        "WHERE o.conversation_id = :id AND m.sort_index >= :start")
+    suspend fun messageOriginsFrom(id: String, start: Int): List<ConversationMessageOriginEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertBranch(branch: ConversationBranchEntity)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertMessageOrigin(origin: ConversationMessageOriginEntity)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM conversations WHERE id = :conversationId)")
+    fun conversationExistsFlow(conversationId: String): kotlinx.coroutines.flow.Flow<Boolean>
+
     @Query(
         "SELECT c.id, c.title, c.reasoning_effort, c.created_at, c.updated_at, c.model_id, c.is_pinned, " +
             "(c.roleplay_json != '') AS has_roleplay, " +
@@ -25,6 +76,31 @@ internal interface ConversationDao : ChunkedTextDao {
 
     @Query("SELECT id, title, created_at, updated_at, is_pinned FROM conversations")
     suspend fun conversationIdentities(): List<ConversationIdentity>
+    @Query("SELECT id, title, created_at, updated_at, is_pinned FROM conversations")
+    fun conversationIdentitiesFlow(): kotlinx.coroutines.flow.Flow<List<ConversationIdentity>>
+
+    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId AND id = :messageId")
+    suspend fun messageRow(conversationId: String, messageId: String): ConversationMessageEntity?
+
+    @Query("SELECT id, sort_index, type FROM conversation_messages WHERE conversation_id = :conversationId AND id = :messageId")
+    suspend fun branchPoint(conversationId: String, messageId: String): ConversationBranchPoint?
+
+    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index BETWEEN :start AND :end ORDER BY sort_index")
+    suspend fun messageRowsRange(conversationId: String, start: Int, end: Int): List<ConversationMessageEntity>
+
+    @Query("SELECT MIN(sort_index) FROM conversation_messages WHERE conversation_id = :conversationId AND type = 'user' AND sort_index > :after")
+    suspend fun nextUserMessageIndex(conversationId: String, after: Int): Int?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id = :conversationId " +
+        "AND sort_index > :after AND (:before IS NULL OR sort_index < :before) AND type IN ('assistant', 'tool', 'tool_summary'))")
+    suspend fun hasReplyContinuation(conversationId: String, after: Int, before: Int?): Boolean
+
+    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index > :after AND sort_index <= :through " +
+        "ORDER BY sort_index LIMIT :limit")
+    suspend fun messagePrefixRowsPage(conversationId: String, after: Long, through: Int, limit: Int): List<ConversationMessageEntity>
+
+    @Query("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index <= :through")
+    suspend fun messagePrefixCount(conversationId: String, through: Int): Int
 
     @Query("UPDATE conversations SET title = :title, updated_at = :updatedAt, is_pinned = :isPinned WHERE id = :conversationId")
     suspend fun updateConversationTitle(conversationId: String, title: String, updatedAt: Long, isPinned: Boolean = false)
@@ -215,6 +291,20 @@ internal interface ConversationDao : ChunkedTextDao {
     @Upsert
     suspend fun insertContextCheckpointRow(checkpoint: ConversationContextCheckpointEntity)
 
+    @Query("SELECT * FROM conversation_context_checkpoints WHERE journal_json = history_json AND journal_json != ''")
+    suspend fun identicalContextCheckpoints(): List<ConversationContextCheckpointEntity>
+
+    /** 旧库中逐字节相同的 journal 分块可安全删除；差异记录保持原样。 */
+    @Transaction
+    suspend fun dedupeIdenticalContextCheckpoints(): Int {
+        val rows = identicalContextCheckpoints()
+        rows.forEach { row ->
+            storeText("conversation_context_checkpoints", row.conversationId, "journal", "")
+            insertContextCheckpointRow(row.copy(journalJson = ""))
+        }
+        return rows.size
+    }
+
     @Transaction
     suspend fun insertContextCheckpoints(checkpoints: List<ConversationContextCheckpointEntity>) {
         checkpoints.forEach { row ->
@@ -229,12 +319,32 @@ internal interface ConversationDao : ChunkedTextDao {
     suspend fun updateContextCheckpoint(conversationId: String, historyJson: String?, journalJson: String?) {
         val previous = contextCheckpointRow(conversationId)
             ?: ConversationContextCheckpointEntity(conversationId, "[]")
-        insertContextCheckpointRow(previous.copy(
-            historyJson = historyJson?.let { storeText("conversation_context_checkpoints", conversationId, "history", it) }
-                ?: previous.historyJson,
-            journalJson = journalJson?.let { storeText("conversation_context_checkpoints", conversationId, "journal", it) }
-                ?: previous.journalJson,
-        ))
+        val storedHistory = historyJson?.let {
+            storeText("conversation_context_checkpoints", conversationId, "history", it)
+        } ?: previous.historyJson
+        val historyText = runCatching {
+            restoreText("conversation_context_checkpoints", conversationId, "history", storedHistory)
+        }.getOrNull()
+        // history 与 journal 在多数回合内容逐字节相同。journal 为空时读取端会回退到 history，
+        // 因而同内容只保留一份分块，避免 checkpoint 每次增长都写两份大字段。
+        val storedJournal = when {
+            journalJson != null && historyText != null && journalJson == historyText ->
+                storeText("conversation_context_checkpoints", conversationId, "journal", "")
+            journalJson != null ->
+                storeText("conversation_context_checkpoints", conversationId, "journal", journalJson)
+            historyText != null && previous.journalJson.isNotBlank() -> {
+                val previousJournal = runCatching {
+                    restoreText("conversation_context_checkpoints", conversationId, "journal", previous.journalJson)
+                }.getOrNull()
+                if (previousJournal == historyText) {
+                    storeText("conversation_context_checkpoints", conversationId, "journal", "")
+                } else {
+                    previous.journalJson
+                }
+            }
+            else -> previous.journalJson
+        }
+        insertContextCheckpointRow(previous.copy(historyJson = storedHistory, journalJson = storedJournal))
     }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

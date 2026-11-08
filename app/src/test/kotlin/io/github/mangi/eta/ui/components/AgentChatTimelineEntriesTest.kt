@@ -3,12 +3,36 @@ package io.github.mangi.eta.ui.components
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.ToolActivityMessageUi
+import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class AgentChatTimelineEntriesTest {
+
+    @Test fun adjacentParallelMembersAndDifferentRunsKeepTheirOwnWorkGroups() {
+        val messages = listOf("a1", "a2", "b1", "a3").map {
+            ToolActivityMessageUi(it, "read_file", ToolActivityStatusUi.Success, "file")
+        }
+        val groups = mapOf("a1" to "run-a", "a2" to "run-a", "b1" to "run-b", "a3" to "run-a-next")
+        val entries = messages.toTimelineEntries(workGroups = groups)
+        assertEquals(listOf(listOf("a1", "a2"), listOf("b1"), listOf("a3")),
+            entries.map { (it as AgentTimelineEntry.WorkProcess).messages.map { message -> message.id } })
+        assertEquals(entries.size, entries.map { it.key }.distinct().size)
+        val next = messages.toTimelineEntries(previous = entries, workGroups = groups)
+        entries.indices.forEach { assertSame(entries[it], next[it]) }
+    }
+
+    @Test fun changingAttributionSplitsAnExistingWorkProcessWithoutDuplicateKeys() {
+        val messages = listOf("a", "b").map { ThinkingMessageUi(it, "work", isStreaming = false) }
+        val previous = messages.toTimelineEntries()
+        val next = messages.toTimelineEntries(previous, workGroups = mapOf("a" to "member-a", "b" to "member-b"))
+        assertEquals(2, next.size)
+        assertEquals(2, next.map { it.key }.distinct().size)
+        assertNotSame(previous[0], next[0])
+    }
 
     @Test
     fun unchangedWorkProcessReusesPreviousEntry() {

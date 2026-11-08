@@ -11,11 +11,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import java.io.ByteArrayOutputStream
 
 internal data class SpeechInputState(
     val phase: EtaSpeechPhase = EtaSpeechPhase.IDLE,
@@ -36,6 +38,8 @@ internal class SpeechInputController(
     private val afterCapture: () -> Unit = {},
     private val refiner: SpeechTranscriptRefiner = SpeechTranscriptRefiner(),
     private val createRecorder: () -> SpeechAudioCapture = ::SpeechRecorder,
+    private val captureSpeakerFeatures: Boolean = false,
+    private val onSpeakerFeatures: (ByteArray) -> Unit = {},
     private val recognizeStream: suspend (
         SpeechSettings,
         SpeechCredentials,
@@ -79,6 +83,23 @@ internal class SpeechInputController(
                         if (generation == session) mutableState.value = transform(mutableState.value)
                     }
                 }
+                val capturedPcm = ByteArrayOutputStream()
+                // The recorder already enforces the 60-second PCM limit. Keep the hand-off
+                // lossless while local inference is slower than real time so the capture loop
+                // never turns transient ASR latency into a BACKPRESSURE failure.
+                val recognitionFrames = speechFrameChannel()
+                val frameTap = scope.launch(Dispatchers.IO) {
+                    try {
+                        for (frame in audio.frames) {
+                            if (captureSpeakerFeatures && capturedPcm.size() + frame.size <= SpeechRecorder.MAX_BYTES) {
+                                capturedPcm.write(frame)
+                            }
+                            recognitionFrames.send(frame)
+                        }
+                    } finally {
+                        recognitionFrames.close()
+                    }
+                }
                 val text = coroutineScope {
                     var recording: Job? = null
                     val begin = {
@@ -104,7 +125,7 @@ internal class SpeechInputController(
                             recognizeStream(
                                 config,
                                 secrets,
-                                audio.frames,
+                                recognitionFrames,
                                 begin,
                                 { preview -> update { it.copy(preview = preview) } },
                                 { audio.finish() },
@@ -112,23 +133,41 @@ internal class SpeechInputController(
                             )
                         } else {
                             begin()
-                            val wav = withTimeout(65_000) { collectSpeechAudio(audio.frames) }
-                            recognizeSpeechFile(context, config, secrets, wav) { progress ->
-                                update { it.copy(phase = EtaSpeechPhase.RECOGNIZING, progress = progress) }
+                            if (config.asr == AsrProvider.LOCAL) {
+                                withTimeout(65_000) {
+                                    LocalSpeechRuntime.transcribeStream(
+                                        settings = config,
+                                        frames = recognitionFrames,
+                                        endpointSilenceMs = endpointSilenceMs,
+                                        onProgress = { preview ->
+                                            update { it.copy(preview = preview) }
+                                        },
+                                    )
+                                }
+                            } else {
+                                val wav = withTimeout(65_000) { collectSpeechAudio(recognitionFrames) }
+                                recognizeSpeechFile(context, config, secrets, wav) { progress ->
+                                    update { it.copy(phase = EtaSpeechPhase.RECOGNIZING, progress = progress) }
+                                }
                             }
                         }
                     } finally {
                         audio.cancel()
+                        frameTap.cancel()
+                        recognitionFrames.cancel()
                         recording?.cancel()
                     }
                 }
                 if (text.isBlank()) throw SpeechFailure(SpeechErrorCode.NO_SPEECH, "没有识别到语音，请重试")
+                if (captureSpeakerFeatures) {
+                    VoiceprintFeatureExtractor.extract(capturedPcm.toByteArray())?.let(onSpeakerFeatures)
+                }
                 val final = refined(session, config.refineTranscript, text)
                 if (generation == session) {
                     cancel()
                     onResult(final)
                 }
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
                 if (error is CancellationException && error !is kotlinx.coroutines.TimeoutCancellationException) throw error
                 if (generation == session) {
                     val failure = error.speechFailure()

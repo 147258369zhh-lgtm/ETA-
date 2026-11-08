@@ -38,66 +38,43 @@ internal object AgentMemoryToolCatalog {
                                         .put("minimum", AgentMemoryStore.MIN_READ_CHARS)
                                         .put("maximum", AgentMemoryStore.MAX_READ_CHARS)
                                         .put("description", "Maximum returned characters; default 12000, maximum 32000."),
-                                ),
+                                )
+                                .put(
+                                    "scope",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("enum", JSONArray().put("global").put("project").put("current"))
+                                        .put("description", "Optional scope. global is the durable cross-conversation memory; project/current address the active run scope when available."),
+                                )
                         ),
                 ),
             )
         if (!writable) return
-        tools
-            .put(
-                AgentToolSchema.function(
-                    name = "memory_write",
-                    description = "Atomically update persistent MEMORY.md. Store only durable cross-conversation facts, preferences, relationships, and ongoing project context; never store secrets, credentials, verification codes, or transient requests. Keep '# 核心记忆' concise, correct stale facts, and prefer replacing an existing section over blindly appending duplicates. Use the revision from the most recent memory_write or memory_get result, or the session memory snapshot if neither has run.",
-                    parameters = JSONObject()
-                        .put("type", "object")
-                        .put(
-                            "properties",
-                            JSONObject()
-                                .put(
-                                    "mode",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put(
-                                            "enum",
-                                            JSONArray()
-                                                .put("replace_range")
-                                                .put("append")
-                                                .put("clear"),
-                                        )
-                                        .put("description", "replace_range edits inclusive 1-based lines; append adds a distinct section; clear removes all memory."),
-                                )
-                                .put(
-                                    "revision",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("minLength", 64)
-                                        .put("maxLength", 64)
-                                        .put("description", "Exact SHA-256 revision from the most recent memory_write or memory_get result, or the session memory snapshot."),
-                                )
-                                .put(
-                                    "start_line",
-                                    JSONObject()
-                                        .put("type", "integer")
-                                        .put("minimum", 1)
-                                        .put("description", "Required for replace_range; inclusive 1-based first line."),
-                                )
-                                .put(
-                                    "end_line",
-                                    JSONObject()
-                                        .put("type", "integer")
-                                        .put("minimum", 1)
-                                        .put("description", "Required for replace_range; inclusive 1-based last line."),
-                                )
-                                .put(
-                                    "content",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("maxLength", AgentMemoryStore.MAX_WRITE_CONTENT_CHARS)
-                                        .put("description", "Replacement or appended Markdown, at most 3500 characters. Empty content deletes a replace_range."),
-                                ),
-                        )
-                        .put("required", JSONArray().put("mode").put("revision")),
-                ),
-            )
+        val writeProperties = JSONObject()
+            .put("mode", JSONObject().put("type", "string")
+                .put("enum", JSONArray().put("replace_range").put("append").put("clear"))
+                .put("description", "replace_range edits inclusive 1-based lines; append adds a distinct section; clear removes all memory."))
+            .put("revision", JSONObject().put("type", "string").put("minLength", 64).put("maxLength", 64)
+                .put("description", "Exact SHA-256 revision from the most recent memory_write or memory_get result, or the session memory snapshot."))
+            .put("start_line", JSONObject().put("type", "integer").put("minimum", 1)
+                .put("description", "Required for replace_range; inclusive 1-based first line."))
+            .put("end_line", JSONObject().put("type", "integer").put("minimum", 1)
+                .put("description", "Required for replace_range; inclusive 1-based last line."))
+            .put("content", JSONObject().put("type", "string").put("maxLength", AgentMemoryStore.MAX_WRITE_CONTENT_CHARS)
+                .put("description", "Replacement or appended Markdown, at most 3500 characters. Empty content deletes a replace_range."))
+            .put("layer", JSONObject().put("type", "string")
+                .put("enum", JSONArray().put("core").put("project").put("task").put("long_term").put("working").put("other"))
+                .put("description", "For append: optional memory layer; defaults to the existing Markdown behavior."))
+            .put("scope", JSONObject().put("type", "string")
+                .put("enum", JSONArray().put("global").put("project").put("current"))
+                .put("description", "Optional target scope. The model can only access scopes attached to the current run."))
+        tools.put(
+            AgentToolSchema.function(
+                name = "memory_write",
+                description = "Atomically update persistent MEMORY.md. Store only durable cross-conversation facts, preferences, relationships, and ongoing project context; never store secrets, credentials, verification codes, or transient requests. Use layer=core/project/task/long_term/working to keep memory separated; prefer replacing an existing section over blindly appending duplicates.",
+                parameters = JSONObject().put("type", "object").put("properties", writeProperties)
+                    .put("required", JSONArray().put("mode").put("revision")),
+            ),
+        )
     }
 }

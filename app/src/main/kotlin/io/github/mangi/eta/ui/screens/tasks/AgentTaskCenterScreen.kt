@@ -70,7 +70,7 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 
 /** Durable task definitions, leases, attention prompts and recent runs in one place. */
 @Composable
-internal fun AgentTaskCenterScreen(onBack: () -> Unit) {
+internal fun ScheduledTaskLegacyScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val database = remember(context.applicationContext) { AgentTaskDatabase.get(context.applicationContext) }
@@ -434,6 +434,7 @@ private fun TaskCreateDialogContent(
                         AgentScheduleKind.INTERVAL -> "间隔"
                         AgentScheduleKind.DAILY -> "每天"
                         AgentScheduleKind.WEEKLY -> "每周"
+                        AgentScheduleKind.MONTHLY -> "每月"
                     },
                     selected = scheduleKind == kind,
                     onClick = { onScheduleKindChange(kind) },
@@ -455,7 +456,7 @@ private fun TaskCreateDialogContent(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            AgentScheduleKind.DAILY, AgentScheduleKind.WEEKLY -> TextField(
+            AgentScheduleKind.DAILY, AgentScheduleKind.WEEKLY, AgentScheduleKind.MONTHLY -> TextField(
                 value = localTime,
                 onValueChange = onLocalTimeChange,
                 label = if (scheduleKind == AgentScheduleKind.WEEKLY) "每周一 09:00（周一到周日）" else "每天运行时间 HH:mm",
@@ -530,6 +531,7 @@ private fun createSchedule(
                 timeZoneId = zone.id,
             )
         }
+        AgentScheduleKind.MONTHLY -> AgentScheduleRule(kind = kind, startAt = now, localHour = time[0], localMinute = time[1], monthDay = 1, timeZoneId = zone.id)
         AgentScheduleKind.DAILY -> AgentScheduleRule(
             kind = kind,
             startAt = now - 60_000L,
@@ -675,6 +677,7 @@ private fun scheduleSummary(schedule: AgentTaskScheduleEntity?): String {
         AgentScheduleKind.INTERVAL -> "每 ${schedule.intervalMinutes?.let { "${it} 分钟" }.orEmpty()}"
         AgentScheduleKind.DAILY -> "每天 %02d:%02d".format(schedule.localHour, schedule.localMinute)
         AgentScheduleKind.WEEKLY -> "每周 %02d:%02d".format(schedule.localHour, schedule.localMinute)
+        AgentScheduleKind.MONTHLY -> "每月 ${schedule.monthDay} 日 %02d:%02d".format(schedule.localHour, schedule.localMinute)
     }
     val next = schedule.nextRunAt?.let { " · 下次 ${formatDate(it)}" }.orEmpty()
     return "$status · $cadence$next"

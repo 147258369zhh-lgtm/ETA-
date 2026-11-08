@@ -82,7 +82,9 @@ internal data class AgentTaskExecutionRequest(
 )
 
 internal sealed interface AgentTaskExecutionResult {
-    data class Succeeded(val resultRef: String) : AgentTaskExecutionResult
+    data class Succeeded(val resultRef: String, val output: String = "") : AgentTaskExecutionResult
+    /** No task effect has started; the same durable run can wait for device conditions. */
+    data class Deferred(val delayMillis: Long = 60000) : AgentTaskExecutionResult
     /**
      * Runners set [retryable] only when they can prove that repeating the request cannot duplicate
      * an external side effect. Unknown failures remain terminal by default.

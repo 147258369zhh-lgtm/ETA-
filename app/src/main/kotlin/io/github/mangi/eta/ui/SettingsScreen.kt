@@ -1,6 +1,5 @@
 package io.github.mangi.eta.ui
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -23,6 +22,7 @@ import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FilterAlt
+import androidx.compose.material.icons.rounded.FolderSpecial
 import androidx.compose.material.icons.rounded.GppMaybe
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Hearing
@@ -76,8 +76,11 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.BuildConfig
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
-import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealth
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayBackend
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayLifecycle
 import io.github.mangi.eta.config.PowerAssistantTarget
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
@@ -91,6 +94,10 @@ import io.github.mangi.eta.systemizer.RootManager
 import io.github.mangi.eta.systemizer.SystemizerInstallResult
 import io.github.mangi.eta.ui.app.EnhancementSettingsHistory
 import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
+import io.github.mangi.eta.ui.app.accessibilityPermissionHealthItem
+import io.github.mangi.eta.ui.components.label
+import io.github.mangi.eta.ui.components.color
+import kotlinx.coroutines.flow.collect
 import io.github.mangi.eta.ui.components.LanguagePreference
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -179,6 +186,7 @@ private fun SettingsPageContent(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val capabilities = rememberDeviceCapabilities()
+    val virtualDisplaySnapshot by VirtualDisplayController.snapshots.collectAsState()
     val enhancementHistory = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
     var hasConnectedFramework by remember { mutableStateOf(enhancementHistory.hasConnected) }
     var hasUsedSystemizer by remember { mutableStateOf(enhancementHistory.hasUsedSystemizer) }
@@ -189,8 +197,17 @@ private fun SettingsPageContent(
     var overlayGranted by remember {
         mutableStateOf(android.provider.Settings.canDrawOverlays(context))
     }
-    var accessibilityGranted by remember {
-        mutableStateOf(isAgentAccessibilityEnabled(context))
+    var assistantActive by remember {
+        mutableStateOf(io.github.mangi.eta.agent.voice.EtaVoiceInteractionService.isDefaultAssistant(context))
+    }
+    var accessibilityHealth by remember {
+        mutableStateOf(AgentAccessibilityHealth.snapshot(context))
+    }
+    val accessibilityItem = accessibilityPermissionHealthItem(context, accessibilityHealth)
+    LaunchedEffect(context.applicationContext) {
+        AgentAccessibilityHealth.observeChanges(context).collect {
+            accessibilityHealth = AgentAccessibilityHealth.snapshot(context)
+        }
     }
     var accessibilityProtectionEnabled by remember {
         mutableStateOf(AccessibilityProtectionClient.isEnabled(context))
@@ -245,7 +262,8 @@ private fun SettingsPageContent(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 overlayGranted = android.provider.Settings.canDrawOverlays(context)
-                accessibilityGranted = isAgentAccessibilityEnabled(context)
+                assistantActive = io.github.mangi.eta.agent.voice.EtaVoiceInteractionService.isDefaultAssistant(context)
+                accessibilityHealth = AgentAccessibilityHealth.snapshot(context)
                 accessibilityProtectionEnabled =
                     AccessibilityProtectionClient.isEnabled(context)
             }
@@ -315,6 +333,22 @@ private fun SettingsPageContent(
         title = stringResource(R.string.ui_set_up_7debf9),
         onBack = onBack,
     ) {
+            item(key = "section_app_control") {
+                SmallTitle("智能控制")
+                SettingsGroupCard {
+                    ArrowPreference(
+                        title = "软件管家",
+                        summary = "用对话管理 Agent、自动任务、能力、文件与软件设置",
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.SupportAgent,
+                                tint = SettingsIconColors.Blue,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.AppControlCenter) },
+                    )
+                }
+            }
             // ── LLM 提供商 ──────────────────────────────────────────────
             item(key = "section_agent") {
                 SmallTitle(stringResource(R.string.settings_llm_providers))
@@ -354,7 +388,8 @@ private fun SettingsPageContent(
                         iconTint = SettingsIconColors.Blue,
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.ui_memory_b55ff5),
+                        title = "记忆与自学习",
+                        summary = "分层记忆、候选审阅、规则沉淀与休眠整理",
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.AutoMirrored.Rounded.MenuBook,
@@ -362,6 +397,17 @@ private fun SettingsPageContent(
                             )
                         },
                         onClick = { onNavigate(AppRoute.Memory) },
+                    )
+                    ArrowPreference(
+                        title = stringResource(R.string.prompt_injection_title),
+                        summary = stringResource(R.string.prompt_injection_settings_summary),
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.Description,
+                                tint = SettingsIconColors.Green,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.PromptInjection) },
                     )
                     ArrowPreference(
                         title = "Subagent",
@@ -394,14 +440,12 @@ private fun SettingsPageContent(
                         onClick = { onNavigate(AppRoute.A2AAgents) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.route_self_learning),
+                        title = stringResource(R.string.route_agent_metrics),
+                        summary = stringResource(R.string.route_agent_metrics_summary),
                         startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.Psychology,
-                                tint = SettingsIconColors.Green,
-                            )
+                            SettingsIcon(Icons.Rounded.Dashboard, tint = SettingsIconColors.Green)
                         },
-                        onClick = { onNavigate(AppRoute.SelfLearning) },
+                        onClick = { onNavigate(AppRoute.AgentMetrics) },
                     )
                     MeetingSettingsPreferenceEntry(
                         startAction = {
@@ -413,24 +457,15 @@ private fun SettingsPageContent(
                         onClick = { onNavigate(AppRoute.MeetingSettings) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.route_skills),
+                        title = "能力中心",
+                        summary = "Skills、MCP、来源、安装与工具边界",
                         startAction = {
                             SettingsIcon(
-                                icon = Icons.Rounded.ImportContacts,
+                                icon = Icons.Rounded.Inventory2,
                                 tint = SettingsIconColors.Green,
                             )
                         },
-                        onClick = { onNavigate(AppRoute.Skills) },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.route_mcp_servers),
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.AccountTree,
-                                tint = SettingsIconColors.Blue,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.McpServers) },
+                        onClick = { onNavigate(AppRoute.CapabilityCenter) },
                     )
                     ArrowPreference(
                         title = "角色",
@@ -476,6 +511,30 @@ private fun SettingsPageContent(
                         context = context,
                         prefs = agentPrefs,
                         title = stringResource(R.string.settings_virtual_display_title),
+                        summary = when (virtualDisplaySnapshot.lifecycle) {
+                            VirtualDisplayLifecycle.ACTIVE -> when (virtualDisplaySnapshot.backend) {
+                                VirtualDisplayBackend.ROOT_BRIDGE -> stringResource(
+                                    R.string.settings_virtual_display_active_root,
+                                    virtualDisplaySnapshot.width,
+                                    virtualDisplaySnapshot.height,
+                                )
+                                VirtualDisplayBackend.IN_PROCESS -> stringResource(
+                                    R.string.settings_virtual_display_active_system,
+                                    virtualDisplaySnapshot.width,
+                                    virtualDisplaySnapshot.height,
+                                )
+                                VirtualDisplayBackend.NONE -> null
+                            }
+                            VirtualDisplayLifecycle.STARTING ->
+                                stringResource(R.string.settings_virtual_display_starting)
+                            VirtualDisplayLifecycle.RECOVERING ->
+                                stringResource(R.string.settings_virtual_display_recovering)
+                            VirtualDisplayLifecycle.FAILED ->
+                                stringResource(R.string.settings_virtual_display_failed)
+                            VirtualDisplayLifecycle.IDLE,
+                            VirtualDisplayLifecycle.RELEASING
+                            -> null
+                        },
                         key = Prefs.Keys.AGENT_VIRTUAL_DISPLAY_ENABLED,
                         icon = Icons.Rounded.Layers,
                         iconTint = SettingsIconColors.Blue,
@@ -541,6 +600,7 @@ private fun SettingsPageContent(
                 SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.ui_eta_system_assistant_003e9b),
+                        summary = if (assistantActive) "已设为系统默认助手" else "未设为系统默认助手；唤醒词不会生效",
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.SupportAgent,
@@ -741,6 +801,12 @@ private fun SettingsPageContent(
                         onClick = { onNavigate(AppRoute.DataBackup) },
                     )
                     ArrowPreference(
+                        title = stringResource(R.string.projects_title),
+                        summary = stringResource(R.string.projects_summary),
+                        startAction = { SettingsIcon(Icons.Rounded.FolderSpecial, tint = SettingsIconColors.Blue) },
+                        onClick = { onNavigate(AppRoute.Projects) },
+                    )
+                    ArrowPreference(
                         title = stringResource(R.string.conversation_archive_settings_title),
                         summary = stringResource(R.string.conversation_archive_settings_summary),
                         startAction = {
@@ -794,6 +860,7 @@ private fun SettingsPageContent(
                     )
                     ArrowPreference(
                         title = stringResource(R.string.ui_accessibility_enhancement_tools_8fd257),
+                        summary = accessibilityItem.summary,
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.AccessibilityNew,
@@ -801,17 +868,10 @@ private fun SettingsPageContent(
                             )
                         },
                         endActions = {
-                            val enabled = accessibilityGranted || AgentAccessibilityService.isAvailable()
                             Text(
-                                text = stringResource(
-                                    if (enabled) R.string.status_enabled else R.string.status_disabled,
-                                ),
+                                text = accessibilityItem.status.label(),
                                 fontSize = MiuixTheme.textStyles.body2.fontSize,
-                                color = if (enabled) {
-                                    MiuixTheme.colorScheme.onSurfaceVariantActions
-                                } else {
-                                    MiuixTheme.colorScheme.primary
-                                },
+                                color = accessibilityItem.status.color(),
                             )
                         },
                         onClick = {
@@ -837,7 +897,7 @@ private fun SettingsPageContent(
                                 ) { result ->
                                     accessibilityProtectionPending = false
                                     accessibilityProtectionEnabled = result.enabled
-                                    accessibilityGranted = isAgentAccessibilityEnabled(context)
+                                    accessibilityHealth = AgentAccessibilityHealth.snapshot(context)
                                     val failureMessage = when (result.status) {
                                         AccessibilityProtectionClient.ControlStatus.APPLIED -> null
                                         AccessibilityProtectionClient.ControlStatus.UNAVAILABLE ->
@@ -1025,6 +1085,12 @@ private fun DebugDiagnosticsCard() {
                 modifier = Modifier.padding(top = 4.dp),
             )
             Text(
+                text = "Agent 累计：工具 ${snapshot.agentToolCallCount} 次（失败 ${snapshot.agentFailedToolCount}）· 输入 ${snapshot.agentInputTokens} · 输出 ${snapshot.agentOutputTokens} tokens",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Text(
                 text = "连接 ${snapshot.connectionCount} · 绑定失败 ${snapshot.bindingFailureCount}" +
                     " · 任务失败 ${snapshot.taskFailureCount}",
                 style = MiuixTheme.textStyles.footnote2,
@@ -1161,18 +1227,6 @@ private fun PowerAssistantTarget.displayName(context: Context): String =
         PowerAssistantTarget.GEMINI -> "Gemini"
         PowerAssistantTarget.ETA -> "Eta"
     }
-
-private fun isAgentAccessibilityEnabled(context: Context): Boolean {
-    val expected = ComponentName(
-        context,
-        AgentAccessibilityService::class.java
-    ).flattenToString()
-    val enabledServices = android.provider.Settings.Secure.getString(
-        context.contentResolver,
-        android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-    ).orEmpty()
-    return enabledServices.split(':').any { it.equals(expected, ignoreCase = true) }
-}
 
 private fun SystemizerInstallResult.toToastMessage(context: Context): String =
     when (this) {

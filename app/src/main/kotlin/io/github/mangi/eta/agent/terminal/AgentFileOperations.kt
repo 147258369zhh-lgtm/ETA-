@@ -132,7 +132,11 @@ internal class AgentFileOperations(private val backend: FileToolBackend) {
         if (oldText.isEmpty()) throw FileToolException("EMPTY_MATCH", "old_text 不能为空；创建文件请使用 write_file")
         encodeBounded(oldText)
         encodeBounded(newText)
-        val stat = regularFile(path, expectedRevision)
+        val stat = backend.stat(backend.resolve(path))
+        if (stat.kind != FileToolKind.FILE) throw FileToolException("NOT_REGULAR_FILE", "目标不是普通文件")
+        // 模型常复用同一次读取得到的 revision 连续编辑。revision 过期但 old_text 仍唯一匹配时，
+        // 当前内容就是安全的重试基线；写入仍同时校验此次读到的 revision 与 old_text 摘要。
+        val revisionRefreshed = expectedRevision != null && stat.revision != expectedRevision
         if (stat.sizeBytes > MAX_EDIT_BYTES) throw FileToolException("FILE_TOO_LARGE", "精确编辑仅支持不超过 512 KiB 的文本文件")
         val buffer = ByteArrayOutputStream(stat.sizeBytes.toInt())
         var offset = 0L
@@ -154,7 +158,10 @@ internal class AgentFileOperations(private val backend: FileToolBackend) {
             if (!replaceAll && count > 1) throw FileToolException("AMBIGUOUS_MATCH", "old_text 命中多处，请提供更多上下文或明确 replace_all=true")
             position = found + oldText.length
         }
-        if (count == 0) throw FileToolException("MATCH_NOT_FOUND", "未找到 old_text，文件未修改；请重新读取并使用原文")
+        if (count == 0) {
+            if (revisionRefreshed) throw FileToolException("FILE_CHANGED", "文件已变化且 old_text 不再匹配，请重新读取后编辑")
+            throw FileToolException("MATCH_NOT_FOUND", "未找到 old_text，文件未修改；请重新读取并使用原文")
+        }
         val estimatedChars = original.length.toLong() + count.toLong() * (newText.length - oldText.length)
         if (estimatedChars > MAX_EDIT_BYTES) throw FileToolException("CONTENT_TOO_LARGE", "替换后的文本超过编辑大小限制")
         val replacement = encodeBounded(original.replace(oldText, newText))
@@ -164,6 +171,7 @@ internal class AgentFileOperations(private val backend: FileToolBackend) {
         val result = backend.write(stat.path, replacement, append = false, expectedRevision = stat.revision, expectedSha256 = sha256)
         base("edit_file").put("path", result.stat.path).put("revision", result.stat.revision)
             .put("replacements", count).put("bytes_written", replacement.size).put("atomic", result.atomic)
+            .also { if (revisionRefreshed) it.put("revision_refreshed", true) }
     }
 
     fun globFiles(path: String, pattern: String, limit: Int = 80, cursor: String? = null, includeHidden: Boolean = false): String =

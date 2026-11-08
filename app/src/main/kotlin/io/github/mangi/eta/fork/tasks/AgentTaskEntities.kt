@@ -55,6 +55,7 @@ internal data class AgentTaskScheduleEntity(
     @ColumnInfo(name = "revision") val revision: Long,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(name = "month_day") val monthDay: Int? = null,
 )
 
 @Entity(

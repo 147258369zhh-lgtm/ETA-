@@ -49,6 +49,11 @@
     <string name="capability_workspace_summary">Import, export, and directory access</string>
     <string name="capability_workspace_private">Private workspace</string>
     <string name="capability_workspace_private_summary">Default file directory for the terminal and standard Linux environments; no storage permission required</string>
+    <string name="capability_workspace_artifacts">Recent task files</string>
+    <string name="capability_workspace_artifacts_summary">Verified files produced by recent runs. Tap one to open its folder.</string>
+    <string name="capability_workspace_artifact_verified">verified</string>
+    <string name="capability_workspace_artifact_pending">pending verification</string>
+    <string name="capability_workspace_artifact_failed">failed</string>
     <string name="capability_workspace_import">Import files</string>
     <string name="capability_workspace_public">Public directory access</string>
     <string name="capability_workspace_public_summary">Allow access to all files in system settings to use shared storage directories</string>

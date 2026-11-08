@@ -28,7 +28,8 @@ internal object ContextBudgetPolicy {
     private const val MESSAGE_OVERHEAD_TOKENS = 8
     private const val MIN_OUTPUT_RESERVE_TOKENS = 2_048
     private const val MAX_OUTPUT_RESERVE_TOKENS = 16_384
-    private const val MIN_SUMMARY_INPUT_TOKENS = 3_000
+    private const val MIN_SUMMARY_INPUT_TOKENS = 768
+    private const val MAX_SUMMARY_INPUT_TOKENS = 8_192
     private const val DEFAULT_TOOL_RESULT_CHARS = 12_000
     private const val TOOL_RESULT_HEAD_CHARS = 4_000
     private const val TOOL_RESULT_TAIL_CHARS = 2_000
@@ -49,7 +50,12 @@ internal object ContextBudgetPolicy {
             // Use the model's declared window for the normal 85% trigger, while
             // never asking the provider for more input than the safe usable limit.
             triggerInputTokens = minOf((usable * 99) / 100, maxOf(1, (window * 85) / 100)),
-            summaryInputTokens = maxOf(MIN_SUMMARY_INPUT_TOKENS, (usable * 7) / 10),
+            // A summary request must itself fit in a small local window. The previous fixed
+            // 3K floor could make every 4K-window compaction overflow before it started.
+            summaryInputTokens = ((usable * 2) / 3).coerceIn(
+                minOf(MIN_SUMMARY_INPUT_TOKENS, usable),
+                minOf(MAX_SUMMARY_INPUT_TOKENS, usable),
+            ),
         )
     }
 
@@ -58,9 +64,9 @@ internal object ContextBudgetPolicy {
         of(contextWindow?.takeIf { it > 0 } ?: UNKNOWN_WINDOW_FALLBACK_TOKENS),
     )
 
-    /** UTF-8 文本按 3 字符/token 保守估值；JSON、中文和混合内容都不会被低估到危险区间。 */
+    /** UTF-8 bytes per token approximates Chinese at ~1 token/character and ASCII at ~3 chars. */
     fun estimateTextTokens(text: String): Int =
-        if (text.isEmpty()) 0 else (text.codePointCount(0, text.length) + 2) / 3 + 1
+        if (text.isEmpty()) 0 else (text.toByteArray(Charsets.UTF_8).size + 2) / 3 + 1
 
     fun estimateMessages(messages: JSONArray, startIndex: Int = 0): Int {
         if (startIndex !in 0..messages.length()) return 0

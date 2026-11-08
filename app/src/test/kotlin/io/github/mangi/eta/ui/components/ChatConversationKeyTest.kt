@@ -23,6 +23,6 @@ class ChatConversationKeyTest {
 
     @Test
     fun draftConversationHasAStableNonNullKey() {
-        assertEquals("conversation:draft", chatConversationCompositionKey(null))
+        assertEquals("new_chat:0:", chatConversationCompositionKey(null))
     }
 }

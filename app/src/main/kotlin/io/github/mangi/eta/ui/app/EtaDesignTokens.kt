@@ -30,6 +30,14 @@ data class EtaDesignTokens(
     val sectionSpacing: Dp,
     val titleWeight: FontWeight,
     val bodyWeight: FontWeight,
+    // 从当前聊天、设置和状态组件提取；保持默认布局尺寸，皮肤继续控制形状与字重。
+    val settingsHorizontalInset: Dp = 12.dp,
+    val chatHorizontalInset: Dp = 20.dp,
+    val cardContentPadding: Dp = 16.dp,
+    val stateContentPadding: Dp = 24.dp,
+    val stateItemSpacing: Dp = 8.dp,
+    val minimumTouchTarget: Dp = 48.dp,
+    val dialogActionSpacing: Dp = 20.dp,
 )
 
 internal val LocalEtaDesignTokens = staticCompositionLocalOf {

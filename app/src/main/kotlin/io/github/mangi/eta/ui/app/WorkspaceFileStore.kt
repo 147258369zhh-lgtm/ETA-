@@ -6,6 +6,9 @@ import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import io.github.mangi.eta.agent.device.AgentFileReferenceGateway
 import io.github.mangi.eta.agent.device.RootAccess
+import io.github.mangi.eta.fork.files.WorkspaceSearch
+import io.github.mangi.eta.fork.files.WorkspaceSearchResult
+import io.github.mangi.eta.fork.files.WorkspaceFolderArchive
 import io.github.mangi.eta.agent.terminal.FileToolBackend
 import io.github.mangi.eta.agent.terminal.FileToolKind
 import io.github.mangi.eta.agent.terminal.LocalFileToolBackend
@@ -21,6 +24,7 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 
 internal data class WorkspaceEntry(val path: String, val name: String, val directory: Boolean, val size: Long)
@@ -37,6 +41,7 @@ internal class WorkspaceFileStore(
     private val backendFor: (File) -> FileToolBackend = ::workspaceBackend,
 ) {
     private val appContext = context.applicationContext
+    private val artifactStore = WorkspaceArtifactStore(appContext)
     private val root: File
         get() {
             val workspace = TerminalPrivateStorage.workspace(appContext.filesDir)
@@ -72,7 +77,30 @@ internal class WorkspaceFileStore(
     }
 
     suspend fun importFile(uri: Uri): Boolean = withContext(Dispatchers.IO) {
-        AgentFileReferenceGateway.importDocumentUri(appContext, uri) is AgentFileReferenceGateway.Resolution.Success
+        when (val result = AgentFileReferenceGateway.importDocumentUri(appContext, uri)) {
+            is AgentFileReferenceGateway.Resolution.Success -> {
+                val workspacePath = runCatching {
+                    File(result.reference.absolutePath).canonicalFile.toPath()
+                        .also { require(it.startsWith(root.toPath())) }
+                        .let { root.toPath().relativize(it).toString().replace(File.separatorChar, '/') }
+                }.getOrNull()
+                workspacePath?.let {
+                    artifactStore.record("manual-import", it, result.reference.displayName, status = WorkspaceArtifact.STATUS_VERIFIED)
+                }
+                true
+            }
+            is AgentFileReferenceGateway.Resolution.Failure -> false
+        }
+    }
+
+    suspend fun search(path: String, query: String, includeContents: Boolean): WorkspaceSearchResult {
+        val caller = currentCoroutineContext()
+        return runInterruptible(Dispatchers.IO) {
+            val workspace = root
+            val backend = backendFor(workspace)
+            val directory = resolve(backend, path)
+            WorkspaceSearch(workspace, backend).search(directory, query, includeContents) { caller.ensureActive() }
+        }
     }
 
     suspend fun exportFile(path: String, destination: Uri) = withContext(Dispatchers.IO) {
@@ -103,6 +131,38 @@ internal class WorkspaceFileStore(
                     output.write(bytes)
                     offset += bytes.size
                 }
+            }
+        }
+    }
+
+    suspend fun exportFolder(path: String, destination: Uri) {
+        val caller = currentCoroutineContext()
+        runInterruptible(Dispatchers.IO) {
+            val workspace = root
+            val backend = backendFor(workspace)
+            val source = resolve(backend, path)
+            val temporary = File.createTempFile("workspace-export-", ".zip", appContext.cacheDir)
+            try {
+                // Failures and cancellation during traversal leave the selected document untouched.
+                temporary.outputStream().use { output ->
+                    WorkspaceFolderArchive(workspace, backend).write(source, output) { caller.ensureActive() }
+                }
+                caller.ensureActive()
+                val output = appContext.contentResolver.openOutputStream(destination, "wt")
+                    ?: throw IOException("EXPORT_UNAVAILABLE")
+                output.use {
+                    temporary.inputStream().use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            caller.ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                }
+            } finally {
+                temporary.delete()
             }
         }
     }

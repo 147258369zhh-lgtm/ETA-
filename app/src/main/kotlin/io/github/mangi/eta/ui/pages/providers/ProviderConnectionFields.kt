@@ -31,8 +31,10 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun ProviderConnectionFields(
@@ -52,6 +54,7 @@ internal fun ProviderConnectionFields(
     var apiKeyVisible by remember { mutableStateOf(false) }
     val oauth = ProviderAuthModes.isOAuth(draft.authMode)
     val accountMode = providerAccountAuthMode(provider)
+    val localService = isLocalModelServiceUrl(draft.baseUrl)
 
     Column(modifier = Modifier.padding(16.dp)) {
         TextField(
@@ -100,7 +103,7 @@ internal fun ProviderConnectionFields(
             TextField(
                 value = draft.apiKey,
                 onValueChange = { onDraftChange(draft.copy(apiKey = it)) },
-                label = "API Key",
+                label = if (localService) "API Key（本地服务通常可留空）" else "API Key",
                 singleLine = true,
                 enabled = enabled,
                 visualTransformation = if (apiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
@@ -114,6 +117,14 @@ internal fun ProviderConnectionFields(
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (localService) {
+                Text(
+                    text = "手机本机服务使用 127.0.0.1；电脑或局域网服务填写对应 IP。连接失败时先确认服务监听地址与端口。",
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             if (provider is AnthropicProviderSetting) {
                 Spacer(modifier = Modifier.height(12.dp))
                 TextField(

@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.GuiControlStatus
+import io.github.mangi.eta.fork.diagnostics.RuntimeDebugTrace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,6 +20,7 @@ internal class AgentRunStore(
         var stoppedByUser = false
         var settling = false
         var guiStatus: GuiControlStatus? = null
+        var localCancellation: (() -> Unit)? = null
     }
 
     private val entries = linkedMapOf<String, Entry>()
@@ -52,7 +54,17 @@ internal class AgentRunStore(
         entry.stoppedByUser = entry.stoppedByUser || byUser
         if (entry.stopRequested) return false
         entry.stopRequested = true
+        entry.localCancellation?.invoke()
         return true
+    }
+
+    fun registerLocalCancellation(runId: String, cancel: () -> Unit) {
+        val entry = entries[runId]
+        if (entry == null || entry.stopRequested) {
+            cancel()
+        } else {
+            entry.localCancellation = cancel
+        }
     }
 
     fun isStopRequested(runId: String): Boolean = entries[runId]?.stopRequested == true
@@ -77,6 +89,7 @@ internal class AgentRunStore(
     fun enqueue(runId: String, event: AgentEvent) {
         val entry = entries[runId] ?: return
         if (entry.settling) return
+        RuntimeDebugTrace.agentEvent(event)
         if (event is AgentEvent.AssistantBlockDelta) {
             if (event.kind == AgentEvent.AssistantBlockKind.TOOL_CALL || event.delta.isEmpty()) return
             coalescer.append(runId, event)?.let { onEvent(runId, it) }
@@ -101,7 +114,9 @@ internal class AgentRunStore(
     }
 
     fun remove(runId: String) {
-        entries.remove(runId)?.flushJob?.cancel()
+        entries.remove(runId)?.let { entry ->
+            entry.flushJob?.cancel()
+        }
         coalescer.flush(runId)
     }
 

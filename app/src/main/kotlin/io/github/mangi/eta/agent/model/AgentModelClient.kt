@@ -5,7 +5,11 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
+import io.github.mangi.eta.agent.prompt.PromptInjectionStore
+import io.github.mangi.eta.agent.prompt.ResolvedPromptInjection
+import io.github.mangi.eta.agent.prompt.PromptRunScope
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.tool.AgentToolRequirements
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
@@ -14,6 +18,7 @@ import io.github.mangi.eta.data.model.CustomHeader
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderAuthModes
+import io.github.mangi.eta.data.model.ProviderEndpoint
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.provider.BuiltinProviders
@@ -104,6 +109,7 @@ internal object AgentModelClient {
         capabilitiesProvider: () -> AgentToolCapabilities = { AgentToolCapabilities(rootAvailable = false) },
         sessionId: String = java.util.UUID.randomUUID().toString(),
         compactOnly: Boolean = false,
+        compactionSelection: IntRange? = null,
         operationId: String = sessionId,
         initialUserMessageId: String = "user-$operationId",
         initialSupplementIndex: Int = 0,
@@ -113,9 +119,21 @@ internal object AgentModelClient {
         toolFilter: ((JSONArray) -> JSONArray)? = null,
         onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
         onTranscript: (List<ConversationMessage>) -> Unit = {},
+        initialRound: Int = 1,
+        textOnlyFallback: Boolean = false,
+        metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
+        promptScope: PromptRunScope = PromptRunScope(),
         onEvent: (AgentEvent) -> Unit = {}
     ): ModelResponse.Text {
+        val webSchema = JSONArray().put(JSONObject().put("type", "function").put("function", JSONObject().put("name", "web_search")))
+        val config = if (config.hostedWebSearchEnabled && (!io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load().isAllowed("web_search") ||
+                toolFilter?.invoke(webSchema)?.length() == 0)) config.copy(hostedWebSearchEnabled = false) else config
         config.validate()
+        // 这里已经拿到本次请求最终生效的模型；提示词注入在本次 complete 内只解析一次，
+        // 主模型、备用模型与子 Agent 各自用自己实际生效的配置冻结同一份结果。
+        val promptInjection = if (compactOnly) ResolvedPromptInjection()
+        else resolvePromptInjection(config, promptScope)
+        require(initialRound > 0)
         val initialCapabilities = capabilitiesProvider()
         val messages = AgentPromptBuilder.buildInitialMessages(
             config,
@@ -127,6 +145,7 @@ internal object AgentModelClient {
             rootAvailable = initialCapabilities.rootAvailable,
             roleplayContext = roleplayContext,
             executionContext = executionContext,
+            promptInjection = promptInjection,
         )
         if (rewriteReply) {
             messages.put(messages.length() - 1, AgentConversationCodec.userTextMessage(
@@ -145,10 +164,11 @@ internal object AgentModelClient {
         val transcript = JSONArray()
         // 旧 history 中的无效消息可能在组装时被跳过，系统边界不能由 history 条数倒推。
         val systemCount = AgentPromptBuilder.buildSystemMessages(
-            config, skillContext, memoryContext, initialCapabilities.rootAvailable, roleplayContext, executionContext,
+            config, skillContext, memoryContext, initialCapabilities.rootAvailable, roleplayContext,
+            executionContext, taskPrompt = prompt, promptInjection = promptInjection,
         ).length()
         fun toolsFor(capabilities: AgentToolCapabilities): JSONArray {
-            if (rewriteReply) return JSONArray()
+            if (rewriteReply || textOnlyFallback || !config.supportsTools) return JSONArray()
             val tools = AgentToolCatalog.build(
                 terminalTools = config.terminalTools,
                 browserTools = config.browserTools,
@@ -165,7 +185,9 @@ internal object AgentModelClient {
             for (index in 0 until additionalTools.length()) {
                 tools.put(additionalTools.opt(index))
             }
-            return toolFilter?.invoke(tools) ?: tools
+            val filtered = io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load()
+                .filterSchemas(toolFilter?.invoke(tools) ?: tools)
+            return AgentToolSchema.sanitizeFunctionCatalog(filtered)
         }
         val tools = toolsFor(initialCapabilities)
         onEvent(
@@ -184,7 +206,8 @@ internal object AgentModelClient {
             val capabilities = capabilitiesProvider()
             if (capabilities.rootAvailable != promptRootAvailable) {
                 val systemMessages = AgentPromptBuilder.buildSystemMessages(
-                    config, skillContext, memoryContext, capabilities.rootAvailable, roleplayContext, executionContext,
+                    config, skillContext, memoryContext, capabilities.rootAvailable, roleplayContext,
+                    executionContext, taskPrompt = prompt, promptInjection = promptInjection,
                 )
                 for (index in 0 until systemMessages.length()) {
                     messages.put(index, systemMessages.getJSONObject(index))
@@ -200,6 +223,10 @@ internal object AgentModelClient {
             if (added.isNotEmpty()) {
                 publishedTools = JSONArray(publishedTools.toString()).also { merged -> added.forEach(merged::put) }
             }
+            publishedTools = AgentToolSchema.sanitizeFunctionCatalog(
+                io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load()
+                    .filterSchemas(toolFilter?.invoke(publishedTools) ?: publishedTools),
+            )
             return publishedTools
         }
         val loop = AgentLoop(
@@ -216,6 +243,10 @@ internal object AgentModelClient {
             // 目录在运行内只增不减，可见不再等于可用：执行前用同一规则复核，
             // 中途失去的能力返回与目录过滤一致的错误码，而不是让底层接口给出含糊的失败。
             toolExecutor = AgentModelClient.ToolExecutor { call ->
+                if (!io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load().isAllowed(call.name)) {
+                    return@ToolExecutor ToolResult(JSONObject().put("ok", false).put("code", "GLOBAL_TOOL_BOUNDARY_DENIED")
+                        .put("message", "该工具已在全局权限边界中关闭").toString())
+                }
                 val unavailable = AgentToolRequirements.find(call.name)
                     ?.let { capabilitiesProvider().unavailableCode(call.name) }
                 if (unavailable == null) {
@@ -230,13 +261,19 @@ internal object AgentModelClient {
             runController = runController,
             traceFormatter = traceFormatter,
             onEvent = onEvent,
-            purpose = if (rewriteReply) ProviderRequestPurpose.REPLY_REWRITE else ProviderRequestPurpose.CHAT,
+            purpose = when {
+                rewriteReply -> ProviderRequestPurpose.REPLY_REWRITE
+                textOnlyFallback -> ProviderRequestPurpose.FALLBACK
+                else -> ProviderRequestPurpose.CHAT
+            },
             roleplayContext = roleplayContext,
             initialSupplementIndex = initialSupplementIndex,
+            initialRound = initialRound,
             toolsForRound = ::toolsForRound,
+            metricsScope = metricsScope,
         )
         val result = try {
-            if (compactOnly) loop.compactOnly() else loop.run()
+            if (compactOnly) loop.compactOnly(compactionSelection) else loop.run()
         } catch (throwable: Throwable) {
             throw AgentModelExecutionException(
                 cause = throwable,
@@ -263,13 +300,32 @@ internal object AgentModelClient {
 
     private fun toolName(tool: JSONObject): String? = tool.optJSONObject("function")?.optString("name")
 
+    /** 注入只是附加内容：模型标识不完整或解析失败时保持原始提示，不能中断本次请求。 */
+    private fun resolvePromptInjection(
+        config: ModelConfig,
+        scope: PromptRunScope,
+    ): ResolvedPromptInjection =
+        if (config.providerId.isBlank() || config.model.isBlank()) {
+            ResolvedPromptInjection()
+        } else {
+            runCatching { PromptInjectionStore.resolve(config, scope) }
+                .onSuccess { resolved ->
+                    if (resolved.skippedScopes.isNotEmpty()) {
+                        AndroidAgentLogger.warn("Prompt injection skipped invalid scopes=${resolved.skippedScopes.joinToString(",")}")
+                    }
+                }
+                .getOrElse { ResolvedPromptInjection() }
+        }
+
     private fun toolNames(tools: JSONArray): Set<String> =
         (0 until tools.length()).mapNotNullTo(mutableSetOf()) { toolName(tools.getJSONObject(it)) }
 
     private fun ModelConfig.validate() {
         require(baseUrl.isNotBlank()) { "请先配置 API 地址" }
         when {
-            authMode == ProviderAuthModes.API_KEY -> require(apiKey.isNotBlank()) { "请先配置 API Key" }
+            authMode == ProviderAuthModes.API_KEY -> require(
+                apiKey.isNotBlank() || ProviderEndpoint.isLocalOrPrivate(baseUrl),
+            ) { "请先配置 API Key" }
             ProviderAuthModes.isOAuth(authMode) -> {
                 require(providerId.isNotBlank()) { "账号登录缺少服务商标识，请重新选择服务商" }
                 require(apiKey.isEmpty()) { "账号登录配置不能包含 API Key" }
@@ -320,6 +376,8 @@ internal object AgentModelClient {
         val openAiEndpointMode: String = OpenAiEndpointMode.CHAT_COMPLETIONS,
         val hostedWebSearchEnabled: Boolean = false,
         val supportsSearchSuggestions: Boolean = false,
+        /** null in the model catalog means unknown; only an explicit false disables tools. */
+        val supportsTools: Boolean = true,
         val terminalTools: Boolean = false,
         val browserTools: Boolean = true,
         val deviceDirectTools: Boolean = true,

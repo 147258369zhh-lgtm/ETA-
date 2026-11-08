@@ -1,8 +1,11 @@
 package io.github.mangi.eta.fork.meeting
 
 import android.content.Context
+import io.github.mangi.eta.data.repository.ConversationAttachments
+import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.agent.model.AgentContextSnapshot
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.prompt.PromptRunScope
 import io.github.mangi.eta.agent.runtime.AgentExecutionPort
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.agent.runtime.AgentToolPolicy
@@ -31,7 +34,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -45,15 +47,37 @@ internal object MeetingRuntime {
     private const val MAX_WORK_RESULT_CHARS = 12_000
     private const val MAX_SUMMARY_INPUT_CHARS = 48_000
 
+    private class ToolBoundary(val policy: AgentToolPolicy) : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
+        companion object Key : kotlin.coroutines.CoroutineContext.Key<ToolBoundary>
+    }
+
     suspend fun runTurn(
         context: Context,
         roomId: String,
         rawText: String,
+        attachments: ConversationAttachments = ConversationAttachments(),
+        toolPolicy: AgentToolPolicy = AgentToolPolicy.UNRESTRICTED,
+    ): Boolean = withContext(ToolBoundary(toolPolicy)) { runTurnInternal(context, roomId, rawText, attachments) }
+
+    private suspend fun runTurnInternal(
+        context: Context,
+        roomId: String,
+        rawText: String,
+        attachments: ConversationAttachments,
     ): Boolean {
         val text = rawText.trim()
-        if (text.isEmpty() || !activeRooms.add(roomId)) return false
+        if ((text.isEmpty() && attachments.isEmpty) || !activeRooms.add(roomId)) return false
+        io.github.mangi.eta.agent.memory.MemoryAutomationSettingsStore.touch(context)
         try {
             val snapshot = MeetingRepository.snapshot(context, roomId).first() ?: return false
+            runCatching {
+                val projectId = io.github.mangi.eta.fork.projects.ProjectRepository.bindingForSubject(context,
+                    io.github.mangi.eta.fork.projects.ProjectSubjectType.MEETING, roomId)?.projectId
+                io.github.mangi.eta.agent.memory.MemoryAutomationCapture.capture(context, "meeting-${UUID.randomUUID()}",
+                    "meeting:$roomId", text, listOfNotNull(io.github.mangi.eta.data.repository.AgentMemoryScope.GLOBAL,
+                        projectId?.let(io.github.mangi.eta.data.repository.AgentMemoryScope::project),
+                        io.github.mangi.eta.data.repository.AgentMemoryScope.meeting(roomId)))
+            }
             val meetingSettings = MeetingSettingsStore.get(context).current
             // Capture history before appending the current user message. The current request is sent
             // as the new prompt, while this snapshot supplies only established room memory.
@@ -78,7 +102,8 @@ internal object MeetingRuntime {
                 authorType = MeetingAuthorType.USER,
                 authorProfile = null,
                 authorName = "You",
-                content = text,
+                content = AgentFileReferencePromptCodec.format(text, attachments.files.map { it.reference }),
+                attachments = attachments,
                 mentions = when (routing) {
                     is MeetingRoutingDecision.Direct -> routing.mentions
                     is MeetingRoutingDecision.Parallel -> routing.mentions
@@ -169,6 +194,7 @@ internal object MeetingRuntime {
                             task = task,
                             target = target,
                             history = participantHistory.getValue(target.participant.profileName),
+                            attachments = attachments,
                         )
                     }
                 }.awaitAll()
@@ -198,6 +224,7 @@ internal object MeetingRuntime {
                             "${result.participant.displayName}\n${result.content}"
                         }
                     },
+                    streamRunId = summary.streamRunId,
                 )
                 MeetingRepository.saveParticipantContext(
                     context = context,
@@ -307,9 +334,9 @@ internal object MeetingRuntime {
             </user_request>
         """.trimIndent()
         return runCatching {
-            extractParticipantNames(completeAsParticipant(context, host, prompt, history).content)
+            extractParticipantNames(completeAsParticipant(context, host, prompt, history, exposeStreams = false).content)
                 .filter { name -> teammates.any { it.profileName == name } }
-        }.getOrDefault(emptyList())
+        }.getOrElse { if (it is CancellationException) throw it else emptyList() }
     }
 
     private suspend fun executeTask(
@@ -317,6 +344,7 @@ internal object MeetingRuntime {
         task: MeetingTaskEntity,
         target: Target,
         history: List<AgentModelClient.ConversationMessage>,
+        attachments: ConversationAttachments = ConversationAttachments(),
     ): WorkResult = withContext(Dispatchers.IO) {
         MeetingRepository.updateTask(context, task, MeetingTaskStatus.RUNNING)
         try {
@@ -334,6 +362,7 @@ internal object MeetingRuntime {
                 participant = target.participant,
                 prompt = prompt,
                 history = history,
+                taskId = task.id,
             )
             val normalized = completion.content.trim().ifBlank { "（没有返回文本结果）" }
             val message = MeetingRepository.appendMessage(
@@ -344,6 +373,7 @@ internal object MeetingRuntime {
                 authorName = target.participant.displayName,
                 content = normalized,
                 taskId = task.id,
+                streamRunId = completion.streamRunId,
             )
             MeetingRepository.updateTask(
                 context,
@@ -436,6 +466,7 @@ internal object MeetingRuntime {
                 completion.copy(content = completion.content.trim())
             }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
             ParticipantCompletion("主持人汇总失败：${error.message ?: "未知错误"}\n\n$material", null)
         }
     }
@@ -445,11 +476,15 @@ internal object MeetingRuntime {
         participant: MeetingParticipantEntity,
         prompt: String,
         history: List<AgentModelClient.ConversationMessage> = emptyList(),
+        taskId: String? = null,
+        exposeStreams: Boolean = true,
+        attachments: ConversationAttachments = ConversationAttachments(),
     ): ParticipantCompletion = try {
         val meetingSettings = MeetingSettingsStore.get(context).current
         withTimeout(meetingSettings.requestTimeoutSeconds * 1_000L) {
             withContext(Dispatchers.IO) {
                 participant.providerId?.takeIf { it.startsWith("a2a:") }?.let { binding ->
+                    require(attachments.isEmpty) { "远程会议成员暂不支持本机附件，请先使用本机成员处理附件。" }
                     return@withContext ParticipantCompletion(
                         content = completeAsRemoteA2AParticipant(
                             context = context,
@@ -483,18 +518,33 @@ internal object MeetingRuntime {
                     additionalDisallowedTools = resolved.disallowedTools,
                 )
                 val config = resolved.config.copy(
+                    contextWindow = MeetingDatabase.get(context).meetingDao().room(participant.roomId)
+                        ?.contextWindowOverride
+                        ?.let { requested ->
+                            val ceiling = resolved.config.knownContextWindow ?: resolved.config.contextWindow
+                            ceiling?.let { minOf(it, requested) } ?: requested
+                        }
+                        ?: resolved.config.contextWindow,
                     systemPrompt = meetingSystemPrompt,
                     autoCompactionEnabled = resolved.config.autoCompactionEnabled &&
                         meetingSettings.meetingAutoCompactionEnabled,
                     subagentTools = false,
                     supportsSearchSuggestions = false,
                 )
+                require(attachments.files.isEmpty() || runtimeAllowedTools(runtimeProfile).let { allowed ->
+                    "read_file" in allowed
+                }) { "当前成员未启用文件读取工具，无法处理文件附件。" }
                 val runId = "meeting-${participant.roomId}-${participant.profileName}-${UUID.randomUUID()}"
                 val request = AgentRuntimeWire.RunRequest(
                     runId = runId,
                     prompt = prompt,
                     config = config,
-                    images = emptyList(),
+                    promptScope = PromptRunScope(
+                        meetingRoomId = participant.roomId,
+                        meetingParticipant = participant.profileName,
+                    ),
+                    images = attachments.images.map { image -> io.github.mangi.eta.agent.media.AgentImageCodec
+                        .fromTransferReference(context, image.uri, "meeting_attach") ?: error("附件图片已不可读取，请重新选择。") },
                     history = history,
                     modelSessionId = "meeting-${participant.roomId}-${participant.profileName}",
                     operation = AgentRuntimeWire.OP_CHAT,
@@ -508,13 +558,13 @@ internal object MeetingRuntime {
                         disallowedTools = (
                             runtimeProfile.disallowedTools + SubagentProfile.FORBIDDEN_TOOLS
                         ).sorted(),
-                    ),
+                    ).intersect(kotlinx.coroutines.currentCoroutineContext()[ToolBoundary]?.policy ?: AgentToolPolicy.UNRESTRICTED),
                 )
-                val result = runInterruptible(Dispatchers.IO) {
-                    AgentExecutionPort.run(context.applicationContext, request) {}
+                val result = MeetingExecutionTranscript.run(context, participant, runId, taskId, recordStreams = exposeStreams) { onEvent ->
+                    AgentExecutionPort.run(context.applicationContext, request, onEvent)
                 }
                 if (!result.ok) error(result.error ?: "会议室 Agent 执行失败")
-                ParticipantCompletion(result.content, result.contextSnapshot)
+                ParticipantCompletion(result.content, result.contextSnapshot, runId.takeIf { exposeStreams })
             }
         }
     } catch (timeout: TimeoutCancellationException) {
@@ -614,5 +664,6 @@ internal object MeetingRuntime {
     private data class ParticipantCompletion(
         val content: String,
         val snapshot: AgentContextSnapshot?,
+        val streamRunId: String? = null,
     )
 }

@@ -136,6 +136,13 @@ internal fun buildToolsState(context: Context): AgentToolsUiState =
                 ),
             ),
             ToolGroupUi(
+                id = "voice",
+                title = "语音生成",
+                tools = listOf(
+                    ToolItemUi("voice_synthesize", "生成语音", "使用当前语音服务和音色把文本合成为 WAV 文件。"),
+                ),
+            ),
+            ToolGroupUi(
                 id = "terminal",
                 title = context.getString(R.string.state_terminal_and_files_ae7c54),
                 tools = listOf(

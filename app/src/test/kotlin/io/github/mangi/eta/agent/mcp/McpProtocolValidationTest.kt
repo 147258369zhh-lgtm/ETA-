@@ -25,6 +25,36 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class McpProtocolValidationTest {
     @Test
+    fun modernCatalogListsResourcesAndPromptsAndReadsResource() {
+        val methods = CopyOnWriteArrayList<String>()
+        val server = localServer { exchange ->
+            val body = JSONObject(exchange.requestBody.bufferedReader().use { it.readText() })
+            val method = body.getString("method")
+            methods += method
+            val response = when (method) {
+                "tools/list" -> """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"resultType":"complete","tools":[]}}"""
+                "resources/list" -> """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"resultType":"complete","resources":[{"uri":"memo://one","name":"Memo","mimeType":"text/plain"}]}}"""
+                "prompts/list" -> """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"resultType":"complete","prompts":[{"name":"summarize","arguments":[{"name":"topic"}]}]}}"""
+                "resources/read" -> """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"resultType":"complete","contents":[{"uri":"memo://one","text":"hello"}]}}"""
+                else -> """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{}}"""
+            }
+            exchange.respond(200, response)
+        }
+        try {
+            val configured = McpServerSetting(id = "test", name = "Test", url = server.url())
+            McpHttpClient(configured, bearerToken = null).use { client ->
+                val catalog = client.discoverCatalog()
+                assertEquals(listOf("memo://one"), catalog.resources.map { it.uri })
+                assertEquals(listOf("summarize"), catalog.prompts.map { it.name })
+                assertEquals("hello", client.readResource("memo://one"))
+                assertEquals(listOf("resources/list", "prompts/list", "resources/read"), methods)
+            }
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun modernDiscoveryUsesStatelessEnvelopeAndRoutingHeaders() {
         val requestBody = AtomicReference<String>()
         val methodHeader = AtomicReference<String>()

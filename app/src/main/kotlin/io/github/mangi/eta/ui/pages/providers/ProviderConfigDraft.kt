@@ -10,6 +10,7 @@ import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderAuthModes
+import io.github.mangi.eta.data.model.ProviderEndpoint
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.provider.BuiltinProviders
@@ -202,4 +203,9 @@ internal fun validateProviderDraft(context: android.content.Context, draft: Prov
         return context.getString(R.string.page_base_url_must_be_a_valid_http_s_address_0e7d58)
     }
     return CustomHeaderFilter.validationError(draft.headers.map { it.header })
+}
+
+/** Local OpenAI-compatible services commonly expose model semantics that differ from cloud APIs. */
+internal fun isLocalModelServiceUrl(value: String): Boolean {
+    return ProviderEndpoint.isLocalOrPrivate(value)
 }

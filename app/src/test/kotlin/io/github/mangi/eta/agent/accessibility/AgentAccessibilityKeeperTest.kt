@@ -7,6 +7,21 @@ import org.junit.Test
 
 class AgentAccessibilityKeeperTest {
     @Test
+    fun `enabled but disconnected service reports binding failure without invoking a missing framework`() {
+        val result = AgentAccessibilityKeeper.ensureAvailable(
+            serviceAvailable = { false },
+            protectionAvailable = { false },
+            protectionEnabled = { error("缺少框架时不读取保护开关") },
+            requestRecovery = { error("不应调用不可用的保护后端") },
+            awaitServiceBinding = { error("未发起恢复时不等待") },
+            serviceConfigured = { true },
+        )
+        assertFalse(result.available)
+        assertFalse(result.recoveryRequested)
+        assertEquals("ACCESSIBILITY_DISCONNECTED", result.code)
+    }
+
+    @Test
     fun `stale protection setting without framework does not request recovery`() {
         val result = AgentAccessibilityKeeper.ensureAvailable(
             serviceAvailable = { false },

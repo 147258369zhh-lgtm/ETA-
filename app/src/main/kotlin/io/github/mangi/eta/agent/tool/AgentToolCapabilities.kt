@@ -7,6 +7,7 @@ import android.os.Build
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
+import io.github.mangi.eta.agent.accessibility.RootAccessibilityRecovery
 import io.github.mangi.eta.agent.device.AgentNotificationHistoryService
 import io.github.mangi.eta.agent.device.RootAccessState
 import io.github.mangi.eta.agent.device.RootAccess
@@ -82,8 +83,8 @@ internal data class AgentToolCapabilities(
                 rootState = root,
                 lsposedAvailable = EtaApp.serviceInstance != null,
                 accessibilityAvailable = AgentAccessibilityService.isAvailable(),
-                accessibilityRecoveryAvailable = EtaApp.serviceInstance != null &&
-                    AccessibilityProtectionClient.isEnabled(context),
+                accessibilityRecoveryAvailable = (EtaApp.serviceInstance != null &&
+                    AccessibilityProtectionClient.isEnabled(context)) || RootAccessibilityRecovery.canRecover(context),
                 notificationsAllowed = AgentNotificationHistoryService.isEnabled(context),
                 usageAllowed = AgentPersonalContextTools.hasUsageAccess(context),
                 locationAllowed = context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==

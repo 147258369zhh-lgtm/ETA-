@@ -56,6 +56,57 @@ class EtaBackupRepositoryTest {
     }
 
     @Test
+    fun memoryOnlyBackupPreservesModelsChatsAndCredentials() = runBlocking {
+        val dao = EtaDatabase.get(context).conversationDao()
+        dao.insertConversations(listOf(ConversationEntity("keep", "保留会话", false, createdAt = 1, updatedAt = 1)))
+        AgentMemoryRepository.replaceAll("要恢复的记忆")
+        val originalProviders = EtaDatabase.get(context).providerDao().providers()
+        val output = ByteArrayOutputStream()
+        EtaBackupRepository.export(context, output, setOf(EtaBackupContent.MEMORY))
+        AgentMemoryRepository.replaceAll("已变更记忆")
+        var credentialCalls = 0
+        val summary = EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()), forgetCredentials = { credentialCalls++ })
+        assertEquals(setOf(EtaBackupContent.MEMORY), summary.includedContents)
+        assertEquals("要恢复的记忆", AgentMemoryRepository.snapshot().content)
+        assertEquals(1, dao.conversationIdentities().size)
+        assertEquals(originalProviders, EtaDatabase.get(context).providerDao().providers())
+        assertEquals(0, credentialCalls)
+    }
+
+    @Test
+    fun encryptedSelectiveJsonCanBeInspectedAndRestoredWithFullBackupEntryPoint() = runBlocking {
+        AgentMemoryRepository.replaceAll("加密记忆")
+        val output = ByteArrayOutputStream()
+        val exportPhases = mutableListOf<String>()
+        EtaBackupOperations.export(
+            context,
+            output,
+            "password",
+            EtaBackupOptions(EtaBackupFormat.JSON, setOf(EtaBackupContent.MEMORY)),
+        ) { exportPhases += it.phase }
+        assertTrue(exportPhases.contains("prepare_export"))
+        org.junit.Assert.assertEquals("export_complete", exportPhases.last())
+
+        val inspectPhases = mutableListOf<String>()
+        val preview = EtaFullBackupArchive.inspect(
+            context,
+            ByteArrayInputStream(output.toByteArray()),
+            "password",
+            onPhase = inspectPhases::add,
+        )
+        assertTrue(preview.encrypted)
+        assertFalse(preview.fullArchive)
+        assertFalse(preview.restartRequired)
+        assertTrue("verify_file" in inspectPhases)
+        org.junit.Assert.assertEquals("inspect_complete", inspectPhases.last())
+        AgentMemoryRepository.replaceAll("已改变")
+        EtaFullBackupArchive.import(context, ByteArrayInputStream(output.toByteArray()), "password")
+        assertEquals("加密记忆", AgentMemoryRepository.snapshot().content)
+        assertTrue(runCatching { EtaFullBackupArchive.import(context, ByteArrayInputStream(output.toByteArray()), "wrong") }.isFailure)
+        assertEquals("加密记忆", AgentMemoryRepository.snapshot().content)
+    }
+
+    @Test
     fun oauthBackupPreservesConnectionModeButCannotRestoreSecretThroughApiKey() = runBlocking {
         ProviderRepository.addProvider(OpenAiCompatibleProviderSetting(
             id = "oauth-backup", name = "订阅", baseUrl = "https://api.openai.com/v1",
@@ -79,6 +130,23 @@ class EtaBackupRepositoryTest {
         val restored = requireNotNull(dao.providerById("oauth-backup")).provider
         assertEquals(ProviderAuthModes.OPENAI_CHATGPT, restored.authMode)
         assertEquals("", restored.apiKey)
+    }
+
+    @Test
+    fun exportAndImportRoundTripsScopedMemoryAlongsideGlobalMemory() = runBlocking {
+        AgentMemoryRepository.replaceAll("全局偏好")
+        val project = AgentMemoryScope.project("project-backup")
+        AgentMemoryRepository.replaceAll(project, "项目上下文")
+        val output = ByteArrayOutputStream()
+        EtaBackupRepository.export(context, output)
+        val exported = Json.decodeFromString<EtaBackupDocument>(output.toString(Charsets.UTF_8.name()))
+        assertEquals("项目上下文", exported.memoryScopes.single { it.id == "project-backup" }.content)
+
+        AgentMemoryRepository.replaceAll("已改动")
+        AgentMemoryRepository.clearScopedScopes()
+        EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
+        assertEquals("全局偏好", AgentMemoryRepository.snapshot().content)
+        assertEquals("项目上下文", AgentMemoryRepository.snapshot(project).content)
     }
 
     @Test

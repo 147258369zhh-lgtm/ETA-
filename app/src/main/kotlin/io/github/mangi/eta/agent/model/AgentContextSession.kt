@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import org.json.JSONArray
@@ -17,6 +18,7 @@ internal class AgentContextSession(
     private val onContextSnapshot: (AgentContextSnapshot) -> Unit,
     private val transcriptSize: () -> Int = { 0 },
     private val roleplay: Boolean = false,
+    private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
 ) {
     private val budget = ContextBudgetPolicy.forCompaction(config.knownContextWindow)
     private var inputTokens: Int? = null
@@ -25,7 +27,8 @@ internal class AgentContextSession(
     private var consumedSupplementCount = 0
     private var consumedUserTurns = (systemCount until messages.length()).sumOf {
         val message = messages.getJSONObject(it)
-        message.optInt("_eta_compacted_users") + if (message.optString("role") == "user") 1 else 0
+        message.optInt("_eta_compacted_users") +
+            if (message.optString("role") == "user" && !message.optBoolean(PROMPT_INJECTION_MARKER)) 1 else 0
     }
     private var committedSnapshot: AgentContextSnapshot? = null
 
@@ -64,7 +67,7 @@ internal class AgentContextSession(
         )
     }
 
-    fun compact(force: Boolean = false, final: Boolean = false) {
+    fun compact(force: Boolean = false, final: Boolean = false, selection: IntRange? = null) {
         val before = inputTokens
         if (SignedToolContext.hasPendingResponse(messages)) {
             if (force) {
@@ -78,6 +81,10 @@ internal class AgentContextSession(
                 !(compacted && before == null) &&
                 ContextBudgetPolicy.shouldCompact(budget, before, estimatedBefore)
             )
+        // Embedded runtimes enforce a deterministic suffix fit on every request. Re-running the
+        // same small model to summarize its window adds a slow prefill + generation round and can
+        // itself overflow on 4K devices.
+        if (shouldCompact && provider.id in EMBEDDED_LOCAL_PROVIDERS) return
         if (!shouldCompact) {
             try {
                 publishSnapshot()
@@ -94,8 +101,11 @@ internal class AgentContextSession(
         val reportedBefore = before ?: estimatedBefore
         onEvent(AgentEvent.ContextCompaction(operation, AgentEvent.ContextCompaction.PHASE_STARTED, reportedBefore))
         try {
-            val compactor = AgentContextCompactor(config, provider, runController, roleplay = roleplay)
-            val candidate = compactor.compact(messages, systemCount, sensitiveIds())
+            val compactor = AgentContextCompactor(config, provider, runController, roleplay = roleplay, metricsScope = metricsScope)
+            // UI selections are relative to persisted conversation history; provider system
+            // messages are prepended here and must never be user-selectable.
+            val absoluteSelection = selection?.let { (it.first + systemCount)..(it.last + systemCount) }
+            val candidate = compactor.compact(messages, systemCount, sensitiveIds(), absoluteSelection)
             lastDemotedToolResults = compactor.lastDemotedToolResults
             runController.throwIfCancelled()
             val wasCompacted = compacted
@@ -128,9 +138,19 @@ internal class AgentContextSession(
         val durable = JSONArray()
         for (index in systemCount until source.length()) {
             val message = source.getJSONObject(index)
-            if (!message.optBoolean("_eta_observation")) durable.put(message)
+            if (!message.optBoolean("_eta_observation") && !message.optBoolean(PROMPT_INJECTION_MARKER)) {
+                durable.put(message)
+            }
         }
         return AgentConversationCodec.transcript(durable, 0, sensitiveIds())
+    }
+
+    private companion object {
+        val EMBEDDED_LOCAL_PROVIDERS = setOf(
+            LiteRtLmAgentProvider.id,
+            LlamaCppAgentProvider.id,
+            MnnAgentProvider.id,
+        )
     }
 
 }

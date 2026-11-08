@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.SupportAgent
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -100,6 +101,7 @@ internal fun AgentAppShell(
     onStopKimiWeb: () -> Unit,
     onRefreshKimiWeb: () -> Unit,
     onOpenBrowser: () -> Unit,
+    onOpenBranches: () -> Unit = {},
     onSelectConversation: (String) -> Unit,
     onConversationTogglePin: (ConversationSummaryUi) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
@@ -110,6 +112,7 @@ internal fun AgentAppShell(
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
     onOpenMeetingRoom: (String) -> Unit,
     onMeetingRoomRename: (MeetingRoomSummaryRow) -> Unit,
+    onMeetingRoomTogglePin: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomExport: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomDelete: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomArchiveChange: (MeetingRoomSummaryRow, Boolean) -> Unit,
@@ -121,6 +124,7 @@ internal fun AgentAppShell(
     onOpenCharacters: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenAppControl: () -> Unit,
     onOpenModelProviders: () -> Unit,
     modifier: Modifier = Modifier,
     homeTitle: String? = null,
@@ -157,9 +161,11 @@ internal fun AgentAppShell(
                             onStopKimiWeb = onStopKimiWeb,
                             onRefreshKimiWeb = onRefreshKimiWeb,
                             onOpenBrowser = onOpenBrowser,
+                            onOpenBranches = onOpenBranches,
                             homeTitle = homeTitle,
                             homeCharacter = homeCharacter,
                             onOpenCharacter = onOpenCharacter,
+                            onOpenAppControl = onOpenAppControl,
                         )
                     }
                 }
@@ -195,6 +201,7 @@ internal fun AgentAppShell(
                 onConversationMoveToFolder = onConversationMoveToFolder,
                 onOpenMeetingRoom = onOpenMeetingRoom,
                 onMeetingRoomRename = onMeetingRoomRename,
+                onMeetingRoomTogglePin = onMeetingRoomTogglePin,
                 onMeetingRoomExport = onMeetingRoomExport,
                 onMeetingRoomDelete = onMeetingRoomDelete,
                 onMeetingRoomArchiveChange = onMeetingRoomArchiveChange,
@@ -235,9 +242,11 @@ private fun AgentTopBar(
     onStopKimiWeb: () -> Unit,
     onRefreshKimiWeb: () -> Unit,
     onOpenBrowser: () -> Unit,
+    onOpenBranches: () -> Unit,
     homeTitle: String?,
     homeCharacter: RoleplayChatUi?,
     onOpenCharacter: () -> Unit,
+    onOpenAppControl: () -> Unit,
 ) {
     val isHome = route is AppRoute.Home
     val navigationIcon: @Composable () -> Unit = {
@@ -269,6 +278,8 @@ private fun AgentTopBar(
                 onStopKimiWeb = onStopKimiWeb,
                 onRefreshKimiWeb = onRefreshKimiWeb,
                 onOpenBrowser = onOpenBrowser,
+                onOpenBranches = onOpenBranches,
+                onOpenAppControl = onOpenAppControl,
             )
         }
     }
@@ -311,6 +322,8 @@ private fun TopBarOverflowMenu(
     onStopKimiWeb: () -> Unit,
     onRefreshKimiWeb: () -> Unit,
     onOpenBrowser: () -> Unit,
+    onOpenBranches: () -> Unit,
+    onOpenAppControl: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -331,16 +344,20 @@ private fun TopBarOverflowMenu(
             onDismissRequest = { showMenu = false },
         ) {
             val openTerminalText = stringResource(R.string.action_open_terminal)
+            val appControlText = "软件管家"
             val launchKimiWebText = kimiWebLabel
             val stopKimiWebText = stringResource(R.string.capability_kimi_stop)
             val openBrowserText = stringResource(R.string.action_open_browser)
+            val branchesText = stringResource(R.string.branch_graph_title)
             val autoReadText = stringResource(
                 if (autoReadEnabled) R.string.speech_disable_auto_read else R.string.speech_enable_auto_read,
             )
             val menuItems = remember(
                 openTerminalText,
+                appControlText,
                 launchKimiWebText,
                 openBrowserText,
+                branchesText,
                 stopKimiWebText,
                 canStopKimiWeb,
                 autoReadText,
@@ -348,6 +365,16 @@ private fun TopBarOverflowMenu(
                 autoReadEnabled,
             ) {
                 listOf(
+                    DropdownItem(
+                        text = appControlText,
+                        icon = { modifier ->
+                            Icon(
+                                imageVector = Icons.Rounded.SupportAgent,
+                                contentDescription = null,
+                                modifier = modifier.size(TopBarMenuIconSize),
+                            )
+                        },
+                    ),
                     DropdownItem(
                         text = openTerminalText,
                         icon = { modifier ->
@@ -378,6 +405,7 @@ private fun TopBarOverflowMenu(
                             )
                         },
                     ),
+                    DropdownItem(text = branchesText),
                 ) + (if (canStopKimiWeb) {
                     listOf(
                         DropdownItem(
@@ -418,17 +446,18 @@ private fun TopBarOverflowMenu(
                         index = index,
                         onSelectedIndexChange = {
                             showMenu = false
-                            if (hasSpeechPlayback && index == menuItems.lastIndex) {
-                                speechSettings?.let { current ->
+                            when {
+                                index == 0 -> onOpenAppControl()
+                                index == 1 -> onOpenTerminal()
+                                index == 2 -> onLaunchKimiWeb()
+                                index == 3 -> onOpenBrowser()
+                                index == 4 -> onOpenBranches()
+                                canStopKimiWeb && index == 5 -> onStopKimiWeb()
+                                hasSpeechPlayback && index == menuItems.lastIndex -> speechSettings?.let { current ->
                                     scope.launch {
                                         SpeechSettingsRepository.save(current.copy(chatAutoSpeak = !current.chatAutoSpeak))
                                     }
                                 }
-                            } else when (index) {
-                                0 -> onOpenTerminal()
-                                1 -> onLaunchKimiWeb()
-                                2 -> onOpenBrowser()
-                                3 -> onStopKimiWeb()
                             }
                         },
                     )
@@ -441,10 +470,14 @@ private fun TopBarOverflowMenu(
 @Composable
 private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Home, is AppRoute.Browser -> ""
+    is AppRoute.AppControlCenter -> "软件管家"
     is AppRoute.Terminal -> stringResource(R.string.route_terminal)
     is AppRoute.Tools -> stringResource(R.string.route_tools)
     is AppRoute.WebToolsSettings -> stringResource(R.string.web_tools_settings_title)
     is AppRoute.Skills -> stringResource(R.string.route_skills)
+    is AppRoute.PromptInjection -> stringResource(R.string.prompt_injection_title)
+    is AppRoute.CapabilityCenter -> "能力中心"
+    is AppRoute.ApiConnectors -> "REST API 连接"
     is AppRoute.Subagents -> "Subagent"
     is AppRoute.TaskCenter -> stringResource(R.string.route_task_center)
     is AppRoute.A2AAgents -> stringResource(R.string.route_a2a_agents)
@@ -470,13 +503,21 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Memory -> stringResource(R.string.route_memory)
     is AppRoute.LinuxEnvironment -> stringResource(R.string.route_linux_environment)
     is AppRoute.Workspace -> stringResource(R.string.capability_workspace)
+    is AppRoute.Projects -> stringResource(R.string.projects_title)
     is AppRoute.SharedFolders -> stringResource(R.string.route_shared_folders)
     is AppRoute.LinuxFiles -> stringResource(R.string.route_linux_files)
     is AppRoute.ModelProviders -> stringResource(R.string.route_model_providers)
+    is AppRoute.LocalModels -> stringResource(R.string.local_models_title)
     is AppRoute.CommunityCatalog -> "从 models.dev 添加"
     is AppRoute.CommunityCatalogProvider -> "选择模型"
     is AppRoute.McpServers -> stringResource(R.string.route_mcp_servers)
+    is AppRoute.AgentMetrics -> stringResource(R.string.route_agent_metrics)
+    is AppRoute.ConversationBranches -> stringResource(R.string.branch_graph_title)
+    is AppRoute.AgentMetricDetail -> stringResource(R.string.metrics_detail_title)
+    is AppRoute.AgentTokenPricing -> stringResource(R.string.metrics_prices_title)
+    is AppRoute.AgentTokenPriceEditor -> stringResource(R.string.metrics_prices_edit)
     is AppRoute.McpServerDetail -> stringResource(R.string.route_mcp_server_detail)
+    is AppRoute.McpCatalog -> stringResource(R.string.mcp_catalog_title)
     is AppRoute.ModelProviderDetail -> stringResource(R.string.route_provider_details)
     is AppRoute.ModelProviderNew -> stringResource(R.string.route_new_provider)
     null -> stringResource(R.string.app_name)
