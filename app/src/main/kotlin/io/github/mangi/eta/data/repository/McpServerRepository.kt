@@ -106,6 +106,8 @@ internal object McpServerRepository {
 
     fun credentialStatus(serverId: String): McpCredentialStatus = secrets().credentialStatus(serverId)
 
+    internal fun appContext(): Context = context()
+
     private fun updateSecret(
         secretStore: McpSecretStore,
         server: McpServerSetting,

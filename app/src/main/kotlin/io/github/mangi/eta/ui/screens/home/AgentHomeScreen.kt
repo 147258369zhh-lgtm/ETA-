@@ -1,8 +1,9 @@
 package io.github.mangi.eta.ui.screens.home
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import io.github.mangi.eta.ui.components.AgentChatBody
 import io.github.mangi.eta.ui.components.AgentConversationLoadState
@@ -34,7 +35,6 @@ internal fun AgentHomeScreen(
     isLoadingConversation: Boolean = false,
     conversationLoadFailed: Boolean = false,
     historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
-    isDrawerOpen: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     // key 内保持完整分支，避免提前返回遗留无法转换为 DEX 的编译器标记。
@@ -106,7 +106,6 @@ internal fun AgentHomeScreen(
                     historyLoadState = historyLoadState,
                     onLoadEarlierMessages = { onAction(AgentHomeAction.LoadEarlierMessages) },
                     onHistoryViewportChanged = { onAction(AgentHomeAction.HistoryViewportChanged(it)) },
-                    isDrawerOpen = isDrawerOpen,
                     modifier = modifier,
                 )
             }

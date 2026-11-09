@@ -1,7 +1,5 @@
 package io.github.mangi.eta.ui.screens.capability
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -26,6 +24,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Memory
@@ -73,11 +72,6 @@ import io.github.mangi.eta.agent.capability.SkillUpdateStore
 import io.github.mangi.eta.agent.capability.SkillSourceType
 import io.github.mangi.eta.agent.capability.ApiConnectorDefinition
 import io.github.mangi.eta.agent.capability.ApiConnectorService
-import io.github.mangi.eta.agent.capability.CapabilityPluginInstallOutcome
-import io.github.mangi.eta.agent.capability.CapabilityPluginPreview
-import io.github.mangi.eta.agent.capability.CapabilityPluginService
-import io.github.mangi.eta.agent.capability.CapabilityPluginUninstallOutcome
-import io.github.mangi.eta.agent.capability.InstalledCapabilityPlugin
 import io.github.mangi.eta.agent.skill.SkillIndexEntry
 import io.github.mangi.eta.agent.skill.SkillPrerequisiteStatus
 import io.github.mangi.eta.agent.skill.SkillReadinessInspector
@@ -109,7 +103,6 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.io.InputStream
 
 private const val TAB_OVERVIEW = 0
 private const val TAB_DISCOVER = 1
@@ -120,7 +113,6 @@ private data class LocalCapabilityData(
     val sources: List<SkillSourceDefinition>,
     val skills: List<SkillIndexEntry>,
     val apis: List<ApiConnectorDefinition>,
-    val plugins: List<InstalledCapabilityPlugin>,
     val updateState: SkillUpdateState,
 )
 
@@ -130,6 +122,8 @@ internal fun CapabilityCenterScreen(
     onOpenSkills: () -> Unit,
     onOpenMcp: () -> Unit,
     onOpenApiConnectors: () -> Unit,
+    onOpenA2A: () -> Unit,
+    onOpenConnectorCenter: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenPromptInjection: () -> Unit,
     onOpenLocalModels: () -> Unit,
@@ -144,9 +138,6 @@ internal fun CapabilityCenterScreen(
     val apiService = remember(context.applicationContext) {
         ApiConnectorService(context.applicationContext)
     }
-    val pluginService = remember(context.applicationContext) {
-        CapabilityPluginService(context.applicationContext)
-    }
     val updateService = remember(context.applicationContext) {
         SkillUpdateService(context.applicationContext)
     }
@@ -156,7 +147,6 @@ internal fun CapabilityCenterScreen(
     var sources by remember { mutableStateOf<List<SkillSourceDefinition>>(emptyList()) }
     var installedSkills by remember { mutableStateOf<List<SkillIndexEntry>>(emptyList()) }
     var apiConnectors by remember { mutableStateOf<List<ApiConnectorDefinition>>(emptyList()) }
-    var installedPlugins by remember { mutableStateOf<List<InstalledCapabilityPlugin>>(emptyList()) }
     var market by remember { mutableStateOf<SkillMarketSnapshot?>(null) }
     var searching by remember { mutableStateOf(false) }
     var localLoading by remember { mutableStateOf(true) }
@@ -170,10 +160,6 @@ internal fun CapabilityCenterScreen(
     var showAddSource by remember { mutableStateOf(false) }
     var showFilters by remember { mutableStateOf(false) }
     var filters by remember { mutableStateOf(MarketFilters()) }
-    var pluginPreview by remember { mutableStateOf<CapabilityPluginPreview?>(null) }
-    var pluginUri by remember { mutableStateOf<String?>(null) }
-    var pluginWorking by remember { mutableStateOf(false) }
-    var pluginToRemove by remember { mutableStateOf<InstalledCapabilityPlugin?>(null) }
     var updateState by remember { mutableStateOf(SkillUpdateState()) }
     var checkingUpdates by remember { mutableStateOf(false) }
     var automaticUpdates by remember {
@@ -196,9 +182,6 @@ internal fun CapabilityCenterScreen(
             localLoading = true
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    check(pluginService.recoverInterruptedInstall()) {
-                        "上一次能力包安装未能完整回滚，请稍后重试"
-                    }
                     val loadedSources = service.sources()
                     val loadedSkills = SkillRuntime.createIndexService(context.applicationContext)
                         .listSkillsForManagement(forceRefresh = true)
@@ -207,7 +190,6 @@ internal fun CapabilityCenterScreen(
                         sources = loadedSources,
                         skills = loadedSkills,
                         apis = apiService.connectors(),
-                        plugins = pluginService.installedPlugins(),
                         updateState = SkillUpdateStore(context.applicationContext).read(),
                     )
                 }
@@ -216,7 +198,6 @@ internal fun CapabilityCenterScreen(
                 sources = loaded.sources
                 installedSkills = loaded.skills
                 apiConnectors = loaded.apis
-                installedPlugins = loaded.plugins
                 updateState = loaded.updateState
             }.onFailure {
                 notice = CapabilityNotice(
@@ -365,37 +346,6 @@ internal fun CapabilityCenterScreen(
         }
     }
 
-    fun pluginStream(uri: String): () -> InputStream = {
-        val parsed = android.net.Uri.parse(uri)
-        context.contentResolver.openInputStream(parsed)
-            ?: throw IllegalArgumentException("无法读取所选插件包")
-    }
-
-    fun inspectPlugin(uri: String) {
-        if (pluginWorking) return
-        pluginWorking = true
-        scope.launch {
-            try {
-                pluginPreview = withContext(Dispatchers.IO) {
-                    pluginService.inspect(pluginStream(uri))
-                }
-                pluginUri = uri
-            } catch (failure: CancellationException) {
-                throw failure
-            } catch (failure: Throwable) {
-                pluginUri = null
-                pluginPreview = null
-                notice = CapabilityNotice("插件包校验失败", safeMessage(failure), true)
-            } finally {
-                pluginWorking = false
-            }
-        }
-    }
-
-    val pluginPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { inspectPlugin(it.toString()) }
-    }
-
     LaunchedEffect(refreshGeneration) {
         refreshLocal()
     }
@@ -458,8 +408,8 @@ internal fun CapabilityCenterScreen(
                             onClick = onOpenMcp,
                         )
                         DetailListRow(
-                            title = stringResource(R.string.prompt_injection_title),
-                            subtitle = stringResource(R.string.prompt_injection_capability_summary),
+                            title = "角色与指令",
+                            subtitle = "角色人格、世界书、作用域指令、冲突治理与导入导出",
                             icon = Icons.Rounded.Description,
                             onClick = onOpenPromptInjection,
                         )
@@ -494,22 +444,6 @@ internal fun CapabilityCenterScreen(
                             subtitle = "按能力组控制 Skill、MCP、设备与文件访问",
                             icon = Icons.Rounded.Security,
                             onClick = onOpenPermissions,
-                        )
-                        DetailListRow(
-                            title = "导入能力包",
-                            subtitle = "组合安装 Skill、OpenAPI 连接与需在安装后配置认证的 MCP 声明",
-                            icon = Icons.Rounded.Extension,
-                            value = if (pluginWorking) "校验中" else "选择 ZIP",
-                            enabled = !pluginWorking,
-                            onClick = {
-                                pluginPicker.launch(
-                                    arrayOf(
-                                        "application/zip",
-                                        "application/x-zip-compressed",
-                                        "application/octet-stream",
-                                    ),
-                                )
-                            },
                         )
                     }
                 }
@@ -546,27 +480,6 @@ internal fun CapabilityCenterScreen(
                             )
                         }
                     }
-                }
-                if (installedPlugins.isNotEmpty()) {
-                    item(key = "overview_plugins") {
-                        SmallTitle("已安装能力包")
-                        Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
-                            installedPlugins.forEach { plugin ->
-                                DetailListRow(
-                                    title = plugin.name,
-                                    subtitle = "v${plugin.version} · " +
-                                        plugin.skillIds.size + " Skill · " +
-                                        plugin.apiConnectorIds.size + " API · " +
-                                        plugin.mcpServerIds.size + " MCP",
-                                    icon = Icons.Rounded.Extension,
-                                    onClick = { pluginToRemove = plugin },
-                                )
-                            }
-                        }
-                    }
-                }
-                item(key = "overview_managed_tool_packages") {
-                    ManagedToolPackagesSection()
                 }
                 item(key = "overview_recent") {
                     SmallTitle("近期安装")
@@ -717,6 +630,20 @@ internal fun CapabilityCenterScreen(
                             icon = Icons.Rounded.Link,
                             value = apiConnectors.size.toString() + " 个已配置",
                             onClick = onOpenApiConnectors,
+                        )
+                        DetailListRow(
+                            title = "A2A Agent 协作",
+                            subtitle = "Agent Card、双向任务、流式事件、Token 配对与独立服务进程",
+                            icon = Icons.Rounded.Groups,
+                            value = "Agent 网络",
+                            onClick = onOpenA2A,
+                        )
+                        DetailListRow(
+                            title = "统一连接中心",
+                            subtitle = "WebSocket、OpenAPI、Android Intent、ContentProvider 与 SAF",
+                            icon = Icons.Rounded.Hub,
+                            value = "Connector SDK",
+                            onClick = onOpenConnectorCenter,
                         )
                     }
                 }
@@ -959,115 +886,6 @@ internal fun CapabilityCenterScreen(
                 showFilters = false
             },
         )
-    }
-
-    pluginPreview?.let { preview ->
-        WindowDialog(
-            show = true,
-            title = "安装 ${preview.manifest.name}？",
-            summary = "v${preview.manifest.version} · ${preview.manifest.description.ifBlank { "组合能力包" }}",
-            onDismissRequest = { if (!pluginWorking) pluginPreview = null },
-        ) {
-            Column(Modifier.fillMaxWidth().heightIn(max = 560.dp)) {
-                Column(
-                    modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    DetailFactRow("Skills", preview.skillPaths.size.toString() + " 个")
-                    DetailFactRow("API 操作", preview.apiOperationCount.toString() + " 个（默认关闭）")
-                    DetailFactRow("MCP", preview.manifest.mcpServers.size.toString() + " 个（工具默认关闭）")
-                    if (preview.manifest.author.isNotBlank()) {
-                        DetailFactRow("作者", preview.manifest.author)
-                    }
-                    if (preview.manifest.permissions.isNotEmpty()) {
-                        DetailFactRow("声明权限", preview.manifest.permissions.joinToString(" · "))
-                    }
-                    preview.warnings.forEach { warning ->
-                        CapabilityInlineWarning(warning)
-                    }
-                    CapabilityInlineWarning(
-                        "安装会重新校验 ZIP、Skill 元数据、OpenAPI 文档和 MCP 地址；" +
-                            "不会执行包内脚本，也不会携带外部凭据。",
-                    )
-                }
-                MiuixDialogActions(
-                    modifier = Modifier.padding(top = 16.dp),
-                    confirmText = if (pluginWorking) "安装中" else "安装能力包",
-                    confirmEnabled = !pluginWorking,
-                    cancelEnabled = !pluginWorking,
-                    onCancel = { pluginPreview = null },
-                    onConfirm = {
-                        val uri = pluginUri ?: return@MiuixDialogActions
-                        scope.launch {
-                            pluginWorking = true
-                            val outcome = withContext(Dispatchers.IO) {
-                                pluginService.install(pluginStream(uri))
-                            }
-                            when (outcome) {
-                                is CapabilityPluginInstallOutcome.Success -> {
-                                    pluginPreview = null
-                                    pluginUri = null
-                                    notice = CapabilityNotice(
-                                        "能力包已安装",
-                                        outcome.pluginName + "：" +
-                                            outcome.installedSkills + " Skill · " +
-                                            outcome.installedApis + " API · " +
-                                            outcome.installedMcpServers + " MCP",
-                                        false,
-                                    )
-                                    refreshGeneration += 1
-                                }
-                                is CapabilityPluginInstallOutcome.Failure -> {
-                                    notice = CapabilityNotice(
-                                        if (outcome.recoveryRequired) "安装需要恢复" else "能力包安装失败",
-                                        outcome.message,
-                                        true,
-                                    )
-                                }
-                            }
-                            pluginWorking = false
-                        }
-                    },
-                )
-            }
-        }
-    }
-
-    pluginToRemove?.let { plugin ->
-        WindowDialog(
-            show = true,
-            title = "卸载 ${plugin.name}？",
-            summary = "会一并移除该能力包安装的 Skill、REST API 连接和 MCP 连接。手动修改过的外部能力也会被移除。",
-            onDismissRequest = { pluginToRemove = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (pluginWorking) "卸载中" else "卸载能力包",
-                destructive = true,
-                confirmEnabled = !pluginWorking,
-                onCancel = { pluginToRemove = null },
-                onConfirm = {
-                    scope.launch {
-                        pluginWorking = true
-                        val result = withContext(Dispatchers.IO) {
-                            pluginService.uninstall(plugin.id)
-                        }
-                        when (result) {
-                            CapabilityPluginUninstallOutcome.Success -> {
-                                pluginToRemove = null
-                                notice = CapabilityNotice("能力包已卸载", plugin.name + " 及其关联能力已移除", false)
-                                refreshGeneration += 1
-                            }
-                            is CapabilityPluginUninstallOutcome.Failure -> notice = CapabilityNotice(
-                                if (result.recoveryRequired) "卸载未完整完成" else "卸载失败",
-                                result.message,
-                                true,
-                            )
-                        }
-                        pluginWorking = false
-                    }
-                },
-            )
-        }
     }
 
     notice?.let { current ->

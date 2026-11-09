@@ -20,7 +20,7 @@ internal fun MemoryAutomationSettingsPanel() {
     Column {
         SmallTitle("提取内容")
         Card(Modifier.padding(horizontal = 12.dp)) {
-            SwitchPreference(title = "自动提取记忆", summary = "从新的用户对话生成待审阅条目", checked = settings.extractMemory,
+            SwitchPreference(title = "自动提取记忆", summary = "先经过软件管家质量门禁，通过后才进入人工批准区", checked = settings.extractMemory,
                 onCheckedChange = { update(settings.copy(extractMemory = it)) })
             SwitchPreference(title = "偏好与习惯", checked = settings.capturePreferences,
                 onCheckedChange = { update(settings.copy(capturePreferences = it)) })
@@ -47,7 +47,8 @@ internal fun MemoryAutomationSettingsPanel() {
             NumberChoice("每日请求上限", listOf(1, 3, 6, 12, 20), settings.dailyLimit, "次") { update(settings.copy(dailyLimit = it)) }
             NumberChoice("每次整理来源数", listOf(1, 2, 3, 5), settings.batchSize, "个") { update(settings.copy(batchSize = it)) }
             NumberChoice("局部记忆有效期", listOf(7, 14, 30, 90, 180), settings.retentionDays, "天") { update(settings.copy(retentionDays = it)) }
-            BasicComponent(title = "确认后生效", summary = "冲突始终由你处理；过期条目停止供 Agent 使用")
+            BasicComponent(title = "双阶段审核", summary = "软件管家拒绝空泛、重复和缺证据内容；通过后才由你确认生效")
+            BasicComponent(title = "冲突与过期", summary = "冲突始终由你处理；过期条目停止供 Agent 使用")
             BasicComponent(title = "整理模型", summary = "使用当前选中的模型，受每日请求额度限制")
         }
     }

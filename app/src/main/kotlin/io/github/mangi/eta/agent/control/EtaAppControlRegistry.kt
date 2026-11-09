@@ -1,9 +1,16 @@
 package io.github.mangi.eta.agent.control
 
 import android.content.Context
+import android.os.SystemClock
 import io.github.mangi.eta.agent.prompt.PromptInjectionStore
+import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.subagent.SubagentProfileCatalog
+import io.github.mangi.eta.agent.memory.MemoryReviewRepository
 import io.github.mangi.eta.agent.terminal.SharedFolderMounts
+import io.github.mangi.eta.agent.runtime.AgentMetricsActivity
+import io.github.mangi.eta.agent.runtime.AgentMetricsTrend
+import io.github.mangi.eta.agent.runtime.AgentRunMetricsStore
+import io.github.mangi.eta.agent.runtime.AgentRunMetricsRecord
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.ModelFallbackSettings
 import io.github.mangi.eta.data.model.enabledModel
@@ -14,18 +21,24 @@ import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.fork.learning.LearningRepository
+import io.github.mangi.eta.fork.learning.LearningDatabase
 import io.github.mangi.eta.fork.learning.LearningSettingsStore
 import io.github.mangi.eta.fork.projects.ProjectDraft
 import io.github.mangi.eta.fork.projects.ProjectRepository
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.ZoneId
 
 internal enum class EtaControlDanger {
     SAFE,
+    WRITE,
     CONFIRM,
 }
 
@@ -38,6 +51,19 @@ internal data class EtaControlCapabilityInfo(
     val parameters: JSONObject,
     val canRead: Boolean,
 )
+
+/** Provider contract for feature modules that own app-shell capabilities. */
+internal data class EtaControlRegistration(
+    val info: EtaControlCapabilityInfo,
+    val read: (suspend (Context) -> JSONObject)? = null,
+    val execute: suspend (Context, JSONObject) -> JSONObject,
+)
+
+internal interface EtaControlProvider {
+    val providerId: String
+
+    fun capabilities(): List<EtaControlRegistration>
+}
 
 internal sealed interface EtaAppControlEvent {
     data class Navigate(val routeKey: String) : EtaAppControlEvent
@@ -71,6 +97,7 @@ internal object EtaAppControlRegistry {
 
     private val lock = Any()
     private val definitions = linkedMapOf<String, Definition>()
+    private val installedProviders = linkedSetOf<String>()
 
     init {
         registerNavigation()
@@ -79,12 +106,37 @@ internal object EtaAppControlRegistry {
         registerModelState()
         registerLocalModels()
         registerMcpState()
+        registerSkillState()
         registerPromptState()
         registerSubagentState()
         registerProjectState()
         registerLearningState()
         registerBackupState()
         registerWorkspaceState()
+        registerRuntimeState()
+    }
+
+    /**
+     * Registers a feature-owned group of capabilities once. Providers may call this during
+     * application startup; duplicate provider ids are ignored and duplicate capability ids fail
+     * closed so two modules cannot silently overwrite each other's public contract.
+     */
+    fun registerProvider(provider: EtaControlProvider) {
+        require(provider.providerId.matches(Regex("[a-z][a-z0-9_.-]{1,63}"))) {
+            "Invalid app control provider id: ${provider.providerId}"
+        }
+        synchronized(lock) {
+            if (!installedProviders.add(provider.providerId)) return
+        }
+        provider.capabilities().forEach { registration ->
+            register(
+                Definition(
+                    info = registration.info,
+                    read = registration.read,
+                    execute = registration.execute,
+                ),
+            )
+        }
     }
 
     fun list(category: String = ""): List<EtaControlCapabilityInfo> = synchronized(lock) {
@@ -114,9 +166,18 @@ internal object EtaAppControlRegistry {
             "CAPABILITY_NOT_READABLE",
             "能力 ${definition.info.title} 只能执行，不能读取当前值",
         )
-        return reader(context.applicationContext)
-            .put("ok", true)
-            .put("id", definition.info.id)
+        val startedAt = SystemClock.elapsedRealtime()
+        return try {
+            reader(context.applicationContext)
+                .put("ok", true)
+                .put("id", definition.info.id)
+                .also {
+                    audit(context, "get", definition.info.id, JSONObject(), startedAt)
+                }
+        } catch (failure: Throwable) {
+            audit(context, "get", definition.info.id, JSONObject(), startedAt, failure.auditCode())
+            throw failure
+        }
     }
 
     suspend fun execute(
@@ -125,15 +186,63 @@ internal object EtaAppControlRegistry {
         parameters: JSONObject,
     ): JSONObject {
         val definition = definition(id)
-        if (definition.info.danger == EtaControlDanger.CONFIRM) {
-            val approved = EtaAppControlConfirmation.awaitApproval(definition.info, parameters)
-            if (!approved) {
-                throw EtaControlException("USER_CANCELLED", "用户已取消操作，未修改任何数据")
+        val startedAt = SystemClock.elapsedRealtime()
+        return try {
+            EtaControlSchema.validate(definition.info.parameters, parameters)
+            if (definition.info.danger == EtaControlDanger.CONFIRM) {
+                val approved = EtaAppControlConfirmation.awaitApproval(definition.info, parameters)
+                if (!approved) {
+                    throw EtaControlException("USER_CANCELLED", "用户已取消操作，未修改任何数据")
+                }
+            }
+            definition.execute(context.applicationContext, parameters)
+                .put("ok", true)
+                .put("id", definition.info.id)
+                .also {
+                    audit(context, "execute", definition.info.id, parameters, startedAt)
+                }
+        } catch (failure: Throwable) {
+            audit(context, "execute", definition.info.id, parameters, startedAt, failure.auditCode())
+            throw failure
+        }
+    }
+
+    suspend fun audit(context: Context, limit: Int = 50): JSONObject = withContext(Dispatchers.IO) {
+        val store = EtaAppControlAuditStore(context)
+        JSONObject()
+            .put("ok", true)
+            .put("summary", store.summary())
+            .put("entries", JSONArray(store.list(limit)))
+    }
+
+    private suspend fun audit(
+        context: Context,
+        operation: String,
+        capabilityId: String,
+        parameters: JSONObject,
+        startedAt: Long,
+        errorCode: String = "",
+    ) {
+        withContext(NonCancellable + Dispatchers.IO) {
+            runCatching {
+                EtaAppControlAuditStore(context).append(
+                    operation = operation,
+                    capabilityId = capabilityId,
+                    parameters = parameters,
+                    success = errorCode.isBlank(),
+                    errorCode = errorCode,
+                    durationMs = SystemClock.elapsedRealtime() - startedAt,
+                )
             }
         }
-        return definition.execute(context.applicationContext, parameters)
-            .put("ok", true)
-            .put("id", definition.info.id)
+    }
+
+    private fun Throwable.auditCode(): String = when (this) {
+        is EtaControlException -> code
+        is kotlinx.coroutines.CancellationException -> "CANCELLED"
+        is org.json.JSONException -> "INVALID_ARGUMENT"
+        is IllegalArgumentException -> "INVALID_ARGUMENT"
+        else -> "CAPABILITY_FAILED"
     }
 
     private fun definition(id: String): Definition = synchronized(lock) {
@@ -295,7 +404,7 @@ internal object EtaAppControlRegistry {
                     title = "记忆开关",
                     category = "设置",
                     summary = "读取或修改全局记忆注入与读写开关",
-                    danger = EtaControlDanger.SAFE,
+                    danger = EtaControlDanger.WRITE,
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -333,6 +442,45 @@ internal object EtaAppControlRegistry {
                 execute = { _, _ ->
                     val snapshot = AgentMemoryRepository.replaceAll("")
                     JSONObject().put("cleared", true).put("revision", snapshot.revision)
+                },
+            ),
+        )
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "settings.current_model",
+                    title = "切换当前模型",
+                    category = "模型",
+                    summary = "选择已启用且属于指定提供商的模型作为当前默认模型",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("modelId", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 256))
+                                .put("providerId", JSONObject().put("type", JSONArray().put("string").put("null"))),
+                        )
+                        .put("required", JSONArray().put("modelId"))
+                        .put("additionalProperties", false),
+                    canRead = true,
+                ),
+                read = { currentModelJson() },
+                execute = { _, parameters ->
+                    val modelId = parameters.getString("modelId").trim()
+                    val requestedProviderId = if (parameters.isNull("providerId")) null else {
+                        parameters.optString("providerId").trim().takeIf(String::isNotEmpty)
+                    }
+                    ProviderRepository.ensureBuiltInsMerged()
+                    val provider = ProviderRepository.providerByModelId(modelId)
+                        ?.takeIf { it.isEnabled }
+                        ?: throw EtaControlException("MODEL_NOT_FOUND", "模型不存在、已停用或不属于任何已启用提供商")
+                    if (requestedProviderId != null && requestedProviderId != provider.id) {
+                        throw EtaControlException("PROVIDER_MODEL_MISMATCH", "模型不属于指定提供商")
+                    }
+                    require(provider.models.any { it.id == modelId && it.isEnabled }) { "模型已停用" }
+                    RuntimeConfigRepository.setSelectedModelId(modelId)
+                    currentModelJson().put("selected", true)
                 },
             ),
         )
@@ -427,7 +575,7 @@ internal object EtaAppControlRegistry {
                     title = "设置备用模型",
                     category = "模型",
                     summary = "修改主模型临时失败时使用的备用提供商与模型",
-                    danger = EtaControlDanger.SAFE,
+                    danger = EtaControlDanger.WRITE,
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -562,6 +710,182 @@ internal object EtaAppControlRegistry {
                 },
             )
         }
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "settings.mcp_server",
+                    title = "启用或停用 MCP",
+                    category = "智能",
+                    summary = "修改 MCP 服务启用状态；不会读取或修改认证凭据",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("serverId", JSONObject().put("type", "string").put("minLength", 1))
+                                .put("enabled", JSONObject().put("type", "boolean")),
+                        )
+                        .put("required", JSONArray(listOf("serverId", "enabled")))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    McpServerRepository.init(context)
+                    val server = McpServerRepository.serverById(parameters.getString("serverId"))
+                        ?: throw EtaControlException("MCP_SERVER_NOT_FOUND", "MCP 服务不存在")
+                    val enabled = parameters.getBoolean("enabled")
+                    McpServerRepository.update(server.copy(enabled = enabled))
+                    JSONObject().put("serverId", server.id).put("enabled", enabled)
+                },
+            ),
+        )
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "settings.mcp_tool",
+                    title = "授权或停用 MCP 工具",
+                    category = "智能",
+                    summary = "只允许切换该 MCP 服务已发现的工具，不允许借此新增外部服务",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("serverId", JSONObject().put("type", "string").put("minLength", 1))
+                                .put("toolName", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 256))
+                                .put("enabled", JSONObject().put("type", "boolean")),
+                        )
+                        .put("required", JSONArray(listOf("serverId", "toolName", "enabled")))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    McpServerRepository.init(context)
+                    val serverId = parameters.getString("serverId")
+                    val toolName = parameters.getString("toolName")
+                    val server = McpServerRepository.serverById(serverId)
+                        ?: throw EtaControlException("MCP_SERVER_NOT_FOUND", "MCP 服务不存在")
+                    if (server.tools.none { it.name == toolName }) {
+                        throw EtaControlException("MCP_TOOL_NOT_FOUND", "该 MCP 服务未发现指定工具")
+                    }
+                    val enabled = parameters.getBoolean("enabled")
+                    McpServerRepository.setToolEnabled(serverId, toolName, enabled)
+                    JSONObject().put("serverId", serverId).put("toolName", toolName).put("enabled", enabled)
+                },
+            ),
+        )
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "mcp_server.delete",
+                    title = "删除 MCP 服务",
+                    category = "智能",
+                    summary = "删除 MCP 配置及其加密凭据；此操作不可撤销",
+                    danger = EtaControlDanger.CONFIRM,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject().put("serverId", JSONObject().put("type", "string").put("minLength", 1)),
+                        )
+                        .put("required", JSONArray().put("serverId"))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    McpServerRepository.init(context)
+                    val serverId = parameters.getString("serverId")
+                    McpServerRepository.delete(serverId)
+                    JSONObject().put("serverId", serverId).put("deleted", true)
+                },
+            ),
+        )
+    }
+
+    private fun registerSkillState() {
+        registerReadOnly(
+            id = "state.skills",
+            title = "Skill 目录",
+            category = "智能",
+            summary = "读取已安装 Skill、启用状态、来源、能力目录和兼容信息",
+        ) { context ->
+            val entries = SkillRuntime.createIndexService(context)
+                .listSkillsForManagement(forceRefresh = true)
+                .filter { it.installed }
+            JSONObject().put(
+                "skills",
+                JSONArray(entries.map { entry ->
+                    JSONObject()
+                        .put("id", entry.id)
+                        .put("name", entry.name)
+                        .put("description", entry.description)
+                        .put("enabled", entry.enabled)
+                        .put("source", entry.source)
+                        .put("hasScripts", entry.hasScripts)
+                        .put("hasReferences", entry.hasReferences)
+                        .put("hasAssets", entry.hasAssets)
+                        .put("hasEvals", entry.hasEvals)
+                        .put("compatibility", entry.compatibility ?: JSONObject.NULL)
+                }),
+            )
+        }
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "settings.skill.enabled",
+                    title = "启用或停用 Skill",
+                    category = "智能",
+                    summary = "切换已安装 Skill 是否可被 Agent 发现和加载",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("skillId", JSONObject().put("type", "string").put("minLength", 1))
+                                .put("enabled", JSONObject().put("type", "boolean")),
+                        )
+                        .put("required", JSONArray(listOf("skillId", "enabled")))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    val skillId = parameters.getString("skillId")
+                    val enabled = parameters.getBoolean("enabled")
+                    val entry = SkillRuntime.createIndexService(context).setSkillEnabled(skillId, enabled)
+                    JSONObject().put("skillId", entry.id).put("enabled", entry.enabled)
+                },
+            ),
+        )
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "skill.delete",
+                    title = "删除 Skill",
+                    category = "智能",
+                    summary = "删除已安装 Skill 及其本地文件；内置 Skill 会恢复为卸载状态，不删除内置资产",
+                    danger = EtaControlDanger.CONFIRM,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject().put("skillId", JSONObject().put("type", "string").put("minLength", 1)),
+                        )
+                        .put("required", JSONArray().put("skillId"))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    val skillId = parameters.getString("skillId")
+                    if (!SkillRuntime.createIndexService(context).deleteSkill(skillId)) {
+                        throw EtaControlException("SKILL_NOT_FOUND", "Skill 不存在或无法安全删除")
+                    }
+                    JSONObject().put("skillId", skillId).put("deleted", true)
+                },
+            ),
+        )
     }
 
     private fun registerPromptState() {
@@ -628,6 +952,78 @@ internal object EtaAppControlRegistry {
                 }),
             )
         }
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "subagent.create",
+                    title = "创建子 Agent",
+                    category = "智能",
+                    summary = "创建或更新自定义子 Agent 的角色指令、使用条件和工具边界；工具边界不会提升运行时权限",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("name", JSONObject().put("type", "string").put("minLength", 2).put("maxLength", 48))
+                                .put("description", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 600))
+                                .put("prompt", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 32_000))
+                                .put("whenToUse", JSONObject().put("type", "string").put("maxLength", 2_000))
+                                .put("tools", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
+                                .put("disallowedTools", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
+                                .put("overrideBuiltin", JSONObject().put("type", "boolean")),
+                        )
+                        .put("required", JSONArray(listOf("name", "description", "prompt")))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { _, parameters ->
+                    withContext(Dispatchers.IO) {
+                        val profile = SubagentProfileCatalog.saveCustomProfile(
+                            name = parameters.getString("name"),
+                            description = parameters.getString("description"),
+                            prompt = parameters.getString("prompt"),
+                            whenToUse = parameters.optString("whenToUse"),
+                            tools = parameters.optJSONArray("tools").toStringList(),
+                            disallowedTools = parameters.optJSONArray("disallowedTools").toStringList(),
+                            overrideBuiltin = parameters.optBoolean("overrideBuiltin", false),
+                        )
+                        JSONObject()
+                            .put("name", profile.name)
+                            .put("summary", profile.summary)
+                            .put("builtin", profile.builtin)
+                    }
+                },
+            ),
+        )
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "subagent.delete",
+                    title = "删除自定义子 Agent",
+                    category = "智能",
+                    summary = "删除 agents 工作区中的自定义子 Agent；内置子 Agent 不会删除",
+                    danger = EtaControlDanger.CONFIRM,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject().put("name", JSONObject().put("type", "string").put("minLength", 2).put("maxLength", 48)),
+                        )
+                        .put("required", JSONArray().put("name"))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { _, parameters ->
+                    val name = parameters.getString("name")
+                    val deleted = withContext(Dispatchers.IO) {
+                        SubagentProfileCatalog.deleteCustomProfile(name)
+                    }
+                    if (!deleted) throw EtaControlException("SUBAGENT_NOT_FOUND", "自定义子 Agent 不存在或无法安全删除")
+                    JSONObject().put("name", name.trim().lowercase()).put("deleted", true)
+                },
+            ),
+        )
     }
 
     private fun registerProjectState() {
@@ -663,7 +1059,7 @@ internal object EtaAppControlRegistry {
                     title = "创建项目",
                     category = "文件",
                     summary = "把已获准访问的目录登记为项目专属文件夹",
-                    danger = EtaControlDanger.SAFE,
+                    danger = EtaControlDanger.WRITE,
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -703,7 +1099,7 @@ internal object EtaAppControlRegistry {
                     title = "重命名项目",
                     category = "文件",
                     summary = "修改项目显示名称，不移动项目目录",
-                    danger = EtaControlDanger.SAFE,
+                    danger = EtaControlDanger.WRITE,
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -730,7 +1126,7 @@ internal object EtaAppControlRegistry {
                     title = "归档项目",
                     category = "文件",
                     summary = "归档或恢复项目及其会话上下文入口，不删除项目文件",
-                    danger = EtaControlDanger.SAFE,
+                    danger = EtaControlDanger.WRITE,
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -778,6 +1174,60 @@ internal object EtaAppControlRegistry {
 
     private fun registerLearningState() {
         registerReadOnly(
+            id = "state.memory_candidates",
+            title = "记忆候选",
+            category = "智能",
+            summary = "读取等待软件管家复核或等待人工批准的记忆候选",
+        ) { context ->
+            val entries = LearningDatabase.get(context).memoryDao().entries()
+            JSONObject().put(
+                "candidates",
+                JSONArray(entries
+                    .filter { it.status in setOf("butler_review", "butler_approved", "pending", "conflict") }
+                    .take(200)
+                    .map { entry ->
+                        JSONObject()
+                            .put("id", entry.id)
+                            .put("scope", entry.scope)
+                            .put("layer", entry.layer)
+                            .put("topic", entry.topic)
+                            .put("status", entry.status)
+                            .put("confidence", entry.confidence)
+                            .put("conflictIds", entry.conflictIds)
+                            .put("updatedAt", entry.updatedAt)
+                    }),
+            )
+        }
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "memory.candidate.review",
+                    title = "审核记忆候选",
+                    category = "智能",
+                    summary = "软件管家复核内容质量、证据与冲突；通过后才允许人工批准",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject().put("candidateId", JSONObject().put("type", "string").put("minLength", 1)),
+                        )
+                        .put("required", JSONArray().put("candidateId"))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    val db = LearningDatabase.get(context)
+                    val candidateId = parameters.getString("candidateId")
+                    val entry = db.memoryDao().entry(candidateId)
+                        ?: throw EtaControlException("MEMORY_CANDIDATE_NOT_FOUND", "记忆候选不存在")
+                    val rejection = MemoryReviewRepository(db).review(candidateId, entry.updatedAt)
+                    if (rejection != null) throw EtaControlException("MEMORY_BUTLER_REJECTED", rejection)
+                    JSONObject().put("candidateId", candidateId).put("status", "butler_approved")
+                },
+            ),
+        )
+        registerReadOnly(
             id = "state.learning",
             title = "自学习状态",
             category = "智能",
@@ -800,6 +1250,7 @@ internal object EtaAppControlRegistry {
                             .put("status", candidate.status.name)
                             .put("confidence", candidate.confidence)
                             .put("conflictCount", candidate.conflicts.size)
+                                            .put("butlerReview", candidate.reviewSummary)
                     }),
                 )
                 .put(
@@ -812,9 +1263,108 @@ internal object EtaAppControlRegistry {
                             .put("active", rule.active)
                             .put("pinned", rule.pinned)
                             .put("version", rule.currentVersion)
+                            .put(
+                                "versions",
+                                JSONArray(rule.versions.takeLast(20).map { version ->
+                                    JSONObject()
+                                        .put("id", version.id)
+                                        .put("version", version.version)
+                                        .put("reason", version.reason)
+                                        .put("createdAt", version.createdAt)
+                                }),
+                            )
                     }),
                 )
         }
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "settings.learning",
+                    title = "自学习设置",
+                    category = "智能",
+                    summary = "启用或停用自学习与自动经验采集",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("enabled", JSONObject().put("type", "boolean"))
+                                .put("automaticCaptureEnabled", JSONObject().put("type", "boolean"))
+                                .put("automaticPromotionEnabled", JSONObject().put("type", "boolean")),
+                        )
+                        .put("additionalProperties", false),
+                    canRead = true,
+                ),
+                read = { context -> learningSettingsJson(context) },
+                execute = { context, parameters ->
+                    if (!parameters.has("enabled") && !parameters.has("automaticCaptureEnabled") &&
+                        !parameters.has("automaticPromotionEnabled")) {
+                        throw EtaControlException("INVALID_PARAMETERS", "至少指定一个自学习开关")
+                    }
+                    parameters.optBooleanOrNull("enabled")?.let { LearningSettingsStore.setEnabled(context, it) }
+                    parameters.optBooleanOrNull("automaticCaptureEnabled")?.let {
+                        LearningSettingsStore.setAutomaticCaptureEnabled(context, it)
+                    }
+                    parameters.optBooleanOrNull("automaticPromotionEnabled")?.let {
+                        LearningSettingsStore.setAutomaticPromotionEnabled(context, it)
+                    }
+                    learningSettingsJson(context)
+                },
+            ),
+        )
+        registerLearningMutation(
+            id = "learning.candidate.review",
+            title = "审核学习候选",
+            summary = "由软件管家复核证据、具体性和可执行性；通过的候选才允许进入人工批准",
+            danger = EtaControlDanger.WRITE,
+        ) { context, candidateId ->
+            LearningRepository.get(context).reviewCandidate(candidateId)
+        }
+        registerLearningMutation(
+            id = "learning.candidate.promote",
+            title = "晋升学习候选",
+            summary = "把已审核的学习候选写入稳定规则；操作可在学习页回滚",
+        ) { context, candidateId ->
+            LearningRepository.get(context).promote(candidateId)
+        }
+        registerLearningMutation(
+            id = "learning.candidate.reject",
+            title = "拒绝学习候选",
+            summary = "拒绝候选规则，后续自动学习不会再次直接采用相同候选",
+        ) { context, candidateId ->
+            LearningRepository.get(context).reject(candidateId)
+        }
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "learning.rule.rollback",
+                    title = "回滚学习规则",
+                    category = "智能",
+                    summary = "把自学习规则恢复到指定历史版本；回滚本身会生成新的版本",
+                    danger = EtaControlDanger.CONFIRM,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("ruleId", JSONObject().put("type", "string").put("minLength", 1))
+                                .put("versionId", JSONObject().put("type", "string").put("minLength", 1)),
+                        )
+                        .put("required", JSONArray(listOf("ruleId", "versionId")))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    learningMutationResultJson(
+                        LearningRepository.get(context).rollback(
+                            parameters.getString("ruleId"),
+                            parameters.getString("versionId"),
+                        ),
+                    )
+                },
+            ),
+        )
     }
 
     private fun registerBackupState() {
@@ -839,6 +1389,27 @@ internal object EtaAppControlRegistry {
                 .put("lastSuccessAt", AutoBackupStore.lastSuccess(context))
                 .put("status", AutoBackupStore.status(context))
         }
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = "backup.run_now",
+                    title = "立即创建备份",
+                    category = "系统",
+                    summary = "按已授权的自动备份目录和内容范围排入一次立即备份",
+                    danger = EtaControlDanger.WRITE,
+                    parameters = JSONObject().put("type", "object").put("properties", JSONObject()),
+                    canRead = false,
+                ),
+                execute = { context, _ ->
+                    val settings = AutoBackupStore.read(context)
+                    if (settings.tree.isBlank()) {
+                        throw EtaControlException("BACKUP_DIRECTORY_REQUIRED", "请先在备份设置中授权保存目录")
+                    }
+                    io.github.mangi.eta.data.repository.AutoBackupScheduler.enqueue(context)
+                    JSONObject().put("queued", true).put("directoryConfigured", true)
+                },
+            ),
+        )
     }
 
     private fun registerWorkspaceState() {
@@ -857,6 +1428,149 @@ internal object EtaAppControlRegistry {
                         .put("linuxPath", "${SharedFolderMounts.LINUX_MOUNTS_ROOT}/${mount.name}")
                 }),
             )
+        }
+    }
+
+    private fun registerRuntimeState() {
+        registerReadOnly(
+            id = "state.runtime",
+            title = "软件运行状态",
+            category = "状态",
+            summary = "读取进程内存、当前模型、正在运行的任务数和软件管家审计摘要",
+        ) { context ->
+            val records = AgentRunMetricsStore.records(context).first()
+            val process = Runtime.getRuntime()
+            val config = RuntimeConfigRepository.currentRuntimeConfig()
+            val audit = EtaAppControlAuditStore(context).summary()
+            JSONObject()
+                .put("processId", android.os.Process.myPid())
+                .put("memoryUsedBytes", process.totalMemory() - process.freeMemory())
+                .put("memoryMaxBytes", process.maxMemory())
+                .put("runningRuns", records.count { it.status == "running" })
+                .put("recentRuns", records.size)
+                .put("modelConfigured", config != null)
+                .put("modelId", config?.model ?: JSONObject.NULL)
+                .put("audit", audit)
+        }
+        registerReadOnly(
+            id = "state.statistics.today",
+            title = "当天运行统计",
+            category = "统计",
+            summary = "汇总今天的主 Agent、会议室、子 Agent 和任务运行、Token 与工具执行数据",
+        ) { context ->
+            val records = AgentRunMetricsStore.records(context).first()
+            val zone = ZoneId.systemDefault()
+            val today = AgentMetricsActivity.date(System.currentTimeMillis(), zone)
+            val todayRecords = records.filter { AgentMetricsActivity.date(it.startedAt, zone) == today }
+            val usages = records.associate { it.recordId to listOf(it.metrics) }
+            val activityDays = AgentMetricsActivity.days(records, usages, today, zone)
+            val trend = AgentMetricsTrend.lastWeek(records, zone = zone, usages = usages)
+            JSONObject()
+                .put("date", today.toString())
+                .put("runs", todayRecords.size)
+                .put("completedRuns", todayRecords.count { it.status == "succeeded" })
+                .put("failedRuns", todayRecords.count { it.status == "failed" })
+                .put("interruptedRuns", todayRecords.count { it.status == "interrupted" })
+                .put("activeRuns", todayRecords.count { it.status == "running" })
+                .put("inputTokens", todayRecords.sumOf { it.metrics.inputTokens ?: 0L })
+                .put("outputTokens", todayRecords.sumOf { it.metrics.outputTokens ?: 0L })
+                .put("reasoningTokens", todayRecords.sumOf { it.metrics.reasoningTokens ?: 0L })
+                .put("toolCalls", todayRecords.sumOf { it.metrics.toolCalls.toLong() })
+                .put("failedTools", todayRecords.sumOf { it.metrics.failedTools.toLong() })
+                .put("durationMs", todayRecords.sumOf(AgentRunMetricsRecord::durationMs))
+                .put("activeStreakDays", AgentMetricsActivity.streak(activityDays, today))
+                .put(
+                    "sourceBreakdown",
+                    JSONObject().also { breakdown ->
+                        todayRecords.groupBy(AgentRunMetricsRecord::source).forEach { (source, items) ->
+                            breakdown.put(source.ifBlank { "unknown" }, items.size)
+                        }
+                    },
+                )
+                .put(
+                    "lastSevenDays",
+                    JSONArray(trend.map { day ->
+                        JSONObject()
+                            .put("date", day.date.toString())
+                            .put("runs", day.runs)
+                            .put("inputTokens", day.inputTokens ?: JSONObject.NULL)
+                            .put("outputTokens", day.outputTokens ?: JSONObject.NULL)
+                            .put("incompleteUsage", day.incompleteUsage)
+                    }),
+                )
+        }
+    }
+
+    private suspend fun currentModelJson(): JSONObject {
+        val config = RuntimeConfigRepository.currentRuntimeConfig()
+            ?: throw EtaControlException("MODEL_NOT_CONFIGURED", "尚未配置可用模型")
+        return JSONObject()
+            .put("providerId", config.providerId)
+            .put("providerName", config.providerName)
+            .put("modelId", config.model)
+            .put("modelName", config.modelDisplayName.ifBlank { config.model })
+            .put("supportsTools", config.supportsTools)
+            .put("contextWindow", config.contextWindow ?: JSONObject.NULL)
+    }
+
+    private fun learningSettingsJson(context: Context): JSONObject = JSONObject()
+        .put("enabled", LearningSettingsStore.isEnabled(context))
+        .put("automaticCaptureEnabled", LearningSettingsStore.automaticCaptureEnabled(context))
+        .put("automaticPromotionEnabled", LearningSettingsStore.automaticPromotionEnabled(context))
+
+    private fun registerLearningMutation(
+        id: String,
+        title: String,
+        summary: String,
+        danger: EtaControlDanger = EtaControlDanger.CONFIRM,
+        execute: suspend (Context, String) -> io.github.mangi.eta.fork.learning.LearningMutationResult,
+    ) {
+        register(
+            Definition(
+                info = EtaControlCapabilityInfo(
+                    id = id,
+                    title = title,
+                    category = "智能",
+                    summary = summary,
+                    danger = danger,
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject().put("candidateId", JSONObject().put("type", "string").put("minLength", 1)),
+                        )
+                        .put("required", JSONArray().put("candidateId"))
+                        .put("additionalProperties", false),
+                    canRead = false,
+                ),
+                execute = { context, parameters ->
+                    learningMutationResultJson(execute(context, parameters.getString("candidateId")))
+                },
+            ),
+        )
+    }
+
+    private fun learningMutationResultJson(
+        result: io.github.mangi.eta.fork.learning.LearningMutationResult,
+    ): JSONObject = when (result) {
+        is io.github.mangi.eta.fork.learning.LearningMutationResult.Success -> JSONObject()
+            .put("candidateCount", result.snapshot.candidates.size)
+            .put("ruleCount", result.snapshot.rules.size)
+        is io.github.mangi.eta.fork.learning.LearningMutationResult.Rejected -> throw EtaControlException(
+            "LEARNING_MUTATION_REJECTED",
+            result.reason,
+        )
+    }
+
+    private fun JSONObject.optBooleanOrNull(key: String): Boolean? =
+        if (has(key) && !isNull(key)) getBoolean(key) else null
+
+    private fun JSONArray?.toStringList(): List<String> {
+        val array = this ?: return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                array.optString(index).trim().takeIf(String::isNotEmpty)?.let(::add)
+            }
         }
     }
 

@@ -39,6 +39,8 @@ data class ConversationSummaryUi(
     val isAutoArchived: Boolean = false,
     val autoArchiveExempt: Boolean = false,
     val folderSortOrder: Long = 0L,
+    val branchParentConversationId: String? = null,
+    val branchFamilyId: String? = null,
 )
 
 @Immutable

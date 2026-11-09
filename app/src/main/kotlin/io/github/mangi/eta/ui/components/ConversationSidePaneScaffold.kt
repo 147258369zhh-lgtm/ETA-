@@ -13,6 +13,9 @@ import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.anchoredDraggable
 import androidx.compose.foundation.gestures.animateTo
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,6 +36,8 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -83,6 +88,7 @@ internal fun ConversationSidePaneScaffold(
     onConversationArchive: (ConversationSummaryUi) -> Unit,
     onConversationRestore: (ConversationSummaryUi) -> Unit,
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
+    onConversationDropToFolder: (conversationId: String, folderId: String) -> Unit = { _, _ -> },
     onOpenMeetingRoom: (String) -> Unit,
     onMeetingRoomRename: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomTogglePin: (MeetingRoomSummaryRow) -> Unit,
@@ -224,12 +230,43 @@ internal fun ConversationSidePaneScaffold(
             modifier = Modifier.fillMaxSize()
                 .clipToBounds()
                 .background(conversationPaneContainerColor())
-                // 手势由共同容器拥有，侧栏和聊天舞台均可拖动；子级先处理滚动与选择。
+                .pointerInput(backHandlerEnabled, isRevealed, paneWidthPx, sceneLifecycleState) {
+                    if (isRevealed || !backHandlerEnabled || sceneLifecycleState != Lifecycle.State.RESUMED) {
+                        return@pointerInput
+                    }
+                    val edgeWidthPx = with(density) { 40.dp.toPx() }
+                    val openThresholdPx = with(density) { 50.dp.toPx() }
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (down.position.x > edgeWidthPx) return@awaitEachGesture
+                        var totalDrag = 0f
+                        val active = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                            totalDrag = overSlop
+                            if (overSlop > 0f) change.consume()
+                        } ?: return@awaitEachGesture
+                        while (active.pressed) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == active.id } ?: break
+                            val delta = change.positionChange().x
+                            if (delta != 0f) {
+                                totalDrag += delta
+                                if (totalDrag > 0f) change.consume()
+                            }
+                            if (!change.pressed) break
+                        }
+                        if (totalDrag >= openThresholdPx) {
+                            currentHapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                            currentOnOpen()
+                        }
+                    }
+                }
+                // 关闭时不让整页拖拽抢占首页的中央切换与右侧详情手势；左边缘右滑和菜单
+                // 可打开侧栏，打开后仍可在内容区向左拖动关闭。
                 .anchoredDraggable(
                     state = paneDragState,
                     reverseDirection = false,
                     orientation = Orientation.Horizontal,
-                    enabled = backHandlerEnabled && sceneLifecycleState == Lifecycle.State.RESUMED,
+                    enabled = backHandlerEnabled && isRevealed && sceneLifecycleState == Lifecycle.State.RESUMED,
                     flingBehavior = flingBehavior,
                     interactionSource = dragInteractions,
                 ),
@@ -253,6 +290,7 @@ internal fun ConversationSidePaneScaffold(
                         onConversationArchive = onConversationArchive,
                         onConversationRestore = onConversationRestore,
                         onConversationMoveToFolder = onConversationMoveToFolder,
+                        onConversationDropToFolder = onConversationDropToFolder,
                         onOpenMeetingRoom = onOpenMeetingRoom,
                         onMeetingRoomRename = onMeetingRoomRename,
                         onMeetingRoomTogglePin = onMeetingRoomTogglePin,

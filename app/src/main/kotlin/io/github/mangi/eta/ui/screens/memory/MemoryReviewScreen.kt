@@ -148,7 +148,7 @@ internal fun AgentMemoryScreen(state: AgentMemoryUiState, onAction: (AgentMemory
                         Text("原话证据", style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.Medium)
                         Text(entry.evidence, style = MiuixTheme.textStyles.body2)
                     }
-                    if (entry.status in setOf("pending", "conflict")) {
+                    if (entry.status in setOf("butler_approved", "pending", "conflict")) {
                         if (editing) TextButton("保存修改", enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
                             busy = true
                             coroutine.launch {
@@ -157,7 +157,7 @@ internal fun AgentMemoryScreen(state: AgentMemoryUiState, onAction: (AgentMemory
                                 finally { busy = false }
                             }
                         }) else TextButton("修改内容", enabled = !busy, onClick = { editing = true }, modifier = Modifier.fillMaxWidth())
-                        if (entry.status == "conflict" || conflicts.isNotEmpty()) {
+                        if (entry.status == "conflict" || entry.conflictIds.isNotBlank() || conflicts.isNotEmpty()) {
                             TextButton("采用新内容，替代旧内容", enabled = !busy && !editing, onClick = { mutate("replace") }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColorsPrimary())
                             TextButton("两条均保留", enabled = !busy && !editing, onClick = { mutate("keep_both") }, modifier = Modifier.fillMaxWidth())
                         } else TextButton("确认并启用", enabled = !busy && !editing, onClick = { mutate("confirm") }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColorsPrimary())
@@ -182,8 +182,15 @@ internal fun AgentMemoryScreen(state: AgentMemoryUiState, onAction: (AgentMemory
         } else {
             val now = System.currentTimeMillis()
             val activeCount = entries.count { it.status == "active" && (it.expiresAt == null || it.expiresAt > now) }
-            val pendingCount = entries.count { it.status in setOf("pending", "conflict") && (it.expiresAt == null || it.expiresAt > now) }
-            val conflictCount = entries.count { it.status == "conflict" && (it.expiresAt == null || it.expiresAt > now) }
+            val pendingCount = entries.count {
+                it.status in setOf("butler_approved", "pending", "conflict") &&
+                    (it.expiresAt == null || it.expiresAt > now)
+            }
+            val conflictCount = entries.count {
+                (it.status == "conflict" || it.conflictIds.isNotBlank()) &&
+                    it.status in setOf("butler_approved", "pending", "conflict") &&
+                    (it.expiresAt == null || it.expiresAt > now)
+            }
             item("memory_overview_title") { SmallTitle("记忆概况") }
             item("memory_overview") {
                 KnowledgeMetricsCard(
@@ -216,9 +223,10 @@ internal fun AgentMemoryScreen(state: AgentMemoryUiState, onAction: (AgentMemory
                     (layerFilter == "all" || entry.layer == layerFilter) &&
                     (query.isBlank() || (entry.topic + entry.content).contains(query, ignoreCase = true)) &&
                     when (filter) {
-                        0 -> entry.status in setOf("pending", "conflict") && !expired
+                        0 -> entry.status in setOf("butler_approved", "pending", "conflict") && !expired
                         1 -> entry.status == "active" && !expired
-                        2 -> entry.status == "conflict" && !expired
+                        2 -> (entry.status == "conflict" || entry.conflictIds.isNotBlank()) &&
+                            entry.status in setOf("butler_approved", "pending", "conflict") && !expired
                         3 -> entry.status in setOf("archived", "rejected", "superseded")
                         else -> expired
                     }
@@ -235,7 +243,7 @@ internal fun AgentMemoryScreen(state: AgentMemoryUiState, onAction: (AgentMemory
             shown.forEach { entry -> item("memory:${entry.id}") {
                 Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                     DetailListRow(title = entry.topic, subtitle = "${memoryScopeName(entry.scope, names)} · ${memoryLayerName(entry.layer)} · ${memoryStatus(entry)}", preview = entry.content,
-                        icon = if (entry.status == "conflict") Icons.Rounded.CompareArrows else when (entry.layer) { "core" -> Icons.Rounded.BookmarkBorder; "project" -> Icons.Rounded.FolderOpen; "task" -> Icons.Rounded.TaskAlt; else -> Icons.Rounded.Notes },
+                        icon = if (entry.status == "conflict" || entry.conflictIds.isNotBlank()) Icons.Rounded.CompareArrows else when (entry.layer) { "core" -> Icons.Rounded.BookmarkBorder; "project" -> Icons.Rounded.FolderOpen; "task" -> Icons.Rounded.TaskAlt; else -> Icons.Rounded.Notes },
                         onClick = { message = null; inspected = entry })
                 }
             } }
@@ -333,8 +341,16 @@ internal fun memoryDate(value: Long): String = DateFormat.getDateTimeInstance(Da
 internal fun memoryLayerName(layer: String): String = when (layer) {
     "core" -> "核心"; "long_term" -> "长期"; "project" -> "项目"; "task" -> "任务"; "working" -> "临时"; else -> "其他"
 }
-internal fun memoryStatus(entry: MemoryEntry): String = if (entry.expiresAt != null && entry.expiresAt <= System.currentTimeMillis()) "已过期" else when (entry.status) {
-    "active" -> "已生效"; "conflict" -> "存在冲突"; "pending" -> "待确认"; "rejected" -> "已拒绝"; "superseded" -> "已被替代"; else -> "已归档"
+internal fun memoryStatus(entry: MemoryEntry): String = if (entry.expiresAt != null && entry.expiresAt <= System.currentTimeMillis()) "已过期" else if (
+    entry.conflictIds.isNotBlank() && entry.status in setOf("butler_approved", "pending", "conflict")
+) "管家已通过 · 存在冲突" else when (entry.status) {
+    "active" -> "已生效"
+    "butler_approved" -> "管家已通过，待人工批准"
+    "conflict" -> "待复核冲突"
+    "pending" -> "待软件管家审核"
+    "rejected" -> "未通过，已拒绝"
+    "superseded" -> "已被替代"
+    else -> "已归档"
 }
 internal fun memoryScopeName(key: String, names: Map<String, String> = emptyMap()): String {
     val type = when (key.substringBefore(':')) { "global" -> "全局"; "project" -> "项目"; "conversation" -> "会话"; "meeting" -> "会议"; "task" -> "任务"; else -> "局部" }

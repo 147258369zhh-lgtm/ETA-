@@ -48,6 +48,7 @@ internal object AgentToolRequirements {
             "schedule_create", "schedule_list", "schedule_pause", "schedule_delete",
             "automation_manage",
             "eta_control",
+            "connector_call",
             "learning_feedback",
         )
         register(

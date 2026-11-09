@@ -29,6 +29,16 @@
       "hasReferences": false,
       "hasAssets": false,
       "hasEvals": false
+    },
+    {
+      "id": "software-butler",
+      "name": "software-butler",
+      "description": "Built-in Eta software butler. Operate Eta settings and capabilities through eta_control and connector_call without requiring manual UI navigation.",
+      "assetPath": "builtin_skills/software-butler",
+      "hasScripts": false,
+      "hasReferences": false,
+      "hasAssets": false,
+      "hasEvals": false
     }
   ]
 }

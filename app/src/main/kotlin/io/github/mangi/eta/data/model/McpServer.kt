@@ -13,6 +13,13 @@ internal object McpAuthorizationType {
     const val BEARER = "bearer"
 }
 
+internal object McpTransportType {
+    const val HTTP = "http"
+    const val STDIO = "stdio"
+
+    val values = setOf(HTTP, STDIO)
+}
+
 @Serializable
 internal data class McpToolDefinition(
     val name: String,
@@ -31,8 +38,13 @@ internal data class McpServerSetting(
     val name: String,
     val url: String,
     val enabled: Boolean = true,
+    val transportType: String = McpTransportType.HTTP,
     val protocolMode: String = McpProtocolMode.AUTO,
     val authorizationType: String = McpAuthorizationType.NONE,
+    val stdioCommand: String = "",
+    val stdioArguments: List<String> = emptyList(),
+    val launchCommand: String = "",
+    val workingDirectory: String = "",
     val tools: List<McpToolDefinition> = emptyList(),
     val enabledToolNames: Set<String> = emptySet(),
     val createdAt: Long = System.currentTimeMillis(),
@@ -40,6 +52,9 @@ internal data class McpServerSetting(
     val lastRefreshedAt: Long? = null,
     val lastProtocolVersion: String? = null,
     val toolsExpireAt: Long? = null,
+    val lastCheckedAt: Long? = null,
+    val lastHealthyAt: Long? = null,
+    val lastError: String? = null,
 ) {
     val activeTools: List<McpToolDefinition>
         get() = if (!enabled) {

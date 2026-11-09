@@ -54,14 +54,13 @@ internal class AgentContextSummarizer(
                 AssistantStopReason.END_TURN,
                 AssistantStopReason.UNKNOWN,
             )
-            val summary = boundedSummary(rawSummary, maxSummaryChars)
             if (!usableStopReason ||
                 AgentConversationCodec.parseToolCalls(response.assistantMessage).isNotEmpty() ||
-                summary.isBlank() || summary == "null" || summary.length > maxSummaryChars) {
+                rawSummary.isBlank() || rawSummary == "null" || rawSummary.length > maxSummaryChars) {
                 throw invalidSummary()
             }
             metric?.finish(true)
-            summary
+            rawSummary
         } catch (failure: Throwable) {
             metric?.finish(false, controller.isCancelled)
             throw failure
@@ -78,13 +77,5 @@ internal class AgentContextSummarizer(
             return (window / 3).coerceIn(700, 4_000)
         }
 
-        internal fun boundedSummary(text: String, maxChars: Int): String {
-            if (text.length <= maxChars) return text
-            val marker = "\n\n[摘要中段已省略以适配上下文预算]\n\n"
-            val available = (maxChars - marker.length).coerceAtLeast(2)
-            val headChars = available * 2 / 3
-            val tailChars = available - headChars
-            return text.take(headChars) + marker + text.takeLast(tailChars)
-        }
     }
 }

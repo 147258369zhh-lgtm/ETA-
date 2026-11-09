@@ -16,7 +16,8 @@ internal interface LearningDao {
 
     @Query(
         "SELECT * FROM learning_candidates ORDER BY " +
-            "CASE status WHEN 'conflict' THEN 0 WHEN 'pending' THEN 1 WHEN 'confirmed' THEN 2 ELSE 3 END, " +
+            "CASE status WHEN 'butler_approved' THEN 0 WHEN 'conflict' THEN 1 WHEN 'pending' THEN 2 " +
+            "WHEN 'butler_review' THEN 3 WHEN 'confirmed' THEN 4 ELSE 5 END, " +
             "updated_at DESC LIMIT :limit",
     )
     suspend fun candidates(limit: Int = 300): List<LearningCandidateEntity>

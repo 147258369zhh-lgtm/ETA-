@@ -49,7 +49,8 @@ class MemoryAutomationTest {
         val old = proposal()
         repository.decide(old.id, old.updatedAt, "confirm")
         val changed = proposal("以后请使用英文回答")
-        assertEquals("conflict", changed.status)
+        assertEquals("butler_approved", changed.status)
+        assertTrue(changed.conflictIds.isNotBlank())
         assertNotNull(repository.decide(changed.id, changed.updatedAt, "confirm"))
         val current = requireNotNull(db.memoryDao().entry(changed.id))
         assertNull(repository.decide(current.id, current.updatedAt, "replace", current.conflictIds))
@@ -99,7 +100,8 @@ class MemoryAutomationTest {
         repository.decide(old.id, old.updatedAt, "confirm")
         val changed = proposal("项目每次运行测试后需要等待 31 分钟，然后再提交所有文件")
         assertNotEquals(old.id, changed.id)
-        assertEquals("conflict", changed.status)
+        assertEquals("butler_approved", changed.status)
+        assertTrue(changed.conflictIds.isNotBlank())
         assertFalse(MemoryAutomationPolicy.equivalent("项目温度阈值是 -10 度", "项目温度阈值是 10 度"))
         assertFalse(MemoryAutomationPolicy.equivalent("文件位置是 /Data/Cache", "文件位置是 /data/cache"))
     }
@@ -111,7 +113,7 @@ class MemoryAutomationTest {
         now = 3000
         val renewed = proposal(scope = scope, expires = 5000)
         assertNotEquals(old.id, renewed.id)
-        assertEquals("pending", renewed.status)
+        assertEquals("butler_approved", renewed.status)
         assertTrue(repository.active(listOf(scope)).isEmpty())
         repository.decide(renewed.id, renewed.updatedAt, "confirm")
         assertEquals(renewed.id, repository.active(listOf(scope)).single().id)
@@ -122,5 +124,17 @@ class MemoryAutomationTest {
         val second = proposal("以后请使用英文回答")
         assertNotNull(repository.edit(second.id, first.content))
         assertEquals(second.content, db.memoryDao().entry(second.id)?.content)
+    }
+
+    @Test fun softwareButlerRejectsLowValueMemoryBeforeHumanReview() = runBlocking {
+        assertNull(repository.propose(
+            AgentMemoryScope.GLOBAL,
+            "long_term",
+            "任务状态",
+            "好的好的好的好的好的好的",
+            "完成",
+            "conversation:noise",
+        ))
+        assertTrue(db.memoryDao().entries().isEmpty())
     }
 }

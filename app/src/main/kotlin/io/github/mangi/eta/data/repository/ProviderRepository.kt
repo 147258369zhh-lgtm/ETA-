@@ -46,6 +46,12 @@ internal object ProviderRepository {
         ProviderCredentialRepository.init(context)
     }
 
+    fun isInitialized(): Boolean = ::applicationContext.isInitialized
+
+    fun initIfNeeded(context: Context) {
+        if (!isInitialized()) init(context)
+    }
+
     fun providersFlow(): Flow<List<ProviderSetting>> =
         dao().providersFlow().map { providers ->
             providers

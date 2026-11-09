@@ -117,11 +117,9 @@ internal class AgentContextCompactor(
         history: List<AgentModelClient.ConversationMessage>,
         budget: ContextBudget,
     ): String {
-        val maxSummaryChars = AgentContextSummarizer.summaryCharLimit(config.knownContextWindow)
         var summaries = summarizeChunks(
             summarizer = summarizer,
             chunks = ContextBudgetPolicy.chunk(history, budget.summaryInputTokens),
-            maxSummaryChars = maxSummaryChars,
         )
         var level = 0
         while (
@@ -138,7 +136,7 @@ internal class AgentContextCompactor(
             }
             val chunks = ContextBudgetPolicy.chunk(summaryMessages, budget.summaryInputTokens)
             if (chunks.size >= summaries.size) break
-            summaries = summarizeChunks(summarizer, chunks, maxSummaryChars)
+            summaries = summarizeChunks(summarizer, chunks)
             level += 1
         }
         return summaries.joinToString(separator = "\n\n")
@@ -147,11 +145,10 @@ internal class AgentContextCompactor(
     private fun summarizeChunks(
         summarizer: AgentContextSummarizer,
         chunks: List<List<AgentModelClient.ConversationMessage>>,
-        maxSummaryChars: Int,
     ): List<String> {
         if (chunks.isEmpty()) return emptyList()
         if (chunks.size == 1) {
-            return listOf(summarizeChunkOrFallback(summarizer, chunks.single(), maxSummaryChars))
+            return listOf(summarizeChunk(summarizer, chunks.single()))
         }
         val executor = Executors.newFixedThreadPool(minOf(MAX_PARALLEL_SUMMARY_REQUESTS, chunks.size)) { work ->
             Thread(work, "eta-context-summary").apply { isDaemon = true }
@@ -164,7 +161,7 @@ internal class AgentContextCompactor(
                     future.get()
                 } catch (failure: ExecutionException) {
                     controller.throwIfCancelled()
-                    localFallbackSummary(chunks[index], maxSummaryChars, failure.cause)
+                    throw (failure.cause ?: failure)
                 }
             }
         } finally {
@@ -172,43 +169,20 @@ internal class AgentContextCompactor(
         }
     }
 
-    private fun summarizeChunkOrFallback(
+    private fun summarizeChunk(
         summarizer: AgentContextSummarizer,
         chunk: List<AgentModelClient.ConversationMessage>,
-        maxSummaryChars: Int,
     ): String = try {
         summarizer.summarize(chunk)
     } catch (failure: Throwable) {
         controller.throwIfCancelled()
-        localFallbackSummary(chunk, maxSummaryChars, failure)
-    }
-
-    private fun localFallbackSummary(
-        chunk: List<AgentModelClient.ConversationMessage>,
-        maxSummaryChars: Int,
-        failure: Throwable?,
-    ): String {
-        val fallbackBudget = (maxSummaryChars - LOCAL_FALLBACK_PREFIX.length).coerceAtLeast(128)
-        val body = buildString {
-            chunk.forEach { message ->
-                val content = message.content.trim()
-                if (content.isNotBlank()) append(message.role).append(": ").append(content).append('\n')
-            }
-        }.ifBlank { "此前历史仅保留结构性记录，没有可用正文。" }
-        val reason = if (failure is AgentModelFailure) failure.code else "SUMMARY_UNAVAILABLE"
-        return LOCAL_FALLBACK_PREFIX + "reason=$reason]\n" + AgentContextSummarizer.boundedSummary(
-            body,
-            fallbackBudget,
-        )
+        throw failure
     }
 
     companion object {
         private const val MAX_SUMMARY_SOURCE_REFERENCES = 24
         private const val MAX_SUMMARY_HIERARCHY_LEVELS = 4
         private const val MAX_PARALLEL_SUMMARY_REQUESTS = 3
-        private const val LOCAL_FALLBACK_PREFIX =
-            "[本地回退摘要：模型分块摘要失败，已保留该分块首尾原文；"
-
         fun canSplit(history: List<JSONObject>, end: Int): Boolean {
             if (end <= 0 || end > history.size) return false
             val last = history[end - 1]

@@ -49,11 +49,32 @@ class MeetingContextHistoryTest {
         )
     }
 
+    @Test
+    fun nonHostParticipantSeesUserTextOnlyWhenExplicitlyMentioned() {
+        val history = MeetingContextHistory.forParticipant(
+            messages = listOf(
+                message(1, MeetingAuthorType.USER, "只给主持人的原始问题"),
+                message(2, MeetingAuthorType.USER, "发给 coder 的直接问题", mentions = listOf("coder")),
+                message(3, MeetingAuthorType.HOST, "主持人上一轮汇总", "host"),
+                message(4, MeetingAuthorType.AGENT, "coder 自己的结果", "coder"),
+            ),
+            participantProfile = "coder",
+            isHost = false,
+        )
+
+        assertEquals(listOf("user", "assistant"), history.map { it.role })
+        assertTrue(history[0].content.contains("发给 coder 的直接问题"))
+        assertTrue(history[1].content.contains("coder 自己的结果"))
+        assertFalse(history.joinToString { it.content }.contains("只给主持人的原始问题"))
+        assertFalse(history.joinToString { it.content }.contains("主持人上一轮汇总"))
+    }
+
     private fun message(
         sortIndex: Int,
         authorType: String,
         content: String,
         authorProfile: String? = null,
+        mentions: List<String> = emptyList(),
     ) = MeetingMessageEntity(
         id = sortIndex.toString(),
         roomId = "room",
@@ -62,6 +83,7 @@ class MeetingContextHistoryTest {
         authorProfile = authorProfile,
         authorName = authorProfile ?: authorType,
         content = content,
+        mentionsJson = org.json.JSONArray(mentions).toString(),
         createdAt = sortIndex.toLong(),
     )
 }

@@ -42,6 +42,7 @@ internal object AgentToolCatalog {
             AgentLearningToolCatalog.appendTo(tools)
             AgentScheduleToolCatalog.appendTo(tools)
             EtaAppControlToolCatalog.appendTo(tools)
+            io.github.mangi.eta.agent.connector.ConnectorToolCatalog.appendTo(tools)
             tools.put(io.github.mangi.eta.fork.tasks.AgentAutomationTools.schema())
             if (terminalTools) {
                 AgentFileVisionToolCatalog.appendTo(tools)

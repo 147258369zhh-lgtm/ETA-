@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -28,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -41,6 +43,7 @@ import io.github.mangi.eta.agent.capability.McpPortableCodec
 import io.github.mangi.eta.agent.capability.McpPortableConfigService
 import io.github.mangi.eta.data.model.McpAuthorizationType
 import io.github.mangi.eta.data.model.McpProtocolMode
+import io.github.mangi.eta.data.model.McpTransportType
 import io.github.mangi.eta.data.model.McpServerSetting
 import io.github.mangi.eta.data.model.McpToolDefinition
 import io.github.mangi.eta.data.repository.McpServerRepository
@@ -55,6 +58,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.util.UUID
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -83,6 +87,11 @@ internal fun McpServersScreen(
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
+    var transportType by remember { mutableStateOf(McpTransportType.HTTP) }
+    var stdioCommand by remember { mutableStateOf("") }
+    var stdioArguments by remember { mutableStateOf("") }
+    var launchCommand by remember { mutableStateOf("") }
+    var workingDirectory by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val portableService = remember(context.applicationContext) {
@@ -178,11 +187,16 @@ internal fun McpServersScreen(
                     servers.forEach { server ->
                         ArrowPreference(
                             title = server.name,
-                            summary = stringResource(
-                                R.string.mcp_server_row_summary,
-                                server.activeTools.size,
-                                server.tools.size,
-                            ),
+                            summary = server.lastError?.takeIf(String::isNotBlank)?.let { "连接异常 · ${it.take(90)}" }
+                                ?: if (server.transportType == McpTransportType.STDIO) {
+                                    "STDIO · ${server.activeTools.size}/${server.tools.size} 个工具"
+                                } else {
+                                    stringResource(
+                                        R.string.mcp_server_row_summary,
+                                        server.activeTools.size,
+                                        server.tools.size,
+                                    )
+                                },
                             onClick = { onNavigate(AppRoute.McpServerDetail(server.id)) },
                         )
                     }
@@ -242,23 +256,75 @@ internal fun McpServersScreen(
                     enabled = !working,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        text = "HTTP",
+                        onClick = { transportType = McpTransportType.HTTP },
+                        enabled = !working,
+                    )
+                    TextButton(
+                        text = "STDIO",
+                        onClick = { transportType = McpTransportType.STDIO },
+                        enabled = !working,
+                    )
+                    Text(
+                        text = if (transportType == McpTransportType.HTTP) "远程或本机 HTTP" else "启动本地子进程",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.align(Alignment.CenterVertically),
+                    )
+                }
+                if (transportType == McpTransportType.HTTP) {
+                    TextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        label = stringResource(R.string.mcp_server_url),
+                        singleLine = true,
+                        enabled = !working,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextField(
+                        value = token,
+                        onValueChange = { token = it },
+                        label = stringResource(R.string.mcp_bearer_optional),
+                        singleLine = true,
+                        enabled = !working,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextField(
+                        value = launchCommand,
+                        onValueChange = { launchCommand = it },
+                        label = "本机服务启动命令（可选）",
+                        singleLine = true,
+                        enabled = !working,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    TextField(
+                        value = stdioCommand,
+                        onValueChange = { stdioCommand = it },
+                        label = "stdio 命令或可执行文件",
+                        singleLine = true,
+                        enabled = !working,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextField(
+                        value = stdioArguments,
+                        onValueChange = { stdioArguments = it },
+                        label = "参数（每行一个）",
+                        enabled = !working,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 TextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = stringResource(R.string.mcp_server_url),
+                    value = workingDirectory,
+                    onValueChange = { workingDirectory = it },
+                    label = "工作目录（可选）",
                     singleLine = true,
                     enabled = !working,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                TextField(
-                    value = token,
-                    onValueChange = { token = it },
-                    label = stringResource(R.string.mcp_bearer_optional),
-                    singleLine = true,
-                    enabled = !working,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 error?.let {
@@ -283,23 +349,33 @@ internal fun McpServersScreen(
                     val normalizedUrl = url.trim()
                     error = when {
                         normalizedName.isBlank() -> resources.getString(R.string.mcp_name_required)
-                        else -> runCatching { validateMcpEndpoint(normalizedUrl) }
+                        transportType == McpTransportType.HTTP -> runCatching { validateMcpEndpoint(normalizedUrl) }
                             .exceptionOrNull()?.message
+                        stdioCommand.isBlank() -> "请填写 MCP stdio 启动命令"
+                        else -> null
                     }
                     if (error == null) scope.launch {
                         working = true
                         val result = withContext(Dispatchers.IO) {
                             runCatching {
                                 val draft = McpServerSetting(
-                                    id = "",
+                                    id = UUID.randomUUID().toString(),
                                     name = normalizedName,
                                     url = normalizedUrl,
+                                    transportType = transportType,
                                     protocolMode = McpProtocolMode.AUTO,
                                     authorizationType = if (token.isBlank()) {
                                         McpAuthorizationType.NONE
                                     } else {
                                         McpAuthorizationType.BEARER
                                     },
+                                    stdioCommand = stdioCommand.trim(),
+                                    stdioArguments = stdioArguments.lineSequence()
+                                        .map(String::trim)
+                                        .filter(String::isNotBlank)
+                                        .toList(),
+                                    launchCommand = launchCommand.trim(),
+                                    workingDirectory = workingDirectory.trim(),
                                 )
                                 val discovered = McpServerManager.discover(draft, token)
                                 McpServerRepository.add(discovered, token)
@@ -311,6 +387,10 @@ internal fun McpServersScreen(
                             name = ""
                             url = ""
                             token = ""
+                            stdioCommand = ""
+                            stdioArguments = ""
+                            launchCommand = ""
+                            workingDirectory = ""
                             error = null
                             Toast.makeText(
                                 context,
@@ -421,11 +501,16 @@ internal fun McpServerDetailScreen(
             ) {
                 SwitchPreference(
                     title = stringResource(R.string.mcp_enable_server),
-                    summary = server.url,
+                    summary = if (server.transportType == McpTransportType.STDIO) {
+                        "STDIO · ${server.stdioCommand}"
+                    } else {
+                        "HTTP · ${server.url}"
+                    },
                     checked = server.enabled,
                     onCheckedChange = { enabled ->
                         scope.launch(Dispatchers.IO) {
                             McpServerRepository.update(server.copy(enabled = enabled))
+                            if (!enabled) McpServerManager.stopLocal(server.id)
                         }
                     },
                 )
@@ -446,6 +531,28 @@ internal fun McpServerDetailScreen(
                     title = stringResource(R.string.mcp_browse_resources),
                     summary = stringResource(R.string.mcp_catalog_not_loaded),
                     onClick = onOpenCatalog,
+                )
+                DetailListRow(
+                    title = "连接诊断",
+                    subtitle = buildString {
+                        append(if (server.transportType == McpTransportType.STDIO) "STDIO" else "HTTP")
+                        append(" · ").append(server.lastProtocolVersion ?: "尚未握手")
+                        server.lastError?.takeIf(String::isNotBlank)?.let { append(" · ").append(it.take(120)) }
+                    },
+                    value = when {
+                        !server.enabled -> "已停用"
+                        server.lastError != null -> "需处理"
+                        server.lastHealthyAt != null -> "正常"
+                        else -> "未检测"
+                    },
+                    icon = Icons.Rounded.Hub,
+                    onClick = {
+                        if (!working) scope.launch {
+                            working = true
+                            runCatching { McpServerManager.refresh(serverId) }
+                            working = false
+                        }
+                    },
                 )
             }
         }

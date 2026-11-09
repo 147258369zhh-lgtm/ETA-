@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
 import android.os.PersistableBundle
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +31,8 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +49,10 @@ import io.github.mangi.eta.fork.a2a.A2AAgentEntity
 import io.github.mangi.eta.fork.a2a.A2AAgentRepository
 import io.github.mangi.eta.fork.a2a.A2AInboundConfigStore
 import io.github.mangi.eta.fork.a2a.A2AInboundService
+import io.github.mangi.eta.fork.a2a.A2AAccessPolicyStore
+import io.github.mangi.eta.fork.a2a.A2AToolAccess
+import io.github.mangi.eta.fork.a2a.A2AToolTier
+import io.github.mangi.eta.fork.a2a.A2ATransportMode
 import io.github.mangi.eta.fork.a2a.A2APairingCode
 import io.github.mangi.eta.fork.a2a.A2AArtifactEntity
 import io.github.mangi.eta.fork.a2a.A2AArtifactQuarantineState
@@ -58,7 +67,12 @@ import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusError
 import io.github.mangi.eta.ui.components.StatusSuccess
+import io.github.mangi.eta.ui.components.StatusWarning
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
@@ -83,7 +97,11 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
         )
     }
     val inboundStore = remember(context.applicationContext) { A2AInboundConfigStore(context.applicationContext) }
-    val inbound by inboundStore.observe().collectAsState(initial = inboundStore.snapshot())
+    val accessStore = remember(context.applicationContext) { A2AAccessPolicyStore(context.applicationContext) }
+    val observedInbound by inboundStore.observe().collectAsState(initial = inboundStore.snapshot())
+    var inbound by remember { mutableStateOf(observedInbound) }
+    val observedPeerTiers by accessStore.observePeers().collectAsState(initial = accessStore.peerTiers())
+    var peerTiers by remember { mutableStateOf(observedPeerTiers) }
     val agents by repository.observeAgents().collectAsState(initial = emptyList())
     val tasks by repository.observeTasks().collectAsState(initial = emptyList())
     var showAddDialog by remember { mutableStateOf(false) }
@@ -95,6 +113,28 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var showInboundToken by remember { mutableStateOf(false) }
     var inboundPermissionError by remember { mutableStateOf<String?>(null) }
+    var externalEndpoint by remember { mutableStateOf(inbound.advertisedEndpointUrl.orEmpty()) }
+    var transportMode by remember { mutableStateOf(inbound.transportMode) }
+    var endpointError by remember { mutableStateOf<String?>(null) }
+    var ignoringBatteryOptimizations by remember {
+        mutableStateOf(
+            context.getSystemService(PowerManager::class.java)
+                .isIgnoringBatteryOptimizations(context.packageName),
+        )
+    }
+    LaunchedEffect(observedInbound) { inbound = observedInbound }
+    LaunchedEffect(observedPeerTiers) { peerTiers = observedPeerTiers }
+    LaunchedEffect(inboundStore) {
+        while (true) {
+            delay(2_000)
+            inbound = inboundStore.snapshot()
+            peerTiers = accessStore.peerTiers()
+        }
+    }
+    LaunchedEffect(inbound.advertisedEndpointUrl, inbound.transportMode) {
+        externalEndpoint = inbound.advertisedEndpointUrl.orEmpty()
+        transportMode = inbound.transportMode
+    }
     val enableInbound = {
         inboundStore.setEnabled(true)
         runCatching { A2AInboundService.start(context.applicationContext) }
@@ -103,6 +143,11 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                 inboundStore.setLastError(failure.message ?: "无法启动 A2A 服务端")
             }
     }
+    LaunchedEffect(inbound.token) {
+        if (inbound.token.isNotBlank()) {
+            accessStore.observePeer(A2AAccessPolicyStore.tokenPeerId(inbound.token))
+        }
+    }
     val localNetworkPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
             inboundPermissionError = null
@@ -110,6 +155,21 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
         } else {
             inboundPermissionError = "需要“本地网络”权限，其他设备才能访问 Eta。"
         }
+    }
+    val batteryOptimizationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        ignoringBatteryOptimizations = context.getSystemService(PowerManager::class.java)
+            .isIgnoringBatteryOptimizations(context.packageName)
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                ignoringBatteryOptimizations = context.getSystemService(PowerManager::class.java)
+                    .isIgnoringBatteryOptimizations(context.packageName)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     fun importPairingFromClipboard() {
         val raw = readClipboardText(context)
@@ -134,6 +194,10 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                 showAddDialog = true
             }
     }
+    val realListening = inbound.enabled &&
+        inbound.lastProbeHealthy == true &&
+        (inbound.lastProbeAt ?: 0L) > 0L &&
+        System.currentTimeMillis() - requireNotNull(inbound.lastProbeAt) < 45_000L
 
     MiuixScaffoldPage(
         title = "A2A Agent",
@@ -262,7 +326,7 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                     .padding(bottom = 12.dp),
             ) {
                 Text(
-                    text = "使用 A2A 1.0 JSON-RPC 双向连接外部 Agent。Eta 可主动调用已添加的 Agent，也可作为受 Token 保护的局域网服务端接受请求。远端产物默认隔离，需明确批准。",
+                    text = "使用 A2A 1.0 JSON-RPC 双向连接外部 Agent，支持流式任务事件。Eta 可主动调用已添加的 Agent，也可作为受 Token 保护、独立进程运行的局域网服务端接受请求。远端产物默认隔离，需明确批准。",
                     style = MiuixTheme.textStyles.body2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.padding(16.dp),
@@ -288,9 +352,18 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                                 fontWeight = FontWeight.Medium,
                             )
                             Text(
-                                text = if (inbound.enabled) "前台监听中 · 端口 ${inbound.port}" else "关闭 · 不监听任何端口",
+                                text = when {
+                                    !inbound.enabled -> "关闭 · 不监听任何端口"
+                                    realListening -> "真实探测正常 · ${inbound.lastListenAddress ?: "127.0.0.1:${inbound.port}"}"
+                                    inbound.lastProbeHealthy == false -> "健康探测失败 · 自动恢复中"
+                                    else -> "服务已启动 · 等待真实探测"
+                                },
                                 style = MiuixTheme.textStyles.footnote2,
-                                color = if (inbound.enabled) StatusSuccess else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                color = when {
+                                    realListening -> StatusSuccess
+                                    inbound.enabled && inbound.lastProbeHealthy == false -> StatusError
+                                    else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                },
                             )
                         }
                         Switch(
@@ -314,8 +387,70 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                     }
                     inboundPermissionError?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote1) }
                     inbound.lastError?.let { Text("服务端错误：$it", color = StatusError, style = MiuixTheme.textStyles.footnote1) }
+                    inbound.lastListenAddress?.let {
+                        Text(
+                            text = "服务地址：$it · 自动重启 ${inbound.restartCount} 次",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        TextButton(
+                            text = "局域网直连",
+                            onClick = {
+                                inboundStore.setTransportMode(A2ATransportMode.DIRECT)
+                                if (inbound.enabled) {
+                                    runCatching { A2AInboundService.restart(context.applicationContext) }
+                                }
+                            },
+                        )
+                        TextButton(
+                            text = "Tailscale",
+                            onClick = {
+                                inboundStore.setTransportMode(A2ATransportMode.TAILSCALE)
+                                if (inbound.enabled) {
+                                    runCatching { A2AInboundService.restart(context.applicationContext) }
+                                }
+                            },
+                        )
+                        Text(
+                            text = if (transportMode == A2ATransportMode.TAILSCALE) "监听 0.0.0.0，地址由 Tailscale 提供" else "监听 0.0.0.0",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.align(Alignment.CenterVertically),
+                        )
+                    }
+                    TextField(
+                        value = externalEndpoint,
+                        onValueChange = { externalEndpoint = it.trim().take(500); endpointError = null },
+                        label = "对外 JSON-RPC 地址（可选）",
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TextButton(
+                            text = "保存对外地址",
+                            onClick = {
+                                runCatching {
+                                    inboundStore.setAdvertisedEndpoint(externalEndpoint.ifBlank { null })
+                                    if (inbound.enabled) {
+                                        A2AInboundService.restart(context.applicationContext)
+                                    }
+                                }.onFailure { failure ->
+                                    endpointError = failure.message ?: "对外地址无效"
+                                }
+                            },
+                        )
+                    }
+                    endpointError?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote1) }
                     Text(
-                        text = "入站请求只能进行模型对话，终端、文件、设备操作和 Subagent 工具均关闭。请只在你信任的局域网中使用。",
+                        text = "未设置对外地址时，Agent Card 会按请求 Host 动态生成。入站请求只能进行模型对话，终端、文件、设备操作和 Subagent 工具均关闭。",
                         style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
@@ -402,6 +537,108 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                             style = MiuixTheme.textStyles.footnote2,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
+                    }
+                }
+            }
+        }
+        item(key = "battery_optimization") {
+            SmallTitle("后台稳定性")
+            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = if (ignoringBatteryOptimizations) {
+                            "已忽略电池优化，息屏监听稳定性较好。"
+                        } else {
+                            "未加入电池优化白名单，部分系统会在息屏后冻结网络服务。"
+                        },
+                        style = MiuixTheme.textStyles.body2,
+                        color = if (ignoringBatteryOptimizations) StatusSuccess else StatusError,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TextButton(
+                            text = "忽略电池优化",
+                            enabled = !ignoringBatteryOptimizations,
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                val intent = Intent(
+                                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${context.packageName}"),
+                                )
+                                runCatching { batteryOptimizationLauncher.launch(intent) }
+                                    .onFailure { openAppDetails(context) }
+                            },
+                        )
+                        TextButton(
+                            text = "应用电池设置",
+                            modifier = Modifier.weight(1f),
+                            onClick = { openAppBatterySettings(context) },
+                        )
+                    }
+                    Text(
+                        text = "ColorOS / MIUI / EMUI：请同时允许后台活动，并在最近任务中给 Eta 加锁。不同系统名称可能略有差异。",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+            }
+        }
+        item(key = "inbound_tool_access") {
+            SmallTitle("对端工具权限")
+            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "只读档默认开启；受限档必须逐节点授权；高危档永久关闭，不能通过 A2A 白名单开启。",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                    if (peerTiers.isEmpty()) {
+                        Text("尚未识别对端。首次请求后会自动记录节点或 Token 指纹。")
+                    } else {
+                        peerTiers.forEach { (peerId, tier) ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(peerId, style = MiuixTheme.textStyles.body2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        text = if (tier == A2AToolTier.RESTRICTED) "受限工具已授权" else "只读工具",
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = if (tier == A2AToolTier.RESTRICTED) StatusWarning else StatusSuccess,
+                                    )
+                                }
+                                TextButton(
+                                    text = "只读",
+                                    onClick = { accessStore.setTier(peerId, A2AToolTier.READ_ONLY) },
+                                    enabled = tier != A2AToolTier.READ_ONLY,
+                                )
+                                TextButton(
+                                    text = "授权受限",
+                                    onClick = { accessStore.setTier(peerId, A2AToolTier.RESTRICTED) },
+                                    enabled = tier != A2AToolTier.RESTRICTED,
+                                )
+                            }
+                            Text(
+                                text = "可配置工具：${(if (tier == A2AToolTier.RESTRICTED) A2AToolAccess.RESTRICTED_TOOLS else A2AToolAccess.READ_ONLY_TOOLS).joinToString("、")}",
+                                style = MiuixTheme.textStyles.footnote2,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                            Text(
+                                text = "永久关闭：${A2AToolAccess.HIGH_RISK_TOOLS.joinToString("、")}",
+                                style = MiuixTheme.textStyles.footnote2,
+                                color = StatusError,
+                            )
+                        }
                     }
                 }
             }
@@ -659,4 +896,19 @@ private fun A2AArtifactRow(
             },
         )
     }
+}
+
+private fun openAppBatterySettings(context: android.content.Context) {
+    val uri = Uri.parse("package:${context.packageName}")
+    val battery = Intent("android.settings.APPLICATION_BATTERY_SETTINGS", uri)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(battery) }.onFailure { openAppDetails(context) }
+}
+
+private fun openAppDetails(context: android.content.Context) {
+    val details = Intent(
+        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.parse("package:${context.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(details) }
 }

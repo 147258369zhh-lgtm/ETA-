@@ -10,17 +10,44 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import java.net.InetSocketAddress
+import java.net.Socket
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.MainActivity
 
 /** Foreground owner for the private inbound A2A listener. */
 internal class A2AInboundService : Service() {
-    private var engine: A2AInboundEngine? = null
+    private var transport: A2ATransport? = null
     private lateinit var configStore: A2AInboundConfigStore
+    private lateinit var accessStore: A2AAccessPolicyStore
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var healthJob: Job? = null
+    private var retryJob: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var consecutiveProbeFailures = 0
+    private var retryAttempt = 0
 
     override fun onCreate() {
         super.onCreate()
+        A2ARuntimeBootstrap.ensure(this)
         configStore = A2AInboundConfigStore(this)
+        accessStore = A2AAccessPolicyStore(this)
+        wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Eta:A2AInbound")
+            .apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "A2A incoming endpoint", NotificationManager.IMPORTANCE_LOW),
         )
@@ -32,6 +59,12 @@ internal class A2AInboundService : Service() {
             configStore.setEnabled(false)
             stopListener()
             return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_RESTART) {
+            retryJob?.cancel()
+            stopEngine()
+            startListenerIfNeeded()
+            return START_STICKY
         }
         if (!configStore.snapshot().enabled) {
             configStore.setLastError(null)
@@ -46,12 +79,21 @@ internal class A2AInboundService : Service() {
 
     override fun onDestroy() {
         stopListener()
+        serviceScope.cancel()
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
         super.onDestroy()
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // This foreground endpoint is intentionally independent from the task/Activity lifecycle.
+        super.onTaskRemoved(rootIntent)
+    }
+
+    @Synchronized
     private fun startListenerIfNeeded() {
-        if (engine != null) {
-            updateNotification("Listening on port ${configStore.snapshot().port}")
+        if (transport != null) {
+            startHealthMonitor()
             return
         }
         val snapshot = configStore.snapshot()
@@ -64,36 +106,106 @@ internal class A2AInboundService : Service() {
             stopSelf()
             return
         }
+        var createdTransport: A2ATransport? = null
         runCatching {
-            A2AInboundEngine(
+            A2ATransportFactory.create(
                 context = this,
-                port = snapshot.port,
-                bearerTokenProvider = { configStore.loadToken().orEmpty() },
-                bindAddress = snapshot.bindAddress,
-                advertisedEndpointProvider = { configStore.snapshot().advertisedEndpointUrl },
-            ).also { engine ->
-                engine.start()
-                this.engine = engine
+                snapshot = snapshot,
+                tokenProvider = { configStore.loadToken().orEmpty() },
+                externalEndpointProvider = { configStore.snapshot().advertisedEndpointUrl },
+                accessStore = accessStore,
+            ).also { created ->
+                createdTransport = created
+                created.start()
+                this.transport = created
             }
             configStore.setLastError(null)
-            updateNotification("Listening for A2A requests on port ${snapshot.port}")
+            configStore.setProbeState(true, transport?.currentAddress())
+            retryAttempt = 0
+            consecutiveProbeFailures = 0
+            startHealthMonitor()
+            updateNotification(
+                "Listening via ${snapshot.transportMode} on " +
+                    (transport?.currentAddress() ?: "port ${snapshot.port}"),
+            )
         }.onFailure { failure ->
+            runCatching { createdTransport?.stop() }
+            transport = null
+            consecutiveProbeFailures = 0
             configStore.setLastError(failure.message ?: failure.javaClass.simpleName)
+            configStore.setProbeState(false, null)
             updateNotification("A2A endpoint failed to start")
-            stopSelf()
+            scheduleRestart("start-failed")
         }
     }
 
     private fun stopListener() {
-        runCatching { engine?.stop() }
-        engine = null
+        retryJob?.cancel()
+        retryJob = null
+        stopEngine()
+        configStore.setProbeState(false, null)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
+    private fun stopEngine() {
+        healthJob?.cancel()
+        healthJob = null
+        runCatching { transport?.stop() }
+        transport = null
+    }
+
+    private fun startHealthMonitor() {
+        if (healthJob?.isActive == true) return
+        healthJob = serviceScope.launch {
+            while (isActive && configStore.snapshot().enabled) {
+                delay(HEALTH_PROBE_INTERVAL_MS)
+                val snapshot = configStore.snapshot()
+                val healthy = withContext(Dispatchers.IO) {
+                    runCatching {
+                        Socket().use { socket ->
+                            socket.connect(InetSocketAddress("127.0.0.1", snapshot.port), HEALTH_PROBE_TIMEOUT_MS)
+                        }
+                        true
+                    }.getOrDefault(false)
+                }
+                configStore.setProbeState(healthy, transport?.currentAddress())
+                if (healthy) {
+                    consecutiveProbeFailures = 0
+                    updateNotification("Listening on ${transport?.currentAddress() ?: "port ${snapshot.port}"}")
+                } else {
+                    consecutiveProbeFailures += 1
+                    updateNotification("Health probe failed ($consecutiveProbeFailures/2)")
+                    if (consecutiveProbeFailures >= MAX_PROBE_FAILURES) {
+                        scheduleRestart("health-probe-failed")
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    private fun scheduleRestart(reason: String) {
+        configStore.setLastError("A2A service restart scheduled: $reason")
+        if (retryJob?.isActive == true) return
+        stopEngine()
+        consecutiveProbeFailures = 0
+        configStore.recordRestart()
+        retryJob = serviceScope.launch {
+            val attempt = ++retryAttempt
+            val waitMs = (1_000L shl (attempt - 1).coerceIn(0, 5)).coerceAtMost(30_000L)
+            delay(waitMs)
+            if (configStore.snapshot().enabled) startListenerIfNeeded()
+        }
+    }
+
     private fun startForegroundCompat(text: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification(text), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(
+                NOTIFICATION_ID,
+                notification(text),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
         } else {
             startForeground(NOTIFICATION_ID, notification(text))
         }
@@ -131,6 +243,10 @@ internal class A2AInboundService : Service() {
         private const val CHANNEL = "eta_a2a_inbound"
         private const val NOTIFICATION_ID = 1113
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_A2A_INBOUND"
+        private const val ACTION_RESTART = "io.github.mangi.eta.action.RESTART_A2A_INBOUND"
+        private const val HEALTH_PROBE_INTERVAL_MS = 15_000L
+        private const val HEALTH_PROBE_TIMEOUT_MS = 1_000
+        private const val MAX_PROBE_FAILURES = 2
 
         fun start(context: Context) {
             context.applicationContext.startForegroundService(Intent(context, A2AInboundService::class.java))
@@ -139,6 +255,12 @@ internal class A2AInboundService : Service() {
         fun stop(context: Context) {
             context.applicationContext.startService(
                 Intent(context, A2AInboundService::class.java).setAction(ACTION_STOP),
+            )
+        }
+
+        fun restart(context: Context) {
+            context.applicationContext.startForegroundService(
+                Intent(context, A2AInboundService::class.java).setAction(ACTION_RESTART),
             )
         }
     }

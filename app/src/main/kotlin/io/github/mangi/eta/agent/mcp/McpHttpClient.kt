@@ -20,7 +20,7 @@ import org.json.JSONObject
 internal class McpHttpClient(
     private val server: McpServerSetting,
     private val bearerToken: String?,
-) : AutoCloseable {
+) : McpClient {
     data class Discovery(
         val protocolVersion: String,
         val tools: List<McpToolDefinition>,
@@ -79,7 +79,7 @@ internal class McpHttpClient(
     private var legacySessionId: String? = null
     private var serverCapabilities: JSONObject? = null
 
-    fun discoverTools(): Discovery {
+    override fun discoverTools(): Discovery {
         val requestedMode = server.protocolMode
         if (requestedMode == McpProtocolMode.LEGACY) return discoverLegacy()
         if (requestedMode == McpProtocolMode.LATEST) return discoverLatest()
@@ -90,7 +90,7 @@ internal class McpHttpClient(
         }
     }
 
-    fun callTool(tool: McpToolDefinition, arguments: JSONObject): JSONObject {
+    override fun callTool(tool: McpToolDefinition, arguments: JSONObject): JSONObject {
         val version = negotiatedVersion ?: when (
             server.lastProtocolVersion ?: server.protocolMode
         ) {
@@ -126,7 +126,7 @@ internal class McpHttpClient(
     }
 
     /** Optional MCP resources and prompt templates are browsed separately from model tools. */
-    fun discoverCatalog(): Catalog {
+    override fun discoverCatalog(): Catalog {
         initializeForCatalog()
         val resources = optionalCatalog("resources") {
             listResources()
@@ -144,11 +144,11 @@ internal class McpHttpClient(
         )
     }
 
-    fun readResource(uri: String): String {
+    override fun readResource(uri: String): String {
         return readResourcePreview(uri).text
     }
 
-    fun readResourcePreview(uri: String): ContentPreview {
+    override fun readResourcePreview(uri: String): ContentPreview {
         require(uri.isNotBlank() && uri.length <= MAX_URI_CHARS) { "MCP 资源地址无效" }
         val result = catalogRequest(
             method = "resources/read",
@@ -158,7 +158,7 @@ internal class McpHttpClient(
         return McpContentPreview.fromResources(contents, MAX_RESOURCE_READ_BYTES)
     }
 
-    fun getPrompt(prompt: PromptSummary, arguments: Map<String, String>): ContentPreview {
+    override fun getPrompt(prompt: PromptSummary, arguments: Map<String, String>): ContentPreview {
         require(prompt.name.isNotBlank() && prompt.name.length <= MAX_TITLE_CHARS) { "MCP 提示模板名称无效" }
         val declared = prompt.argumentDefinitions.map { it.name }.ifEmpty { prompt.arguments }.toSet()
         require(arguments.keys.all { it in declared }) { "MCP 提示模板参数未声明" }

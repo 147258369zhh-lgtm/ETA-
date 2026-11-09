@@ -380,6 +380,7 @@ internal fun AgentChatInputBar(
                         if (showContextUsage) {
                             AgentContextUsageButton(
                                 usage = contextUsage,
+                                isCompacting = isCompacting,
                                 onCompact = onCompactContext,
                                 onConfigure = onConfigureContextBudget,
                                 canCompact = canCompactContext && !isStreaming,

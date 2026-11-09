@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.github.mangi.eta.agent.prompt.PromptInjectionConfig
 import io.github.mangi.eta.agent.prompt.PromptInjectionStore
+import io.github.mangi.eta.agent.prompt.PromptAnalysisReport
+import io.github.mangi.eta.agent.prompt.PromptConflictAnalyzer
 import io.github.mangi.eta.agent.prompt.PromptScopeBinding
 import io.github.mangi.eta.agent.prompt.PromptScopeType
 import io.github.mangi.eta.agent.prompt.PromptTarget
@@ -87,6 +89,8 @@ internal class PromptInjectionUiStore(context: Context) {
         private set
     var status by mutableStateOf<String?>(null)
         private set
+    var validationError by mutableStateOf<String?>(null)
+        private set
 
     suspend fun refresh() {
         loading = true
@@ -101,8 +105,21 @@ internal class PromptInjectionUiStore(context: Context) {
         loading = false
     }
 
-    suspend fun saveTemplate(template: PromptTemplate): Boolean = mutate {
-        PromptInjectionStore.saveTemplate(template)
+    suspend fun saveTemplate(template: PromptTemplate): Boolean {
+        val report = PromptConflictAnalyzer.analyzeTemplate(template)
+        validationError = report.errors.joinToString("\n") { it.message }.takeIf(String::isNotBlank)
+        if (!report.canSave) {
+            status = validationError
+            return false
+        }
+        return mutate {
+            PromptInjectionStore.saveTemplate(template)
+        }.also { succeeded ->
+            if (succeeded) {
+                status = report.warnings.firstOrNull()?.message
+                    ?: report.issues.firstOrNull()?.message
+            }
+        }
     }
 
     suspend fun deleteTemplate(templateId: String): Boolean = mutate {
@@ -117,13 +134,28 @@ internal class PromptInjectionUiStore(context: Context) {
         PromptInjectionStore.unbind(target)
     }
 
-    suspend fun replaceConfig(next: PromptInjectionConfig): Boolean = mutate {
-        PromptInjectionStore.replace(next)
+    suspend fun replaceConfig(next: PromptInjectionConfig): Boolean {
+        val report = PromptConflictAnalyzer.analyzeConfig(next)
+        validationError = report.errors.joinToString("\n") { it.message }.takeIf(String::isNotBlank)
+        if (!report.canSave) {
+            status = validationError
+            return false
+        }
+        return mutate {
+            PromptInjectionStore.replace(next)
+        }.also { succeeded ->
+            if (succeeded) status = report.warnings.firstOrNull()?.message
+        }
     }
 
     fun report(message: String?) {
         status = message
     }
+
+    fun analyzeTemplate(template: PromptTemplate): PromptAnalysisReport =
+        PromptConflictAnalyzer.analyzeTemplate(template)
+
+    fun analyzeLibrary(): PromptAnalysisReport = PromptConflictAnalyzer.analyzeConfig(config)
 
     fun template(id: String?): PromptTemplate? =
         id?.let { wanted -> config.templates.firstOrNull { it.id == wanted } }

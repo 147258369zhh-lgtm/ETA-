@@ -88,6 +88,7 @@ internal object MeetingRuntime {
                     roomId = roomId,
                     profileName = participant.profileName,
                     messages = snapshot.messages,
+                    isHost = participant.isHost,
                 )
             }
             val routing = MeetingMentionRouter.route(
@@ -163,7 +164,6 @@ internal object MeetingRuntime {
                 participants = snapshot.participants,
                 maxParticipants = meetingSettings.maxParallelParticipants,
                 history = participantHistory.getValue(host.profileName),
-                fallbackToAllAgents = meetingSettings.fallbackToAllAgents,
             )
             if (targets.isEmpty()) {
                 MeetingRepository.appendMessage(
@@ -193,7 +193,7 @@ internal object MeetingRuntime {
                             context = context,
                             task = task,
                             target = target,
-                            history = participantHistory.getValue(target.participant.profileName),
+                            history = participantHistory[target.participant.profileName].orEmpty(),
                             attachments = attachments,
                         )
                     }
@@ -276,7 +276,6 @@ internal object MeetingRuntime {
         participants: List<MeetingParticipantEntity>,
         maxParticipants: Int,
         history: List<AgentModelClient.ConversationMessage>,
-        fallbackToAllAgents: Boolean,
     ): List<Target> {
         val enabledParticipants = participants.filter(MeetingParticipantEntity::enabled)
         val byProfile = enabledParticipants.associateBy { it.profileName }
@@ -290,40 +289,51 @@ internal object MeetingRuntime {
                 byProfile[name]?.let { Target(it, MeetingMentionRouter.stripLeadingMentions(text)) }
             }
             is MeetingRoutingDecision.HostDispatch -> {
-                val selected = askHostToSelectParticipants(
+                val plan = askHostToPlan(
                     context = context,
+                    roomId = roomId,
                     host = host,
                     participants = enabledParticipants,
                     userText = text,
                     maxParticipants = maxParticipants,
                     history = history,
                 )
-                val candidates = selected.ifEmpty {
-                    if (!fallbackToAllAgents) return emptyList()
-                    enabledParticipants.filterNot { it.isHost }.map { it.profileName }
+                if (plan.assignments.isEmpty()) {
+                    // Planning failure falls back to the host, never to leaking the raw request.
+                    return listOf(Target(host, text))
                 }
-                candidates.distinct().take(maxParticipants).mapNotNull { name ->
-                    byProfile[name]?.let { Target(it, text) }
-                }
+                val resolved = participants.associateBy { it.profileName } +
+                    plan.created.associateBy { it.profileName }
+                plan.assignments.distinctBy(HostAssignment::participant)
+                    .take(maxParticipants)
+                    .mapNotNull { assignment ->
+                        resolved[assignment.participant]?.let { Target(it, assignment.instruction) }
+                    }
             }
             is MeetingRoutingDecision.UnknownMentions -> emptyList()
         }
     }
 
-    private suspend fun askHostToSelectParticipants(
+    private suspend fun askHostToPlan(
         context: Context,
+        roomId: String,
         host: MeetingParticipantEntity,
         participants: List<MeetingParticipantEntity>,
         userText: String,
         maxParticipants: Int,
         history: List<AgentModelClient.ConversationMessage>,
-    ): List<String> {
+    ): HostPlan {
         val teammates = participants.filter { !it.isHost && it.enabled }
-        if (teammates.isEmpty()) return listOf(host.profileName).takeIf { host.enabled }.orEmpty()
         val roster = teammates.joinToString("\n") { "- ${it.profileName}: ${it.profileSummary}" }
         val prompt = """
-            你是受控会议室主持人，不直接执行本轮专业任务。请从名册中选择最适合的 1 至 $maxParticipants 位参与者。
-            只输出 JSON：{"participants":["profile-name"],"reason":"一句话"}。
+            你是受控会议室主持人，负责理解目标、拆解工作、分派任务并汇总结果。
+            原始用户请求只交给你。参与者只能看到你写出的具体任务，不能看到完整原始请求。
+            请从名册中选择 1 至 $maxParticipants 位参与者，并为每人输出独立、可执行、带交付格式的 instruction。
+            如果名册缺少关键角色，可创建最多 3 位临时专家。profile_name 只能使用小写字母、数字、下划线或连字符。
+            分派说明不能要求参与者向用户反问，也不要复制完整原始问题。
+            只输出 JSON：
+            {"create_agents":[{"profile_name":"visual-expert","display_name":"视觉专家","summary":"负责图像理解"}],
+             "tasks":[{"participant":"profile-name","instruction":"独立任务说明"}],"reason":"一句话"}
 
             <roster>
             $roster
@@ -334,9 +344,30 @@ internal object MeetingRuntime {
             </user_request>
         """.trimIndent()
         return runCatching {
-            extractParticipantNames(completeAsParticipant(context, host, prompt, history, exposeStreams = false).content)
-                .filter { name -> teammates.any { it.profileName == name } }
-        }.getOrElse { if (it is CancellationException) throw it else emptyList() }
+            parseHostPlan(completeAsParticipant(context, host, prompt, history, exposeStreams = false).content)
+        }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            HostPlan()
+        }.let { plan ->
+            val created = plan.createAgents.take(3).mapNotNull { draft ->
+                runCatching {
+                    MeetingRepository.createDynamicParticipant(
+                        context = context,
+                        roomId = roomId,
+                        profileName = draft.profileName,
+                        displayName = draft.displayName,
+                        profileSummary = draft.summary,
+                    )
+                }.getOrNull()
+            }
+            val allowed = (teammates + created).mapTo(hashSetOf()) { it.profileName }
+            plan.copy(
+                assignments = plan.assignments.filter {
+                    it.participant in allowed && it.instruction.isNotBlank()
+                },
+                created = created,
+            )
+        }
     }
 
     private suspend fun executeTask(
@@ -348,13 +379,18 @@ internal object MeetingRuntime {
     ): WorkResult = withContext(Dispatchers.IO) {
         MeetingRepository.updateTask(context, task, MeetingTaskStatus.RUNNING)
         try {
+            val taskWithFiles = io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec.format(
+                request = target.instruction,
+                references = attachments.files.map { it.reference },
+            )
             val prompt = """
                 你正在受控会议室中担任 ${target.participant.displayName}。
                 独立完成下面这一项任务，不假设其他参与者的发言。
+                如果需要读取用户明确附加的文件，只能通过任务中列出的文件引用访问。
                 直接输出可汇总的工作结果；缺少关键信息时明确列出，不要向用户反问。
 
                 <task>
-                ${target.instruction.take(24_000)}
+                ${taskWithFiles.take(24_000)}
                 </task>
             """.trimIndent()
             val completion = completeAsParticipant(
@@ -531,9 +567,16 @@ internal object MeetingRuntime {
                     subagentTools = false,
                     supportsSearchSuggestions = false,
                 )
-                require(attachments.files.isEmpty() || runtimeAllowedTools(runtimeProfile).let { allowed ->
-                    "read_file" in allowed
-                }) { "当前成员未启用文件读取工具，无法处理文件附件。" }
+                val allowedTools = runtimeAllowedTools(runtimeProfile).toMutableSet().apply {
+                    if (attachments.files.any { it.reference.kind == io.github.mangi.eta.agent.model.AgentFileReferenceKind.File }) {
+                        add("read_file")
+                        add("stat_file")
+                    }
+                    if (attachments.files.any { it.reference.kind == io.github.mangi.eta.agent.model.AgentFileReferenceKind.Directory }) {
+                        add("list_directory")
+                        add("glob_files")
+                    }
+                }.sorted()
                 val runId = "meeting-${participant.roomId}-${participant.profileName}-${UUID.randomUUID()}"
                 val request = AgentRuntimeWire.RunRequest(
                     runId = runId,
@@ -554,7 +597,7 @@ internal object MeetingRuntime {
                         payload = participant.roomId,
                     ),
                     toolPolicy = AgentToolPolicy(
-                        allowedTools = runtimeAllowedTools(runtimeProfile),
+                        allowedTools = allowedTools,
                         disallowedTools = (
                             runtimeProfile.disallowedTools + SubagentProfile.FORBIDDEN_TOOLS
                         ).sorted(),
@@ -637,18 +680,51 @@ internal object MeetingRuntime {
         }
     }.distinct().joinToString("\n").trim()
 
-    private fun extractParticipantNames(raw: String): List<String> {
-        val jsonText = Regex("\\{[\\s\\S]*}")
-            .find(raw)
-            ?.value
-            ?: return emptyList()
-        val array = JSONObject(jsonText).optJSONArray("participants") ?: return emptyList()
-        return buildList {
-            for (index in 0 until array.length()) {
-                array.optString(index).trim().takeIf(String::isNotEmpty)?.let(::add)
+    private fun parseHostPlan(raw: String): HostPlan {
+        val jsonText = Regex("\\{[\\s\\S]*}").find(raw)?.value ?: return HostPlan()
+        val root = runCatching { JSONObject(jsonText) }.getOrElse { return HostPlan() }
+        val assignments = buildList {
+            val array = root.optJSONArray("tasks") ?: return@buildList
+            for (index in 0 until minOf(array.length(), 8)) {
+                val item = array.optJSONObject(index) ?: continue
+                val participant = item.optString("participant").trim().lowercase()
+                val instruction = item.optString("instruction").trim().take(12_000)
+                if (participant.isNotBlank() && instruction.isNotBlank()) {
+                    add(HostAssignment(participant, instruction))
+                }
             }
         }
+        val createAgents = buildList {
+            val array = root.optJSONArray("create_agents") ?: return@buildList
+            for (index in 0 until minOf(array.length(), 3)) {
+                val item = array.optJSONObject(index) ?: continue
+                val profile = item.optString("profile_name").trim().lowercase()
+                if (!Regex("[a-z0-9][a-z0-9_-]{1,47}").matches(profile)) continue
+                add(
+                    HostAgentDraft(
+                        profileName = profile,
+                        displayName = item.optString("display_name").trim().take(80).ifBlank { profile },
+                        summary = item.optString("summary").trim().take(2_000),
+                    ),
+                )
+            }
+        }
+        return HostPlan(assignments, createAgents)
     }
+
+    private data class HostAssignment(val participant: String, val instruction: String)
+
+    private data class HostAgentDraft(
+        val profileName: String,
+        val displayName: String,
+        val summary: String,
+    )
+
+    private data class HostPlan(
+        val assignments: List<HostAssignment> = emptyList(),
+        val createAgents: List<HostAgentDraft> = emptyList(),
+        val created: List<MeetingParticipantEntity> = emptyList(),
+    )
 
     private data class Target(
         val participant: MeetingParticipantEntity,

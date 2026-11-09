@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.mcp.validateMcpEndpoint
 import io.github.mangi.eta.data.model.McpAuthorizationType
 import io.github.mangi.eta.data.model.McpProtocolMode
 import io.github.mangi.eta.data.model.McpServerSetting
+import io.github.mangi.eta.data.model.McpTransportType
 import io.github.mangi.eta.data.repository.McpServerRepository
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -16,6 +17,11 @@ import org.json.JSONObject
 data class McpPortableConnection(
     val name: String,
     val url: String,
+    val transportType: String = McpTransportType.HTTP,
+    val stdioCommand: String = "",
+    val stdioArguments: List<String> = emptyList(),
+    val launchCommand: String = "",
+    val workingDirectory: String = "",
     val enabled: Boolean = true,
     val protocolMode: String = McpProtocolMode.AUTO,
     val authorizationType: String = McpAuthorizationType.NONE,
@@ -52,6 +58,11 @@ internal object McpPortableCodec {
                         JSONObject()
                             .put("name", server.name)
                             .put("url", server.url)
+                            .put("transportType", server.transportType)
+                            .put("stdioCommand", server.stdioCommand)
+                            .put("stdioArguments", JSONArray(server.stdioArguments))
+                            .put("launchCommand", server.launchCommand)
+                            .put("workingDirectory", server.workingDirectory)
                             .put("enabled", server.enabled)
                             .put("protocolMode", supportedProtocol(server.protocolMode))
                             .put("authorizationType", supportedAuthorization(server.authorizationType))
@@ -85,8 +96,8 @@ internal object McpPortableCodec {
                 add(parseConnection(value, index))
             }
         }
-        if (connections.map { it.url }.distinct().size != connections.size) {
-            throw McpPortableConfigException("MCP 配置中存在重复地址")
+        if (connections.map { it.transportType to (it.url.ifBlank { it.stdioCommand }) }.distinct().size != connections.size) {
+            throw McpPortableConfigException("MCP 配置中存在重复连接")
         }
         return McpPortableBundle(
             exportedAt = root.optLong("exportedAt", 0L).coerceAtLeast(0L),
@@ -100,12 +111,20 @@ internal object McpPortableCodec {
         if (name.length !in 1..80 || name.any(Char::isISOControl)) {
             throw McpPortableConfigException("${label}名称应为 1-80 个可见字符")
         }
-        val parsedUrl = runCatching { validateMcpEndpoint(value.optString("url")) }
-            .getOrElse { throw McpPortableConfigException("${label}地址无效", it) }
-        if (!parsedUrl.username.isNullOrBlank() || !parsedUrl.password.isNullOrBlank()) {
+        val transport = value.optString("transportType", McpTransportType.HTTP)
+        if (transport !in McpTransportType.values) throw McpPortableConfigException("${label}传输方式无效")
+        val stdioCommand = value.optString("stdioCommand").trim()
+        val parsedUrl = if (transport == McpTransportType.STDIO) {
+            if (stdioCommand.isBlank()) throw McpPortableConfigException("${label}缺少 stdio 命令")
+            null
+        } else {
+            runCatching { validateMcpEndpoint(value.optString("url")) }
+                .getOrElse { throw McpPortableConfigException("${label}地址无效", it) }
+        }
+        if (parsedUrl != null && (!parsedUrl.username.isNullOrBlank() || !parsedUrl.password.isNullOrBlank())) {
             throw McpPortableConfigException("${label}地址不能包含用户名或密码")
         }
-        if (parsedUrl.query != null || parsedUrl.fragment != null) {
+        if (parsedUrl != null && (parsedUrl.query != null || parsedUrl.fragment != null)) {
             throw McpPortableConfigException("${label}地址不能包含查询参数或片段，请使用独立认证字段")
         }
         val protocol = value.optString("protocolMode", McpProtocolMode.AUTO)
@@ -125,9 +144,25 @@ internal object McpPortableCodec {
                 add(toolName)
             }
         }
+        val argumentsArray = value.optJSONArray("stdioArguments") ?: JSONArray()
+        if (argumentsArray.length() > 64) throw McpPortableConfigException("${label} stdio 参数过多")
+        val arguments = buildList {
+            for (argumentIndex in 0 until argumentsArray.length()) {
+                val argument = argumentsArray.optString(argumentIndex)
+                if (argument.length > 2_000 || argument.any(Char::isISOControl)) {
+                    throw McpPortableConfigException("${label}包含无效 stdio 参数")
+                }
+                add(argument)
+            }
+        }
         return McpPortableConnection(
             name = name,
-            url = parsedUrl.toString(),
+            url = parsedUrl?.toString().orEmpty(),
+            transportType = transport,
+            stdioCommand = stdioCommand,
+            stdioArguments = arguments,
+            launchCommand = value.optString("launchCommand").take(8_000),
+            workingDirectory = value.optString("workingDirectory").take(2_000),
             enabled = value.optBoolean("enabled", true),
             protocolMode = protocol,
             authorizationType = authorization,
@@ -171,9 +206,9 @@ internal class McpPortableConfigService(
     suspend fun importJson(raw: String): McpPortableImportResult {
         val bundle = McpPortableCodec.decode(raw)
         val existing = listServers()
-        val seenUrls = existing.mapTo(mutableSetOf()) { it.url }
+        val seenUrls = existing.mapTo(mutableSetOf()) { it.transportType to (it.url.ifBlank { it.stdioCommand }) }
         val unique = bundle.connections.filter { connection ->
-            seenUrls.add(connection.url)
+            seenUrls.add(connection.transportType to (connection.url.ifBlank { connection.stdioCommand }))
         }
         val added = mutableListOf<String>()
         try {
@@ -182,6 +217,11 @@ internal class McpPortableConfigService(
                     id = UUID.randomUUID().toString(),
                     name = connection.name,
                     url = connection.url,
+                    transportType = connection.transportType,
+                    stdioCommand = connection.stdioCommand,
+                    stdioArguments = connection.stdioArguments,
+                    launchCommand = connection.launchCommand,
+                    workingDirectory = connection.workingDirectory,
                     enabled = connection.enabled,
                     protocolMode = connection.protocolMode,
                     authorizationType = connection.authorizationType,

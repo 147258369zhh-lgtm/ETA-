@@ -18,3 +18,16 @@ internal fun shouldCommitConversationPin(
     thresholdPx.isFinite() &&
     thresholdPx > 0f &&
     offsetPx >= thresholdPx
+
+internal enum class ConversationRowGesture { Pin, Delete, Cancel }
+
+internal fun classifyConversationRowGesture(
+    offsetPx: Float,
+    pinThresholdPx: Float,
+    deleteThresholdPx: Float,
+): ConversationRowGesture = when {
+    shouldCommitConversationPin(offsetPx, pinThresholdPx) -> ConversationRowGesture.Pin
+    offsetPx.isFinite() && deleteThresholdPx.isFinite() && deleteThresholdPx > 0f &&
+        offsetPx <= -deleteThresholdPx -> ConversationRowGesture.Delete
+    else -> ConversationRowGesture.Cancel
+}

@@ -53,19 +53,8 @@ internal class AgentLearningTools(
 
     private fun proposalResult(result: LearningProposalResult): AgentModelClient.ToolResult =
         when (result) {
-            is LearningProposalResult.Created -> AgentModelClient.ToolResult(JSONObject()
-                .put("ok", true)
-                .put("candidate_id", result.candidate.id)
-                .put("status", result.candidate.status.wireValue)
-                .put("requires_user_confirmation", true)
-                .toString())
-            is LearningProposalResult.Existing -> AgentModelClient.ToolResult(JSONObject()
-                .put("ok", true)
-                .put("candidate_id", result.candidate.id)
-                .put("status", result.candidate.status.wireValue)
-                .put("deduplicated", true)
-                .put("requires_user_confirmation", result.candidate.status != LearningStatus.PROMOTED)
-                .toString())
+            is LearningProposalResult.Created -> proposalCandidateResult(result.candidate)
+            is LearningProposalResult.Existing -> proposalCandidateResult(result.candidate, deduplicated = true)
             LearningProposalResult.BlockedByPolicy -> failure(
                 "LEARNING_BLOCKED_BY_POLICY", "用户已禁止记忆，或内容包含不能持久化的高敏感信息",
             )
@@ -73,6 +62,22 @@ internal class AgentLearningTools(
                 "LEARNING_CONTENT_EMPTY", "候选内容为空或脱敏后不足",
             )
         }
+
+    private fun proposalCandidateResult(
+        candidate: LearningCandidateView,
+        deduplicated: Boolean = false,
+    ): AgentModelClient.ToolResult {
+        val rejected = candidate.status == LearningStatus.REJECTED
+        return AgentModelClient.ToolResult(JSONObject()
+            .put("ok", !rejected)
+            .put("code", if (rejected) "LEARNING_BUTLER_REJECTED" else "")
+            .put("candidate_id", candidate.id)
+            .put("status", candidate.status.wireValue)
+            .put("deduplicated", deduplicated)
+            .put("butler_review", candidate.reviewSummary)
+            .put("requires_user_confirmation", candidate.status == LearningStatus.BUTLER_APPROVED)
+            .toString())
+    }
 
     companion object {
         const val SEARCH_TOOL = "learning_search"
@@ -90,7 +95,7 @@ internal class AgentLearningTools(
             ))
             .put(tool(
                 name = PROPOSE_TOOL,
-                description = "把可复用经验提交为待用户确认的学习候选，不直接修改 MEMORY.md、Skill、权限或系统提示。先脱敏；用户禁止保存时不要调用。",
+                description = "把可复用经验提交给软件管家审核。只有通过证据、具体性和可执行性门禁的候选才会进入用户批准区；不会直接修改 MEMORY.md、Skill、权限或系统提示。",
                 properties = JSONObject()
                     .put("kind", property("string", "fact、preference、procedure 或 failure_fix"))
                     .put("title", property("string", "简短、可检索的候选标题"))

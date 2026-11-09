@@ -5,6 +5,8 @@ import io.github.mangi.eta.agent.model.AgentContextSnapshot
 import android.content.ContentResolver
 import android.content.Context
 import io.github.mangi.eta.data.model.ConversationSubject
+import io.github.mangi.eta.data.db.ConversationBranchEntity
+import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.repository.ConversationAttachmentDrafts
 import io.github.mangi.eta.data.repository.ConversationAttachments
 import io.github.mangi.eta.data.repository.ConversationDraftRepository
@@ -166,6 +168,7 @@ internal class AgentAppState(
         private set
     private var conversationBranchJob: Job? = null
     private var conversationExtensions = ConversationExtensionSnapshot()
+    private var conversationBranches: Map<String, ConversationBranchEntity> = emptyMap()
 
     var homeState by mutableStateOf(
         selectedConversationId?.let(conversationsById::get) ?: emptyChatState(defaultThinkingEnabled)
@@ -241,6 +244,7 @@ internal class AgentAppState(
         restoreAttachmentDraft()
         refreshConversationSummaries()
         observeConversationExtensions()
+        observeConversationBranches()
         observeRuntimeSelection()
         runtimeRecoveryInProgress.set(true)
         scope.launch(Dispatchers.IO) {
@@ -264,6 +268,17 @@ internal class AgentAppState(
             ConversationExtensionRepository.snapshot(appContext).collectLatest { snapshot ->
                 withContext(Dispatchers.Main.immediate) {
                     conversationExtensions = snapshot
+                    refreshConversationSummaries()
+                }
+            }
+        }
+    }
+
+    private fun observeConversationBranches() {
+        scope.launch(Dispatchers.IO) {
+            EtaDatabase.get(appContext).conversationDao().branchesFlow().collectLatest { branches ->
+                withContext(Dispatchers.Main.immediate) {
+                    conversationBranches = branches.associateBy(ConversationBranchEntity::conversationId)
                     refreshConversationSummaries()
                 }
             }
@@ -2851,6 +2866,8 @@ internal class AgentAppState(
                     isArchived = extension?.archivedAt != null,
                     isAutoArchived = extension?.archiveReason == IDLE_ARCHIVE_REASON,
                     autoArchiveExempt = extension?.autoArchiveExempt == true,
+                    branchParentConversationId = conversationBranches[id]?.parentConversationId,
+                    branchFamilyId = conversationBranches[id]?.familyId,
                 )
             }
         val query = conversationPaneState.searchQuery.trim()

@@ -27,13 +27,24 @@ internal object MeetingContextHistory {
         messages: List<MeetingMessageEntity>,
         participantProfile: String,
         attachments: Map<String, io.github.mangi.eta.data.repository.ConversationAttachments> = emptyMap(),
+        isHost: Boolean = true,
     ): List<AgentModelClient.ConversationMessage> {
         val selected = ArrayDeque<AgentModelClient.ConversationMessage>()
         var remainingChars = MAX_HISTORY_CHARS
         for (message in messages.asReversed()) {
+            val mentions = runCatching {
+                val array = org.json.JSONArray(message.mentionsJson)
+                (0 until array.length()).map(array::optString)
+            }.getOrDefault(emptyList())
             val role = when (message.authorType) {
-                MeetingAuthorType.USER -> "user"
-                MeetingAuthorType.HOST -> "assistant"
+                MeetingAuthorType.USER -> {
+                    if (!isHost && participantProfile !in mentions) continue
+                    "user"
+                }
+                MeetingAuthorType.HOST -> {
+                    if (!isHost) continue
+                    "assistant"
+                }
                 MeetingAuthorType.AGENT -> {
                     if (message.authorProfile != participantProfile) continue
                     "assistant"

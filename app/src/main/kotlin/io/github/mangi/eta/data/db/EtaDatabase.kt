@@ -29,7 +29,7 @@ import androidx.room.migration.Migration
         CharacterEntity::class,
         UserPersonaEntity::class,
     ],
-    version = 26,
+    version = 27,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -72,6 +72,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_23_24,
                         MIGRATION_24_25,
                         MIGRATION_25_26,
+                        MIGRATION_26_27,
                     )
                     .addCallback(object : Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) { createTextChunkCleanup(db) }
@@ -132,6 +133,17 @@ internal abstract class EtaDatabase : RoomDatabase() {
                 "folder_id TEXT, context_window INTEGER, project_id TEXT, created_at INTEGER NOT NULL, completed_at INTEGER, " +
                 "completion_mode TEXT, error_code TEXT, FOREIGN KEY(conversation_id) REFERENCES conversation_branches(conversation_id) ON DELETE CASCADE)")
             database.execSQL("CREATE UNIQUE INDEX index_conversation_branch_setups_setup_id ON conversation_branch_setups(setup_id)")
+        }
+
+        internal val MIGRATION_26_27 = Migration(26, 27) { database ->
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN transport_type TEXT NOT NULL DEFAULT 'http'")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN stdio_command TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN stdio_arguments_json TEXT NOT NULL DEFAULT '[]'")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN launch_command TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN working_directory TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN last_checked_at INTEGER")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN last_healthy_at INTEGER")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN last_error TEXT")
         }
 
         internal val MIGRATION_24_25 = Migration(24, 25) { database ->

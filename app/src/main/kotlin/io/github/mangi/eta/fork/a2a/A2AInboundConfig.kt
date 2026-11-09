@@ -9,8 +9,13 @@ import java.net.NetworkInterface
 import java.security.SecureRandom
 import java.util.Base64
 
-private const val LOOPBACK_ADDRESS = "127.0.0.1"
 private const val LAN_BIND_ADDRESS = "0.0.0.0"
+
+internal object A2ATransportMode {
+    const val DIRECT = "direct"
+    const val TAILSCALE = "tailscale"
+    val values = setOf(DIRECT, TAILSCALE)
+}
 
 internal data class A2AInboundSnapshot(
     val enabled: Boolean,
@@ -19,15 +24,24 @@ internal data class A2AInboundSnapshot(
     val advertisedEndpointUrl: String?,
     val token: String,
     val lastError: String?,
+    val transportMode: String = A2ATransportMode.DIRECT,
+    val lastProbeHealthy: Boolean? = null,
+    val lastProbeAt: Long? = null,
+    val lastListenAddress: String? = null,
+    val restartCount: Int = 0,
 ) {
     val agentCardUrl: String?
         get() = endpointUrl?.let(A2AInboundConfigStore::agentCardUrlForEndpoint)
 
     val endpointUrl: String?
-        get() = advertisedEndpointUrl ?: lanAddress?.let { "http://$it:$port/a2a" }
+        get() = advertisedEndpointUrl ?: when (transportMode) {
+            A2ATransportMode.TAILSCALE ->
+                (A2AInboundConfigStore.currentTailscaleAddress() ?: lanAddress)?.let { "http://$it:$port/a2a" }
+            else -> lanAddress?.let { "http://$it:$port/a2a" }
+        }
 
     val bindAddress: String
-        get() = if (advertisedEndpointUrl == null) LAN_BIND_ADDRESS else LOOPBACK_ADDRESS
+        get() = LAN_BIND_ADDRESS
 }
 
 /** Local settings and encrypted token for Eta's inbound A2A endpoint. */
@@ -54,8 +68,14 @@ internal class A2AInboundConfigStore(context: Context) {
             lanAddress = currentLanAddress(),
             advertisedEndpointUrl = preferences.getString(KEY_ADVERTISED_ENDPOINT_URL, null)
                 ?.takeIf(::isValidAdvertisedEndpoint),
+            transportMode = preferences.getString(KEY_TRANSPORT_MODE, A2ATransportMode.DIRECT)
+                ?.takeIf { it in A2ATransportMode.values } ?: A2ATransportMode.DIRECT,
             token = loadToken().orEmpty(),
             lastError = preferences.getString(KEY_LAST_ERROR, null),
+            lastProbeHealthy = preferences.all[KEY_LAST_PROBE_HEALTHY] as? Boolean,
+            lastProbeAt = (preferences.all[KEY_LAST_PROBE_AT] as? Long)?.takeIf { it > 0L },
+            lastListenAddress = preferences.getString(KEY_LAST_LISTEN_ADDRESS, null),
+            restartCount = preferences.getInt(KEY_RESTART_COUNT, 0),
         )
     }
 
@@ -72,6 +92,23 @@ internal class A2AInboundConfigStore(context: Context) {
         preferences.edit().apply {
             if (message.isNullOrBlank()) remove(KEY_LAST_ERROR) else putString(KEY_LAST_ERROR, message.take(500))
         }.apply()
+    }
+
+    fun setProbeState(healthy: Boolean, address: String?) {
+        preferences.edit()
+            .putBoolean(KEY_LAST_PROBE_HEALTHY, healthy)
+            .putLong(KEY_LAST_PROBE_AT, System.currentTimeMillis())
+            .apply {
+                if (address.isNullOrBlank()) remove(KEY_LAST_LISTEN_ADDRESS)
+                else putString(KEY_LAST_LISTEN_ADDRESS, address)
+            }
+            .apply()
+    }
+
+    fun recordRestart() {
+        preferences.edit()
+            .putInt(KEY_RESTART_COUNT, preferences.getInt(KEY_RESTART_COUNT, 0) + 1)
+            .apply()
     }
 
     fun rotateToken(): String {
@@ -94,6 +131,15 @@ internal class A2AInboundConfigStore(context: Context) {
         }.apply()
     }
 
+    fun setTransportMode(mode: String) {
+        require(mode in A2ATransportMode.values) { "Unsupported A2A transport mode" }
+        preferences.edit().putString(KEY_TRANSPORT_MODE, mode).apply()
+        if (mode == A2ATransportMode.TAILSCALE) {
+            val advertised = preferences.getString(KEY_ADVERTISED_ENDPOINT_URL, null)
+            if (advertised != null && isNonTailscalePrivateEndpoint(advertised)) setAdvertisedEndpoint(null)
+        }
+    }
+
     private fun ensureToken() {
         if (loadToken() == null) rotateToken()
     }
@@ -108,6 +154,11 @@ internal class A2AInboundConfigStore(context: Context) {
         private const val KEY_PORT = "port"
         private const val KEY_LAST_ERROR = "last_error"
         private const val KEY_ADVERTISED_ENDPOINT_URL = "advertised_endpoint_url"
+        private const val KEY_TRANSPORT_MODE = "transport_mode"
+        private const val KEY_LAST_PROBE_HEALTHY = "last_probe_healthy"
+        private const val KEY_LAST_PROBE_AT = "last_probe_at"
+        private const val KEY_LAST_LISTEN_ADDRESS = "last_listen_address"
+        private const val KEY_RESTART_COUNT = "restart_count"
 
         internal fun isValidAdvertisedEndpoint(value: String): Boolean = runCatching {
             val uri = java.net.URI(value)
@@ -144,5 +195,27 @@ internal class A2AInboundConfigStore(context: Context) {
                 .firstOrNull { address -> !address.isLoopbackAddress && address.isSiteLocalAddress }
                 ?.hostAddress
         }.getOrNull()
+
+        internal fun currentTailscaleAddress(): String? = runCatching {
+            NetworkInterface.getNetworkInterfaces()
+                ?.toList()
+                .orEmpty()
+                .asSequence()
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { it.inetAddresses.toList().asSequence() }
+                .filterIsInstance<Inet4Address>()
+                .firstOrNull { address ->
+                    val bytes = address.address
+                    bytes.size == 4 && bytes[0].toInt() and 0xff == 100 &&
+                        (bytes[1].toInt() and 0xff) in 64..127
+                }
+                ?.hostAddress
+        }.getOrNull()
+
+        private fun isNonTailscalePrivateEndpoint(value: String): Boolean = runCatching {
+            val host = java.net.URI(value).host ?: return@runCatching false
+            val address = java.net.InetAddress.getByName(host)
+            address.isSiteLocalAddress && !host.startsWith("100.")
+        }.getOrDefault(false)
     }
 }

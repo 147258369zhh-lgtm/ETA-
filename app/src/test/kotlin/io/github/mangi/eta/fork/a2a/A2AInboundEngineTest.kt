@@ -1,9 +1,11 @@
 package io.github.mangi.eta.fork.a2a
 
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.HttpURLConnection
 import java.net.URI
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -111,6 +113,118 @@ class A2AInboundEngineTest {
             val body = connection.errorStream.bufferedReader().use { it.readText() }
             assertTrue(body.contains("Unsupported A2A version"))
             connection.disconnect()
+        } finally {
+            engine.stop()
+        }
+    }
+
+    @Test
+    fun `streaming message uses server sent events`() = runBlocking {
+        val port = ServerSocket(0).use { it.localPort }
+        val token = "stream-token"
+        val engine = A2AInboundEngine(
+            port = port,
+            bearerTokenProvider = { token },
+            complete = { prompt, _ -> "stream: $prompt" },
+        )
+        engine.start()
+        try {
+            val client = A2AHttpClient(a2aPeerPolicyForManualEndpoint("http://127.0.0.1:$port/a2a"))
+            val event = client.sendStreamingMessage(
+                endpointUrl = "http://127.0.0.1:$port/a2a",
+                request = A2ASendMessageRequest(
+                    message = A2AMessage(
+                        messageId = "stream-message",
+                        role = A2ARole.USER,
+                        parts = listOf(A2APart(text = "hello")),
+                    ),
+                ),
+                bearerToken = token,
+            ).first()
+            assertEquals("stream: hello", event.message?.parts?.single()?.text)
+        } finally {
+            engine.stop()
+        }
+    }
+
+    @Test
+    fun `client disconnect does not stop following requests`() = runBlocking {
+        val port = ServerSocket(0).use { it.localPort }
+        val token = "disconnect-token"
+        val engine = A2AInboundEngine(
+            port = port,
+            bearerTokenProvider = { token },
+            complete = { prompt, _ -> "reply: $prompt" },
+        )
+        engine.start()
+        try {
+            Socket("127.0.0.1", port).use { socket ->
+                socket.getOutputStream().write("POST /a2a HTTP/1.1\r\nHost: localhost\r\n".toByteArray())
+            }
+            val client = A2AHttpClient(a2aPeerPolicyForManualEndpoint("http://127.0.0.1:$port/a2a"))
+            val response = client.sendMessage(
+                endpointUrl = "http://127.0.0.1:$port/a2a",
+                request = A2ASendMessageRequest(
+                    message = A2AMessage(
+                        messageId = "after-disconnect",
+                        role = A2ARole.USER,
+                        parts = listOf(A2APart(text = "still alive")),
+                    ),
+                ),
+                bearerToken = token,
+            )
+            assertEquals("reply: still alive", response.message?.parts?.single()?.text)
+        } finally {
+            engine.stop()
+        }
+    }
+
+    @Test
+    fun `standard message send alias remains compatible`() = runBlocking {
+        val port = ServerSocket(0).use { it.localPort }
+        val token = "alias-token"
+        val engine = A2AInboundEngine(
+            port = port,
+            bearerTokenProvider = { token },
+            complete = { prompt, _ -> "alias: $prompt" },
+        )
+        engine.start()
+        try {
+            val connection = URI("http://127.0.0.1:$port/a2a").toURL().openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.setRequestProperty("Authorization", "Bearer $token")
+            connection.setRequestProperty("Content-Type", A2A_JSONRPC_CONTENT_TYPE)
+            val body = """{"jsonrpc":"2.0","id":"alias-1","method":"message/send","params":{"message":{"messageId":"alias-message","role":"ROLE_USER","parts":[{"text":"hello"}]}}}"""
+            connection.outputStream.use { it.write(body.toByteArray()) }
+            assertEquals(200, connection.responseCode)
+            val response = connection.inputStream.bufferedReader().readText()
+            assertTrue(response.contains("alias: hello"))
+            connection.disconnect()
+        } finally {
+            engine.stop()
+        }
+    }
+
+    @Test
+    fun `agent card derives endpoint from request host`() = runBlocking {
+        val port = ServerSocket(0).use { it.localPort }
+        val engine = A2AInboundEngine(
+            port = port,
+            bearerTokenProvider = { "host-token" },
+            complete = { _, _ -> "unused" },
+        )
+        engine.start()
+        try {
+            Socket("127.0.0.1", port).use { socket ->
+                val request = "GET /.well-known/agent-card.json HTTP/1.1\r\n" +
+                    "Host: 100.104.248.80:43121\r\nConnection: close\r\n\r\n"
+                socket.getOutputStream().write(request.toByteArray())
+                socket.getOutputStream().flush()
+                val response = socket.getInputStream().bufferedReader().readText()
+                assertTrue(response.contains("http://100.104.248.80:43121/a2a"))
+                assertTrue(!response.contains("192.168.1.100"))
+            }
         } finally {
             engine.stop()
         }

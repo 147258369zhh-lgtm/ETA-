@@ -340,6 +340,7 @@ internal class AgentLocalTools(
                 }
                 "automation_manage" -> textResult(io.github.mangi.eta.fork.tasks.AgentAutomationTools.execute(context, args, automationWritesAllowed()))
                 "eta_control" -> textResult(io.github.mangi.eta.agent.control.EtaAppControlTool.execute(context, args))
+                "connector_call" -> textResult(io.github.mangi.eta.agent.connector.ConnectorTool.execute(context, args).toString())
                 "schedule_list" -> textResult(scheduleList())
                 "schedule_pause" -> textResult(schedulePause(args))
                 "schedule_delete" -> textResult(scheduleDelete(args))

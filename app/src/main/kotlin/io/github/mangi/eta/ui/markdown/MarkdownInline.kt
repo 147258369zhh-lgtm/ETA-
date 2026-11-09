@@ -86,7 +86,8 @@ internal class MarkdownInlineBuilder(
                 appendChildren(node, state)
             }
             MarkdownElementTypes.CODE_SPAN -> appendCode(codeSpanText(node))
-            GFMElementTypes.INLINE_MATH, GFMElementTypes.BLOCK_MATH -> appendCode(mathText(node))
+            GFMElementTypes.INLINE_MATH, GFMElementTypes.BLOCK_MATH ->
+                append(LatexToUnicodeFormatter.format(mathText(node)))
             MarkdownElementTypes.INLINE_LINK -> appendInlineLink(node, state)
             MarkdownElementTypes.FULL_REFERENCE_LINK -> appendReferenceLink(
                 node = node,
@@ -158,7 +159,7 @@ internal class MarkdownInlineBuilder(
     )
 
     private fun pairLooseInline(nodes: List<ASTNode>): Map<Int, PairedInline> =
-        pairLooseDelimiters(nodes) + pairKbdTags(nodes)
+        pairLooseDelimiters(nodes) + pairStyledHtmlTags(nodes)
 
     private fun pairLooseDelimiters(nodes: List<ASTNode>): Map<Int, PairedInline> {
         data class Run(val start: Int, val char: Char, val length: Int)
@@ -220,34 +221,47 @@ internal class MarkdownInlineBuilder(
         return pairs
     }
 
-    /** `<kbd>` 是唯一在聊天输出里常见的行内 HTML：配对后按行内代码样式显示内容。 */
-    private fun pairKbdTags(nodes: List<ASTNode>): Map<Int, PairedInline> {
-        val open = ArrayDeque<Int>()
+    /** 安全 HTML 行内标签按样式配对；未知标签继续按原文显示。 */
+    private fun pairStyledHtmlTags(nodes: List<ASTNode>): Map<Int, PairedInline> {
+        val open = mutableMapOf<String, ArrayDeque<Int>>()
         val pairs = mutableMapOf<Int, PairedInline>()
         nodes.forEachIndexed { index, node ->
             if (node.type != MarkdownTokenTypes.HTML_TAG) return@forEachIndexed
-            val tag = node.text()
-            when {
-                KBD_OPEN.matches(tag) -> open.addLast(index)
-                KBD_CLOSE.matches(tag) && open.isNotEmpty() -> {
-                    val start = open.removeLast()
-                    if (start + 1 < index) {
-                        pairs[start] = PairedInline(
-                            contentStart = start + 1,
-                            contentEnd = index,
-                            nextIndex = index + 1,
-                            style = SpanStyle(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 0.88.em,
-                                background = style.codeBackground,
-                            ),
-                            padSpaces = true,
-                        )
-                    }
+            val match = HTML_TAG.matchEntire(node.text()) ?: return@forEachIndexed
+            val closing = match.groupValues[1].isNotEmpty()
+            val name = match.groupValues[2].lowercase()
+            val span = htmlSpanStyle(name) ?: return@forEachIndexed
+            if (!closing) {
+                open.getOrPut(name) { ArrayDeque() }.addLast(index)
+            } else {
+                val start = open[name]?.removeLastOrNull() ?: return@forEachIndexed
+                if (start + 1 < index) {
+                    pairs[start] = PairedInline(
+                        contentStart = start + 1,
+                        contentEnd = index,
+                        nextIndex = index + 1,
+                        style = span.first,
+                        padSpaces = span.second,
+                    )
                 }
             }
         }
         return pairs
+    }
+
+    private fun htmlSpanStyle(name: String): Pair<SpanStyle, Boolean>? = when (name) {
+        "b", "strong" -> SpanStyle(fontWeight = FontWeight.SemiBold) to false
+        "i", "em" -> SpanStyle(fontStyle = FontStyle.Italic) to false
+        "u" -> SpanStyle(textDecoration = TextDecoration.Underline) to false
+        "s", "del", "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough) to false
+        "mark" -> SpanStyle(background = style.linkColor.copy(alpha = .16f)) to false
+        "small" -> SpanStyle(fontSize = .85.em) to false
+        "code", "kbd" -> SpanStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = 0.88.em,
+            background = style.codeBackground,
+        ) to true
+        else -> null
     }
 
     private fun AnnotatedString.Builder.appendCode(code: String) {
@@ -375,9 +389,8 @@ internal class MarkdownInlineBuilder(
     private fun ASTNode.text(): String = source.substring(startOffset, endOffset)
 
     private companion object {
-        val BR_TAG = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
-        val KBD_OPEN = Regex("""<kbd\s*>""", RegexOption.IGNORE_CASE)
-        val KBD_CLOSE = Regex("""</kbd\s*>""", RegexOption.IGNORE_CASE)
+        val BR_TAG = Regex("""<\s*br\s*/?\s*>""", RegexOption.IGNORE_CASE)
+        val HTML_TAG = Regex("""<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>""")
 
         /** 这些节点的 EMPH/TILDE 子节点是已被消费的真正分隔符，不参与宽松配对。 */
         val REAL_EMPHASIS_TYPES = setOf(

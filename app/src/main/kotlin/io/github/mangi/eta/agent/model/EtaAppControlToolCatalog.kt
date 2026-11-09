@@ -8,9 +8,9 @@ internal object EtaAppControlToolCatalog {
         tools.put(
             AgentToolSchema.function(
                 name = "eta_control",
-                description = "Discover and operate Eta itself through stable capability ids. Use list/search before guessing. " +
-                    "execute opens real app screens or changes settings; get reads current values. Destructive or state-changing " +
-                    "capabilities marked CONFIRM open an in-app user approval dialog before execution.",
+                description = "Discover and operate every public Eta capability through stable ids. Use list/search before guessing. " +
+                    "get reads current values; execute performs the declared operation; audit returns recent software-butler calls with " +
+                    "credentials redacted. Parameters are schema-validated. Capabilities marked CONFIRM open an in-app approval dialog.",
                 parameters = JSONObject()
                     .put("type", "object")
                     .put(
@@ -20,12 +20,16 @@ internal object EtaAppControlToolCatalog {
                                 "action",
                                 JSONObject()
                                     .put("type", "string")
-                                    .put("enum", JSONArray(listOf("list", "search", "get", "execute"))),
+                                    .put("enum", JSONArray(listOf("list", "search", "get", "execute", "audit"))),
                             )
                             .put("id", JSONObject().put("type", "string"))
                             .put("query", JSONObject().put("type", "string"))
                             .put("category", JSONObject().put("type", "string"))
-                            .put("parameters", JSONObject().put("type", "object")),
+                            .put("parameters", JSONObject().put("type", "object"))
+                            .put(
+                                "limit",
+                                JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 300),
+                            ),
                     )
                     .put("required", JSONArray().put("action")),
             ),

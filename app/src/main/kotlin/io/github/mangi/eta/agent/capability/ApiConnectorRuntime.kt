@@ -309,7 +309,7 @@ internal class ApiConnectorSnapshot(
             return ApiConnectorSnapshot(runners)
         }
 
-        private fun modelToolName(connectorId: String, actionName: String): String {
+        internal fun modelToolName(connectorId: String, actionName: String): String {
             val connectorPart = connectorId.filter(Char::isLetterOrDigit).takeLast(6).ifBlank { "api" }
             val normalized = actionName
                 .replace(Regex("[^A-Za-z0-9_-]"), "_")

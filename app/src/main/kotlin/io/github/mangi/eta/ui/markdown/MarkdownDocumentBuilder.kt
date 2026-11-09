@@ -86,13 +86,10 @@ private class BlockConverter(
         val meaningful = node.children.filterNot { it.isWhitespaceLike() }
         val math = meaningful.singleOrNull()?.takeIf { it.type == GFMElementTypes.BLOCK_MATH }
         if (math != null) {
-            return MarkdownCode(
-                offset = node.startOffset,
-                language = MATH_LANGUAGE,
-                text = AnnotatedString(mathSource(math)),
-                isMath = true,
-            )
+            return MarkdownMath(node.startOffset, mathSource(math))
         }
+        val image = meaningful.singleOrNull()?.takeIf { it.type == MarkdownElementTypes.IMAGE }
+        if (image != null) return imageBlock(node, image)
         val text = inline(node.children)
         return if (text.isEmpty()) null else MarkdownParagraph(node.startOffset, text)
     }
@@ -165,9 +162,12 @@ private class BlockConverter(
                     else -> convert(child)
                 }
             }
+            val explicitNumber = item.children.firstOrNull {
+                it.type == MarkdownTokenTypes.LIST_NUMBER
+            }?.text()?.takeWhile(Char::isDigit)?.toIntOrNull()
             MarkdownListItem(
                 offset = item.startOffset,
-                number = start?.plus(index),
+                number = if (ordered) explicitNumber ?: start?.plus(index) else null,
                 checked = item.child(GFMTokenTypes.CHECK_BOX)?.text()?.let { box -> 'x' in box || 'X' in box },
                 blocks = blocks,
                 markerRevealKey = blocks.firstRevealKey(),
@@ -200,7 +200,26 @@ private class BlockConverter(
 
     private fun raw(node: ASTNode): MarkdownBlock? {
         val text = node.text().trim()
-        return if (text.isEmpty()) null else MarkdownParagraph(node.startOffset, AnnotatedString(text))
+        if (text.isEmpty()) return null
+        FOOTNOTE_DEFINITION.matchEntire(text)?.let { match ->
+            val label = match.groupValues[1]
+            val body = match.groupValues[2].trim()
+            return MarkdownFootnote(node.startOffset, label, AnnotatedString(body))
+        }
+        if (THEMATIC_BREAK.matches(text)) return MarkdownRule(node.startOffset)
+        return MarkdownParagraph(node.startOffset, AnnotatedString(text))
+    }
+
+    private fun imageBlock(paragraph: ASTNode, image: ASTNode): MarkdownImage? {
+        val link = image.child(MarkdownElementTypes.INLINE_LINK) ?: return null
+        val alt = link.child(MarkdownElementTypes.LINK_TEXT)?.text()
+            ?.removeSurrounding("[", "]")
+            .orEmpty()
+        val url = link.child(MarkdownElementTypes.LINK_DESTINATION)?.text()
+            ?.removeSurrounding("<", ">")
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        return MarkdownImage(paragraph.startOffset, url, alt)
     }
 
     private fun inline(nodes: List<ASTNode>): AnnotatedString = inlineText(nodes, source, links, style)
@@ -228,7 +247,8 @@ private class BlockConverter(
         type == MarkdownTokenTypes.WHITE_SPACE || type == MarkdownTokenTypes.EOL
 
     private companion object {
-        const val MATH_LANGUAGE = "LaTeX"
+        val FOOTNOTE_DEFINITION = Regex("""\[\^([^\]\s]+)]:\s*(.+)""", RegexOption.DOT_MATCHES_ALL)
+        val THEMATIC_BREAK = Regex("""(?m)^\s*(?:\*\s*){3,}$|^\s*(?:-\s*){3,}$|^\s*(?:_\s*){3,}$""")
     }
 }
 
@@ -258,6 +278,7 @@ internal fun List<MarkdownBlock>.revealKeys(): Set<RevealBlockKey> = buildSet {
             is MarkdownAlert -> block.blocks.forEach(::collect)
             is MarkdownList -> block.items.forEach { item -> item.blocks.forEach(::collect) }
             is MarkdownTable -> (block.header + block.rows.flatten()).forEach(::collect)
+            is MarkdownMath, is MarkdownImage -> Unit
             is MarkdownRule -> Unit
         }
     }
@@ -273,6 +294,7 @@ private fun List<MarkdownBlock>.firstRevealKey(): RevealBlockKey? = asSequence()
             is MarkdownAlert -> block.blocks.firstRevealKey()
             is MarkdownList -> block.items.firstOrNull()?.markerRevealKey
             is MarkdownTable -> block.header.firstOrNull { it.text.isNotEmpty() }?.revealKey
+            is MarkdownMath, is MarkdownImage -> null
             is MarkdownRule -> null
         }
     }

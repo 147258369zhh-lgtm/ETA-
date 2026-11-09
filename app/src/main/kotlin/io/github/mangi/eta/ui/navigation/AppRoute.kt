@@ -37,6 +37,9 @@ sealed interface AppRoute : NavKey {
     data object ApiConnectors : AppRoute
 
     @Serializable
+    data object ConnectorCenter : AppRoute
+
+    @Serializable
     data object Subagents : AppRoute
 
     @Serializable
@@ -139,6 +142,12 @@ sealed interface AppRoute : NavKey {
     data object AgentMetrics : AppRoute
     @Serializable
     data class ConversationBranches(val conversationId: String? = null) : AppRoute
+
+    @Serializable
+    data class ConversationInsights(
+        val conversationId: String = "",
+        val meetingRoomId: String = "",
+    ) : AppRoute
 
     @Serializable
     data class AgentMetricDetail(val recordId: String) : AppRoute

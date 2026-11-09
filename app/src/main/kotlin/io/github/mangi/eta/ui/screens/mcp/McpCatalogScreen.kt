@@ -30,6 +30,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.mcp.McpHttpClient
+import io.github.mangi.eta.agent.mcp.McpClient
 import io.github.mangi.eta.agent.mcp.inspectMcp
 import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -108,7 +109,7 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
         }
     }
 
-    fun read(title: String, operation: (McpHttpClient) -> McpHttpClient.ContentPreview) {
+    fun read(title: String, operation: (McpClient) -> McpHttpClient.ContentPreview) {
         val current = server ?: return
         val generation = ++readGeneration
         readJob?.cancel()

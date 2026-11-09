@@ -93,7 +93,7 @@ class SkillEvolutionTest {
         dao.insert(source.copy(runId = "run-2", recipeId = similar.id, state = "accepted"))
         dao.insert(source.copy(runId = "run-3", recipeId = similar.id, state = "accepted"))
         SkillEvolution.merge(context, similar.id, original.id, similar.updatedAt)
-        assertEquals(3, dao.evidence(original.id).size); assertEquals("review", dao.recipe(original.id)!!.state)
+        assertEquals(3, dao.evidence(original.id).size); assertEquals("butler_approved", dao.recipe(original.id)!!.state)
         assertEquals("merged", dao.recipe(similar.id)!!.state); assertEquals(0, dao.recipe(original.id)!!.version)
         val project = original.copy(id = "auto-project", scope = "project:one")
         dao.save(project)

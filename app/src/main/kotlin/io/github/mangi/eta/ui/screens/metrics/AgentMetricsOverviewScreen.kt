@@ -75,6 +75,22 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
     val selectedModels = matchingModels.filter { it.recordId in ids }
     val metricsByRun = selectedModels.groupBy { it.recordId }.mapValues { it.value.map { model -> model.metrics } }
     val usages = filtered.flatMap { metricsByRun[it.recordId] ?: listOf(it.metrics) }
+    val modelDistribution = selectedModels.groupBy { Triple(it.providerId, it.modelId, it.name) }
+        .map { (key, values) ->
+            MetricDistribution(
+                label = key.third.ifBlank { key.second },
+                value = values.sumOf { it.metrics.reportedTotalTokens() ?: 0L },
+                detail = "${providerName(key.first)} · ${values.sumOf { it.metrics.requestAttempts }} 请求",
+            )
+        }
+    val sourceDistribution = filtered.groupBy { it.source }
+        .map { (source, records) ->
+            MetricDistribution(
+                label = metricSourceLabel(source),
+                value = records.sumOf { it.metrics.reportedTotalTokens() ?: 0L },
+                detail = "${records.size} 次运行 · ${records.sumOf { it.metrics.requestAttempts }} 请求",
+            )
+        }
     val activity = AgentMetricsActivity.days(filtered, metricsByRun)
     val day = selectedDay?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
     val shown = filtered.filter { day == null || AgentMetricsActivity.date(it.startedAt) == day }
@@ -139,6 +155,16 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
             SmallTitle("活跃轨迹")
             AgentActivityCalendar(activity, day) { selectedDay = it?.toString() }
         }
+        item("distribution") {
+            SmallTitle("使用分布")
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                AgentMetricDistributionCard("模型 Token 分布", modelDistribution)
+                AgentMetricDistributionCard("来源 Token 分布", sourceDistribution)
+            }
+        }
+        item("token_trend") {
+            AgentTokenUsageTrendCard(AgentMetricsTrend.lastWeek(filtered, usages = metricsByRun))
+        }
         item("trends") { SmallTitle("近 7 天趋势"); AgentMetricsTrendCard(AgentMetricsTrend.lastWeek(filtered, usages = metricsByRun)) }
         item("history") {
             SmallTitle(day?.let { "$it · ${shown.size} 次运行" } ?: "运行记录 · ${shown.size}")
@@ -151,13 +177,17 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
             val runModels = selectedModels.filter { it.recordId == record.recordId }
             val costs = AgentTokenCostEstimator.summarize(runModels)
             val money = costs.currencies.joinToString(" · ") { "${it.currency} ${metricMoney(it.amount)}" }
-            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 6.dp)) {
-                DetailListRow(title = record.modelName.ifBlank { metricSourceLabel(record.source) },
-                    subtitle = "${metricSourceLabel(record.source)} · ${metricStatusLabel(record.status)}\n${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(record.startedAt))}",
-                    icon = when (record.status) { AgentMetricStatus.FAILED -> Icons.Rounded.ErrorOutline; AgentMetricStatus.RUNNING -> Icons.Rounded.Sync; else -> Icons.Rounded.ReceiptLong },
-                    preview = "${metricNumber(record.metrics.inputTokens)} 输入 · ${metricNumber(record.metrics.outputTokens)} 输出 · ${record.metrics.toolCalls} 次工具调用",
-                    value = money.takeIf { it.isNotBlank() }?.let { "预估 $it${if (costs.completeModels < costs.totalModels) " · 部分" else ""}" }, onClick = { onOpenRun(record.recordId) })
-            }
+            AgentRunMetricsCard(
+                record = record,
+                models = runModels,
+                providerName = runModels.firstOrNull()?.providerId?.let(::providerName).orEmpty(),
+                projectName = projects.firstOrNull { it.id == record.projectId }?.name.orEmpty(),
+                costLabel = money.takeIf { it.isNotBlank() }?.let {
+                    "$it${if (costs.completeModels < costs.totalModels) " · 部分" else ""}"
+                }.orEmpty(),
+                onClick = { onOpenRun(record.recordId) },
+                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp),
+            )
         }
         item("management") {
             SmallTitle("统计管理")

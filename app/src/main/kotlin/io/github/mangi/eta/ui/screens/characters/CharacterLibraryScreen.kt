@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.SportsBar
@@ -32,6 +33,7 @@ import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.SearchBar
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -44,6 +46,7 @@ private val CharacterGridSpacing = 12.dp
 internal fun CharacterLibraryScreen(
     store: CharacterLibraryStore,
     onNavigate: (AppRoute) -> Unit,
+    onOpenInstructions: () -> Unit,
     onBack: () -> Unit,
 ) {
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -57,7 +60,7 @@ internal fun CharacterLibraryScreen(
         onNavigate(AppRoute.CharacterEditor())
     }
     MiuixScaffoldPage(
-        title = "角色",
+        title = "角色与指令",
         onBack = onBack,
         actions = {
             IconButton(onClick = importCard, enabled = !store.busy) {
@@ -68,6 +71,14 @@ internal fun CharacterLibraryScreen(
             }
         },
     ) {
+        item(key = "character_instruction_tabs") {
+            TabRow(
+                tabs = listOf("角色", "指令"),
+                selectedTabIndex = 0,
+                onTabSelected = { index -> if (index == 1) onOpenInstructions() },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
         item(key = "search") {
             SearchBar(
                 modifier = Modifier
@@ -175,6 +186,19 @@ internal fun CharacterLibraryScreen(
                     .padding(horizontal = 12.dp)
                     .padding(bottom = 12.dp),
             ) {
+                ArrowPreference(
+                    title = "角色行为与附加指令",
+                    summary = "组合角色人格、会话规则、输出格式与后置行为",
+                    startAction = {
+                        Icon(
+                            imageVector = Icons.Rounded.Description,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.primary,
+                            modifier = Modifier.padding(end = 12.dp),
+                        )
+                    },
+                    onClick = onOpenInstructions,
+                )
                 ArrowPreference(
                     title = "我的人设",
                     summary = "角色对你的称呼与你在故事中的身份",

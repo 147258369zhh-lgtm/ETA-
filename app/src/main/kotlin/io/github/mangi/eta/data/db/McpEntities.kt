@@ -16,8 +16,13 @@ internal data class McpServerEntity(
     val name: String,
     val url: String,
     val enabled: Boolean,
+    @ColumnInfo(name = "transport_type", defaultValue = "'http'") val transportType: String = "http",
     @ColumnInfo(name = "protocol_mode") val protocolMode: String,
     @ColumnInfo(name = "authorization_type") val authorizationType: String,
+    @ColumnInfo(name = "stdio_command", defaultValue = "''") val stdioCommand: String = "",
+    @ColumnInfo(name = "stdio_arguments_json", defaultValue = "'[]'") val stdioArgumentsJson: String = "[]",
+    @ColumnInfo(name = "launch_command", defaultValue = "''") val launchCommand: String = "",
+    @ColumnInfo(name = "working_directory", defaultValue = "''") val workingDirectory: String = "",
     @ColumnInfo(name = "tools_json") val toolsJson: String,
     @ColumnInfo(name = "enabled_tool_names_json") val enabledToolNamesJson: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
@@ -25,6 +30,9 @@ internal data class McpServerEntity(
     @ColumnInfo(name = "last_refreshed_at") val lastRefreshedAt: Long?,
     @ColumnInfo(name = "last_protocol_version") val lastProtocolVersion: String?,
     @ColumnInfo(name = "tools_expire_at") val toolsExpireAt: Long?,
+    @ColumnInfo(name = "last_checked_at") val lastCheckedAt: Long? = null,
+    @ColumnInfo(name = "last_healthy_at") val lastHealthyAt: Long? = null,
+    @ColumnInfo(name = "last_error") val lastError: String? = null,
 )
 
 private val mcpJson = Json {
@@ -37,8 +45,13 @@ internal fun McpServerSetting.toEntity(): McpServerEntity = McpServerEntity(
     name = name,
     url = url,
     enabled = enabled,
+    transportType = transportType,
     protocolMode = protocolMode,
     authorizationType = authorizationType,
+    stdioCommand = stdioCommand,
+    stdioArgumentsJson = mcpJson.encodeToString(ListSerializer(String.serializer()), stdioArguments),
+    launchCommand = launchCommand,
+    workingDirectory = workingDirectory,
     toolsJson = mcpJson.encodeToString(ListSerializer(McpToolDefinition.serializer()), tools),
     enabledToolNamesJson = mcpJson.encodeToString(SetSerializer(String.serializer()), enabledToolNames),
     createdAt = createdAt,
@@ -46,6 +59,9 @@ internal fun McpServerSetting.toEntity(): McpServerEntity = McpServerEntity(
     lastRefreshedAt = lastRefreshedAt,
     lastProtocolVersion = lastProtocolVersion,
     toolsExpireAt = toolsExpireAt,
+    lastCheckedAt = lastCheckedAt,
+    lastHealthyAt = lastHealthyAt,
+    lastError = lastError,
 )
 
 internal fun McpServerEntity.toDomain(): McpServerSetting = McpServerSetting(
@@ -53,8 +69,15 @@ internal fun McpServerEntity.toDomain(): McpServerSetting = McpServerSetting(
     name = name,
     url = url,
     enabled = enabled,
+    transportType = transportType,
     protocolMode = protocolMode,
     authorizationType = authorizationType,
+    stdioCommand = stdioCommand,
+    stdioArguments = runCatching {
+        mcpJson.decodeFromString(ListSerializer(String.serializer()), stdioArgumentsJson)
+    }.getOrDefault(emptyList()),
+    launchCommand = launchCommand,
+    workingDirectory = workingDirectory,
     tools = runCatching {
         mcpJson.decodeFromString(ListSerializer(McpToolDefinition.serializer()), toolsJson)
     }.getOrDefault(emptyList()),
@@ -66,4 +89,7 @@ internal fun McpServerEntity.toDomain(): McpServerSetting = McpServerSetting(
     lastRefreshedAt = lastRefreshedAt,
     lastProtocolVersion = lastProtocolVersion,
     toolsExpireAt = toolsExpireAt,
+    lastCheckedAt = lastCheckedAt,
+    lastHealthyAt = lastHealthyAt,
+    lastError = lastError,
 )

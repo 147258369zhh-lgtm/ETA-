@@ -44,8 +44,23 @@ internal data class MarkdownCode(
     override val offset: Int,
     val language: String?,
     override val text: AnnotatedString,
-    /** 块级公式暂不排版，按原文以代码块样式显示，保证内容可见可复制。 */
-    val isMath: Boolean = false,
+) : MarkdownTextBlock
+
+internal data class MarkdownMath(
+    override val offset: Int,
+    val latex: String,
+) : MarkdownBlock
+
+internal data class MarkdownImage(
+    override val offset: Int,
+    val url: String,
+    val alt: String,
+) : MarkdownBlock
+
+internal data class MarkdownFootnote(
+    override val offset: Int,
+    val label: String,
+    override val text: AnnotatedString,
 ) : MarkdownTextBlock
 
 internal data class MarkdownQuote(

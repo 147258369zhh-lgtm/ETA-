@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.mcp
 
 import io.github.mangi.eta.data.model.McpServerSetting
+import io.github.mangi.eta.data.repository.McpServerRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -14,11 +15,15 @@ internal suspend fun <T> inspectMcp(
     server: McpServerSetting,
     bearerToken: String?,
     timeoutMillis: Long = 60_000L,
-    operation: (McpHttpClient) -> T,
+    operation: (McpClient) -> T,
 ): T = withTimeout(timeoutMillis) {
+    if (server.launchCommand.isNotBlank()) {
+        McpProcessManager.ensureStarted(McpServerRepository.appContext(), server)
+        McpProcessManager.awaitReady(server)
+    }
     suspendCancellableCoroutine { continuation ->
         val client = try {
-            McpHttpClient(server, bearerToken)
+            McpClientFactory.create(server, bearerToken)
         } catch (failure: Exception) {
             continuation.resumeWithException(failure)
             return@suspendCancellableCoroutine

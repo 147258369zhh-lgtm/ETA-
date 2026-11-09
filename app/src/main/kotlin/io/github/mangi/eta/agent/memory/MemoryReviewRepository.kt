@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import io.github.mangi.eta.data.repository.AgentMemoryScope
 import io.github.mangi.eta.fork.learning.LearningDatabase
 import io.github.mangi.eta.fork.learning.LearningPolicy
+import io.github.mangi.eta.fork.learning.SedimentReviewPolicy
 import java.util.UUID
 
 /** Candidates become retrievable only after review. Markdown remains an independent editable source. */
@@ -25,25 +26,63 @@ internal class MemoryReviewRepository(private val db: LearningDatabase, private 
         }
         if (duplicate != null) return@withTransaction duplicate
         val conflicts = conflicts(entries, safeTopic, safeContent, now)
+        val review = SedimentReviewPolicy.reviewMemory(
+            topic = safeTopic,
+            content = safeContent,
+            evidence = safeEvidence,
+            source = source,
+            confidence = 0.7,
+            hasConflict = conflicts.isNotEmpty(),
+        )
+        if (!review.approved) return@withTransaction null
+        val reviewedEvidence = buildString {
+            append(review.summary)
+            if (safeEvidence.isNotBlank()) append('\n').append(safeEvidence)
+        }.take(800)
         val entry = MemoryEntry(UUID.randomUUID().toString(), scope.key,
             layer.takeIf { it in setOf("core", "project", "task", "long_term", "working", "other") } ?: "long_term",
-            safeTopic, safeContent, safeEvidence, MemoryAutomationPolicy.safe(source, 256),
+            safeTopic, safeContent, reviewedEvidence, MemoryAutomationPolicy.safe(source, 256),
             LearningPolicy.evidenceHash(scope.key + MemoryAutomationPolicy.dedupKey(safeContent)),
-            if (conflicts.isEmpty()) "pending" else "conflict", 0.7, now, now, expiresAt,
+            "butler_approved", review.score.coerceIn(0.0, 1.0), now, now, expiresAt,
             signature(conflicts))
         dao.insert(entry)
         entry
     }
 
     suspend fun decide(id: String, expectedUpdatedAt: Long, action: String, expectedConflicts: String = ""): String? = db.withTransaction {
-        val entry = dao.entry(id) ?: return@withTransaction "条目已不存在，请刷新"
+        var entry = dao.entry(id) ?: return@withTransaction "条目已不存在，请刷新"
         if (entry.updatedAt != expectedUpdatedAt) return@withTransaction "条目已更新，请重新审阅"
         val now = clock().coerceAtLeast(entry.updatedAt + 1)
-        if (action == "archive" && entry.status == "active" || action == "reject" && entry.status in setOf("pending", "conflict")) {
+        if (entry.status in setOf("pending", "conflict", "butler_review")) {
+            val peers = dao.entries().filter { it.id != entry.id }
+            val currentConflicts = conflicts(peers, entry.topic, entry.content, now)
+            val review = SedimentReviewPolicy.reviewMemory(
+                topic = entry.topic,
+                content = entry.content,
+                evidence = entry.evidence,
+                source = entry.source,
+                confidence = entry.confidence,
+                hasConflict = currentConflicts.isNotEmpty(),
+            )
+            if (!review.approved) {
+                dao.update(entry.copy(status = "rejected", updatedAt = now))
+                return@withTransaction "软件管家审核未通过：${review.reasonCodes.joinToString("；")}"
+            }
+            entry = entry.copy(
+                status = "butler_approved",
+                confidence = review.score.coerceIn(0.0, 1.0),
+                conflictIds = signature(currentConflicts),
+                updatedAt = now,
+            )
+            dao.update(entry)
+        }
+        if (action == "archive" && entry.status == "active" ||
+            action == "reject" && entry.status in setOf("butler_approved", "pending", "conflict")
+        ) {
             dao.update(entry.copy(status = if (action == "archive") "archived" else "rejected", updatedAt = now))
             return@withTransaction null
         }
-        if (action !in setOf("confirm", "replace", "keep_both") || entry.status !in setOf("pending", "conflict"))
+        if (action !in setOf("confirm", "replace", "keep_both") || entry.status !in setOf("butler_approved", "pending", "conflict"))
             return@withTransaction "该条目当前不能执行此操作"
         if (entry.expiresAt != null && entry.expiresAt <= now) return@withTransaction "条目已过期，请重新提取"
         val conflicts = conflicts(dao.entries().filter { it.scope == entry.scope && it.id != entry.id }, entry.topic, entry.content, now)
@@ -57,15 +96,50 @@ internal class MemoryReviewRepository(private val db: LearningDatabase, private 
         null
     }
 
+    suspend fun review(id: String, expectedUpdatedAt: Long): String? = db.withTransaction {
+        val entry = dao.entry(id) ?: return@withTransaction "条目已不存在，请刷新"
+        if (entry.updatedAt != expectedUpdatedAt) return@withTransaction "条目已更新，请重新审阅"
+        if (entry.status !in setOf("pending", "conflict", "butler_review")) {
+            return@withTransaction "该条目不需要软件管家复核"
+        }
+        val now = clock().coerceAtLeast(entry.updatedAt + 1)
+        val peers = dao.entries().filter { it.id != entry.id }
+        val currentConflicts = conflicts(peers, entry.topic, entry.content, now)
+        val review = SedimentReviewPolicy.reviewMemory(
+            topic = entry.topic,
+            content = entry.content,
+            evidence = entry.evidence.substringAfter('\n', entry.evidence).trim(),
+            source = entry.source,
+            confidence = entry.confidence,
+            hasConflict = currentConflicts.isNotEmpty(),
+        )
+        dao.update(entry.copy(
+            status = if (review.approved) "butler_approved" else "rejected",
+            confidence = review.score.coerceIn(0.0, 1.0),
+            conflictIds = signature(currentConflicts),
+            updatedAt = now,
+        ))
+        if (review.approved) null else "软件管家审核未通过：${review.reasonCodes.joinToString("；")}"
+    }
+
     suspend fun edit(id: String, content: String): String? = db.withTransaction {
         val entry = dao.entry(id) ?: return@withTransaction "条目已不存在"
-        if (entry.status !in setOf("pending", "conflict")) return@withTransaction "只有待审阅条目可以修改"
+        if (entry.status !in setOf("butler_approved", "pending", "conflict")) return@withTransaction "只有管家审核通过的条目可以修改"
         if (content.trim().length !in 4..1200 || MemoryAutomationPolicy.sensitive(content) || !MemoryAutomationPolicy.allowed(content)) return@withTransaction "内容无效或包含敏感字段"
         val safe = MemoryAutomationPolicy.safe(content, 1200)
         val peers = dao.entries().filter { it.scope == entry.scope && it.id != id }
         if (peers.any { MemoryAutomationPolicy.equivalent(it.content, safe) }) return@withTransaction "已存在相同记忆，请处理已有条目"
         val conflicts = conflicts(peers, entry.topic, safe, clock())
-        dao.update(entry.copy(content = safe, status = if (conflicts.isEmpty()) "pending" else "conflict",
+        val review = SedimentReviewPolicy.reviewMemory(
+            topic = entry.topic,
+            content = safe,
+            evidence = entry.evidence.substringAfter('\n', entry.evidence).trim(),
+            source = entry.source,
+            confidence = entry.confidence,
+            hasConflict = conflicts.isNotEmpty(),
+        )
+        if (!review.approved) return@withTransaction "软件管家审核未通过：${review.reasonCodes.joinToString("；")}"
+        dao.update(entry.copy(content = safe, status = "butler_approved", confidence = review.score.coerceIn(0.0, 1.0),
             fingerprint = LearningPolicy.evidenceHash(entry.scope + MemoryAutomationPolicy.dedupKey(safe)),
             conflictIds = signature(conflicts), updatedAt = clock().coerceAtLeast(entry.updatedAt + 1)))
         null

@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.components
 
+import android.content.ClipData
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -10,11 +11,14 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.draganddrop.dragAndDropSource
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,12 +75,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragAndDropTransferData
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -84,11 +93,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -139,13 +143,15 @@ private object ConversationPanelMetrics {
     val FirstSectionTopPadding = 8.dp
     val SectionTopPadding = 16.dp
     val SectionBottomPadding = 6.dp
-    val RowMinHeight = 44.dp
-    val RowGap = 2.dp
+    val RowMinHeight = 48.dp
+    val RowGap = 3.dp
     val RowCornerRadius = 14.dp
     val RowHorizontalPadding = 16.dp
-    val RowVerticalPadding = 11.dp
+    val RowVerticalPadding = 7.dp
     val PinSwipeThreshold = 64.dp
     val PinSwipeMaxReveal = 112.dp
+    val DeleteSwipeThreshold = 64.dp
+    val DeleteSwipeMaxReveal = 100.dp
     val PinSwipeIconInset = 20.dp
     val ActiveDotSize = 6.dp
     val ActiveDotGap = 10.dp
@@ -170,7 +176,11 @@ private val CollapsedFolderIdsSaver = Saver<Set<String>, ArrayList<String>>(
 @Composable
 internal fun conversationPaneContainerColor(): Color {
     val colors = MiuixTheme.colorScheme
-    return if (colors.background.luminance() > 0.5f) colors.surface else colors.surfaceContainer
+    return if (colors.background.luminance() > 0.5f) {
+        colors.surfaceContainer
+    } else {
+        colors.surfaceContainerHigh
+    }
 }
 
 @Composable
@@ -187,6 +197,7 @@ internal fun ConversationPanePanel(
     onConversationArchive: (ConversationSummaryUi) -> Unit,
     onConversationRestore: (ConversationSummaryUi) -> Unit,
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
+    onConversationDropToFolder: (conversationId: String, folderId: String) -> Unit = { _, _ -> },
     onOpenMeetingRoom: (String) -> Unit,
     onMeetingRoomRename: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomTogglePin: (MeetingRoomSummaryRow) -> Unit,
@@ -267,25 +278,7 @@ internal fun ConversationPanePanel(
                         .padding(horizontal = ConversationPanelMetrics.PaneHorizontalPadding),
                 ) {
                     Spacer(Modifier.height(ConversationPanelMetrics.TopInset))
-                    ConversationPaneModeSwitch(
-                        mode = paneMode,
-                        onModeChange = { next ->
-                            if (next == ConversationPaneMode.Meetings) {
-                                val targetRoomId = activeMeetingRoomId
-                                    ?: meetingRooms.firstOrNull { it.archivedAt == null }?.id
-                                if (targetRoomId == null) {
-                                    onPaneModeChange(true, null)
-                                } else {
-                                    if (state.archiveViewOpen) onArchiveViewChange(false)
-                                    onMeetingArchiveViewChange(false)
-                                    onPaneModeChange(true, targetRoomId)
-                                }
-                            } else {
-                                onPaneModeChange(false, null)
-                            }
-                        },
-                    )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(4.dp))
                     if (paneMode == ConversationPaneMode.Chats) {
                         PaneActionBar(
                             query = state.searchQuery,
@@ -346,6 +339,7 @@ internal fun ConversationPanePanel(
                                         onConversationArchive = onConversationArchive,
                                         onConversationRestore = onConversationRestore,
                                         onConversationMoveToFolder = onConversationMoveToFolder,
+                                        onConversationDropToFolder = onConversationDropToFolder,
                                     )
                                 }
                             } else {
@@ -372,6 +366,8 @@ internal fun ConversationPanePanel(
                                         onRestore = { onConversationRestore(conversation) },
                                         onMoveToFolder = { onConversationMoveToFolder(conversation) },
                                         archived = state.archiveViewOpen,
+                                        hasBranchChildren = group.items.any { it.branchParentConversationId == conversation.id },
+                                        isBranchChild = conversation.branchParentConversationId in group.items.map { it.id },
                                     )
                                 }
                             }
@@ -450,12 +446,23 @@ internal fun ConversationPanePanel(
                     )
                     Spacer(Modifier.height(ConversationPanelMetrics.DockVerticalPadding))
                     PaneDock(
+                        mode = paneMode,
+                        onModeChange = { next ->
+                            if (next == ConversationPaneMode.Meetings) {
+                                val targetRoomId = activeMeetingRoomId
+                                    ?: meetingRooms.firstOrNull { it.archivedAt == null }?.id
+                                if (targetRoomId == null) onPaneModeChange(true, null)
+                                else {
+                                    if (state.archiveViewOpen) onArchiveViewChange(false)
+                                    onMeetingArchiveViewChange(false)
+                                    onPaneModeChange(true, targetRoomId)
+                                }
+                            } else {
+                                onPaneModeChange(false, null)
+                            }
+                        },
                         onOpenSettings = onOpenSettings,
-                        onOpenModelProviders = onOpenModelProviders,
-                        onOpenTools = onOpenTools,
-                        onOpenSkills = onOpenSkills,
-                        onOpenCharacters = onOpenCharacters,
-                        onOpenPermissions = onOpenPermissions,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(ConversationPanelMetrics.BottomInset))
                 }
@@ -474,94 +481,6 @@ internal fun ConversationPanePanel(
 }
 
 private enum class ConversationPaneMode { Chats, Meetings }
-
-@Composable
-private fun ConversationPaneModeSwitch(
-    mode: ConversationPaneMode,
-    onModeChange: (ConversationPaneMode) -> Unit,
-) {
-    val density = LocalDensity.current
-    val swipeThreshold = with(density) { 36.dp.toPx() }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .squircleSurface(MiuixTheme.colorScheme.surfaceContainerHighest, 14.dp)
-            .padding(3.dp)
-            // Own both taps and horizontal drags. Consuming the initial down prevents the outer
-            // drawer gesture from closing the pane before the segmented switch sees the swipe.
-            .pointerInput(mode, swipeThreshold) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    down.consume()
-                    var totalDrag = 0f
-                    var active = down
-                    while (active.pressed) {
-                        val event = awaitPointerEvent()
-                        active = event.changes.firstOrNull { it.id == down.id } ?: break
-                        val horizontal = active.positionChange().x
-                        if (horizontal != 0f) {
-                            totalDrag += horizontal
-                            active.consume()
-                        }
-                    }
-                    val target = when {
-                        totalDrag >= swipeThreshold -> ConversationPaneMode.Meetings
-                        totalDrag <= -swipeThreshold -> ConversationPaneMode.Chats
-                        down.position.x < size.width / 2f -> ConversationPaneMode.Chats
-                        else -> ConversationPaneMode.Meetings
-                    }
-                    if (target != mode) onModeChange(target)
-                }
-            },
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-    ) {
-        ConversationPaneModeButton(
-            text = "会话",
-            selected = mode == ConversationPaneMode.Chats,
-            onClick = { onModeChange(ConversationPaneMode.Chats) },
-            modifier = Modifier.weight(1f),
-        )
-        ConversationPaneModeButton(
-            text = "会议室",
-            selected = mode == ConversationPaneMode.Meetings,
-            onClick = { onModeChange(ConversationPaneMode.Meetings) },
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun ConversationPaneModeButton(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .height(34.dp)
-            .squircleSurface(
-                if (selected) MiuixTheme.colorScheme.tertiaryContainer else Color.Transparent,
-                11.dp,
-            )
-            .semantics {
-                role = Role.Tab
-                this.selected = selected
-                onClick(label = text) {
-                    onClick()
-                    true
-                }
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            style = MiuixTheme.textStyles.footnote1,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) MiuixTheme.colorScheme.onTertiaryContainer else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-    }
-}
 
 @Composable
 private fun conversationPaneListModifier(): Modifier = Modifier
@@ -585,7 +504,7 @@ private fun MeetingPaneActionBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SearchBar(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).height(38.dp),
             insideMargin = DpSize.Zero,
             expanded = false,
             onExpandedChange = {},
@@ -631,25 +550,115 @@ private fun MeetingRoomPaneRow(
     onArchiveChange: (Boolean) -> Unit,
 ) {
     val running = room.status == MeetingRoomStatus.RUNNING
+    val stale = System.currentTimeMillis() - room.updatedAt >= 7L * 24 * 60 * 60 * 1_000
     var showActionMenu by remember { mutableStateOf(false) }
-    Box(modifier = Modifier.fillMaxWidth()) {
+    val density = LocalDensity.current
+    val hapticFeedback = LocalHapticFeedback.current
+    var swipeOffset by remember(room.id) { mutableFloatStateOf(0f) }
+    val pinThresholdPx = with(density) { ConversationPanelMetrics.PinSwipeThreshold.toPx() }
+    val deleteThresholdPx = with(density) { ConversationPanelMetrics.DeleteSwipeThreshold.toPx() }
+    val maxPinPx = with(density) { ConversationPanelMetrics.PinSwipeMaxReveal.toPx() }
+    val maxDeletePx = with(density) { ConversationPanelMetrics.DeleteSwipeMaxReveal.toPx() }
+    val currentOnTogglePin by rememberUpdatedState(onTogglePin)
+    val currentOnDelete by rememberUpdatedState(onDelete)
+    LaunchedEffect(room.id, room.pinnedAt, selected) { swipeOffset = 0f }
+    Box(
+        modifier = Modifier.fillMaxWidth().then(
+            if (archived) Modifier else Modifier.pointerInput(room.id, pinThresholdPx, deleteThresholdPx) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var dragged = 0f
+                    val slop = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                        change.consume()
+                        dragged = overSlop.coerceIn(-maxDeletePx, maxPinPx)
+                    } ?: return@awaitEachGesture
+                    swipeOffset = dragged
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == slop.id } ?: break
+                        val delta = change.positionChange().x
+                        if (delta != 0f) {
+                            dragged = (swipeOffset + delta).coerceIn(-maxDeletePx, maxPinPx)
+                            swipeOffset = dragged
+                            change.consume()
+                        }
+                        if (!change.pressed) break
+                    }
+                    if (dragged >= pinThresholdPx) {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        currentOnTogglePin()
+                    } else if (dragged <= -deleteThresholdPx) {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        currentOnDelete()
+                    }
+                    swipeOffset = 0f
+                }
+            },
+        ),
+    ) {
+        Box(
+            Modifier.matchParentSize()
+                .alpha(if (swipeOffset == 0f) 0f else 1f)
+                .squircleSurface(
+                if (swipeOffset < 0f) MiuixTheme.colorScheme.errorContainer else MiuixTheme.colorScheme.tertiaryContainer,
+                ConversationPanelMetrics.RowCornerRadius,
+                ),
+            contentAlignment = if (swipeOffset < 0f) Alignment.CenterEnd else Alignment.CenterStart,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Icon(
+                    if (swipeOffset < 0f) Icons.Outlined.Delete else Icons.Outlined.PushPin,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (swipeOffset < 0f) MiuixTheme.colorScheme.onErrorContainer else MiuixTheme.colorScheme.onTertiaryContainer,
+                )
+                Text(
+                    if (swipeOffset < 0f) "删除会议室" else if (room.pinnedAt == null) "置顶会议室" else "取消置顶",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = if (swipeOffset < 0f) MiuixTheme.colorScheme.onErrorContainer else MiuixTheme.colorScheme.onTertiaryContainer,
+                )
+            }
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 62.dp)
+                .offset { IntOffset(swipeOffset.roundToInt(), 0) }
+                .heightIn(min = 52.dp)
                 .squircleSurface(
                     when {
                         selected -> MiuixTheme.colorScheme.primaryContainer
                         running -> MiuixTheme.colorScheme.secondaryContainer
                         archived -> MiuixTheme.colorScheme.surfaceContainerHigh
-                        else -> MiuixTheme.colorScheme.surfaceContainer
+                        else -> MiuixTheme.colorScheme.surfaceContainerHigh
                     },
                     ConversationPanelMetrics.RowCornerRadius,
                 )
+                .squircleBorder(
+                    width = .5.dp,
+                    color = MiuixTheme.colorScheme.outline.copy(alpha = if (selected) .28f else .12f),
+                    cornerRadius = ConversationPanelMetrics.RowCornerRadius,
+                )
                 .clickable(onClickLabel = room.title, onClick = onClick)
-                .padding(start = 14.dp, top = 10.dp, end = 4.dp, bottom = 10.dp),
+                .padding(start = 14.dp, top = 7.dp, end = 4.dp, bottom = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box(
+                Modifier.size(7.dp).background(
+                    when {
+                        room.status == MeetingRoomStatus.FAILED -> MiuixTheme.colorScheme.error
+                        running -> Color(0xFF2FA66A)
+                        stale -> MiuixTheme.colorScheme.error
+                        room.pinnedAt != null -> MiuixTheme.colorScheme.primary
+                        else -> MiuixTheme.colorScheme.outline.copy(alpha = .55f)
+                    },
+                    CircleShape,
+                ),
+            )
+            Spacer(Modifier.width(8.dp))
             Box(
                 modifier = Modifier
                     .size(36.dp)
@@ -679,7 +688,7 @@ private fun MeetingRoomPaneRow(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = room.title,
-                        style = MiuixTheme.textStyles.body1,
+                        style = MiuixTheme.textStyles.body2,
                         fontWeight = if (selected || running) FontWeight.SemiBold else FontWeight.Normal,
                         color = if (selected) {
                             MiuixTheme.colorScheme.onPrimaryContainer
@@ -926,7 +935,7 @@ private fun PaneActionBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SearchBar(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).height(38.dp),
             insideMargin = DpSize.Zero,
             expanded = false,
             onExpandedChange = {},
@@ -972,7 +981,7 @@ private fun PaneActionButton(
 ) {
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(40.dp)
             .squircleSurface(
                 color = if (selected) {
                     MiuixTheme.colorScheme.tertiaryContainer
@@ -1014,9 +1023,11 @@ private fun ConversationFolderGroup(
     onConversationArchive: (ConversationSummaryUi) -> Unit,
     onConversationRestore: (ConversationSummaryUi) -> Unit,
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
+    onConversationDropToFolder: (conversationId: String, folderId: String) -> Unit,
 ) {
     val folder = (group.section as ConversationDrawerSection.Folder).folder
     val expanded = forceExpanded || folder.id !in collapsedFolderIds
+    var dropActive by remember(folder.id) { mutableStateOf(false) }
     val hapticFeedback = LocalHapticFeedback.current
     val onToggleExpanded = {
         if (!forceExpanded) {
@@ -1036,22 +1047,51 @@ private fun ConversationFolderGroup(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .dragAndDropTarget(
+                shouldStartDragAndDrop = { event ->
+                    event.toAndroidDragEvent().clipData?.description?.label == "eta-conversation"
+                },
+                target = remember(folder.id, onConversationDropToFolder) {
+                    object : DragAndDropTarget {
+                        override fun onEntered(event: androidx.compose.ui.draganddrop.DragAndDropEvent) {
+                            dropActive = true
+                        }
+
+                        override fun onExited(event: androidx.compose.ui.draganddrop.DragAndDropEvent) {
+                            dropActive = false
+                        }
+
+                        override fun onDrop(event: androidx.compose.ui.draganddrop.DragAndDropEvent): Boolean {
+                            dropActive = false
+                            val conversationId = event.toAndroidDragEvent().clipData?.getItemAt(0)?.text?.toString()
+                                ?.takeIf(String::isNotBlank)
+                                ?: return false
+                            onConversationDropToFolder(conversationId, folder.id)
+                            return true
+                        }
+
+                        override fun onEnded(event: androidx.compose.ui.draganddrop.DragAndDropEvent) {
+                            dropActive = false
+                        }
+                    }
+                },
+            )
             .squircleSurface(
-                color = colors.surfaceContainer,
-                cornerRadius = 16.dp,
+                color = if (dropActive) colors.primaryContainer else colors.surfaceContainer,
+                cornerRadius = 14.dp,
             )
             .squircleBorder(
-                width = 0.5.dp,
-                color = colors.outline.copy(alpha = 0.24f),
-                cornerRadius = 16.dp,
+                width = if (dropActive) 1.2.dp else 0.5.dp,
+                color = if (dropActive) colors.primary else colors.outline.copy(alpha = 0.24f),
+                cornerRadius = 14.dp,
             ),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 46.dp)
+                .heightIn(min = 42.dp)
                 .clickable(enabled = !forceExpanded, onClickLabel = folder.name, onClick = onToggleExpanded)
-                .padding(start = 12.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
+                .padding(start = 12.dp, end = 4.dp, top = 3.dp, bottom = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -1124,7 +1164,7 @@ private fun ConversationFolderGroup(
             ) + fadeOut(),
         ) {
             Column(
-                modifier = Modifier.padding(start = 5.dp, end = 5.dp, bottom = 5.dp),
+                modifier = Modifier.padding(start = 9.dp, end = 5.dp, bottom = 5.dp),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
                 group.children.forEach { child ->
@@ -1145,10 +1185,12 @@ private fun ConversationFolderGroup(
                             onConversationArchive = onConversationArchive,
                             onConversationRestore = onConversationRestore,
                             onConversationMoveToFolder = onConversationMoveToFolder,
+                            onConversationDropToFolder = onConversationDropToFolder,
                         )
                     }
                 }
                 group.items.forEach { conversation ->
+                    val groupIds = group.items.mapTo(hashSetOf(), ConversationSummaryUi::id)
                     ConversationTextRow(
                         conversation = conversation,
                         selected = conversation.id == selectedConversationId,
@@ -1161,6 +1203,8 @@ private fun ConversationFolderGroup(
                         onRestore = { onConversationRestore(conversation) },
                         onMoveToFolder = { onConversationMoveToFolder(conversation) },
                         archived = archived,
+                        hasBranchChildren = group.items.any { it.branchParentConversationId == conversation.id },
+                        isBranchChild = conversation.branchParentConversationId in groupIds,
                         modifier = Modifier.padding(horizontal = 1.dp),
                     )
                 }
@@ -1208,6 +1252,30 @@ private fun ConversationSectionHeader(
     }
 }
 
+@Composable
+private fun ConversationStatusMarker(
+    conversation: ConversationSummaryUi,
+) {
+    val colors = MiuixTheme.colorScheme
+    val stale = conversation.updatedAtMillis > 0L &&
+        System.currentTimeMillis() - conversation.updatedAtMillis >= 7L * 24 * 60 * 60 * 1_000
+    val color = when {
+        conversation.isActiveRun -> Color(0xFF2FA66A)
+        stale -> colors.error
+        conversation.isPinned -> colors.primary
+        else -> colors.outline.copy(alpha = .62f)
+    }
+    Canvas(Modifier.width(18.dp).height(28.dp)) {
+        val centerX = size.width / 2f
+        val centerY = size.height / 2f
+        drawCircle(color = color, radius = 3.5.dp.toPx(), center = androidx.compose.ui.geometry.Offset(centerX, centerY))
+        if (conversation.isActiveRun) {
+            drawCircle(color = color.copy(alpha = .22f), radius = 7.dp.toPx(), center = androidx.compose.ui.geometry.Offset(centerX, centerY))
+            drawCircle(color = color, radius = 3.5.dp.toPx(), center = androidx.compose.ui.geometry.Offset(centerX, centerY))
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationTextRow(
@@ -1222,6 +1290,8 @@ private fun ConversationTextRow(
     onRestore: () -> Unit,
     onMoveToFolder: () -> Unit,
     archived: Boolean,
+    hasBranchChildren: Boolean = false,
+    isBranchChild: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     var showActionMenu by remember { mutableStateOf(false) }
@@ -1230,8 +1300,11 @@ private fun ConversationTextRow(
     var swipeOffset by remember(conversation.id) { mutableFloatStateOf(0f) }
     var settleVersion by remember(conversation.id) { mutableIntStateOf(0) }
     val pinThresholdPx = with(density) { ConversationPanelMetrics.PinSwipeThreshold.toPx() }
+    val deleteThresholdPx = with(density) { ConversationPanelMetrics.DeleteSwipeThreshold.toPx() }
     val maxRevealPx = with(density) { ConversationPanelMetrics.PinSwipeMaxReveal.toPx() }
+    val maxDeletePx = with(density) { ConversationPanelMetrics.DeleteSwipeMaxReveal.toPx() }
     val currentOnTogglePin by rememberUpdatedState(onTogglePin)
+    val currentOnDelete by rememberUpdatedState(onDelete)
 
     LaunchedEffect(conversation.id, conversation.isPinned, selected) {
         swipeOffset = 0f
@@ -1252,13 +1325,13 @@ private fun ConversationTextRow(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .then(if (archived) Modifier else Modifier.pointerInput(conversation.id, pinThresholdPx, maxRevealPx) {
+            .then(if (archived) Modifier else Modifier.pointerInput(conversation.id, pinThresholdPx, deleteThresholdPx, maxRevealPx, maxDeletePx) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     var draggedPx = 0f
                     val slopChange = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
                         change.consume()
-                        draggedPx = conversationPinDragOffset(0f, overSlop, maxRevealPx)
+                        draggedPx = overSlop.coerceIn(-maxDeletePx, maxRevealPx)
                     } ?: return@awaitEachGesture
 
                     swipeOffset = draggedPx
@@ -1268,11 +1341,7 @@ private fun ConversationTextRow(
                             val change = event.changes.firstOrNull { it.id == slopChange.id } ?: break
                             val horizontalDelta = change.positionChange().x
                             if (horizontalDelta != 0f) {
-                                draggedPx = conversationPinDragOffset(
-                                    currentOffsetPx = swipeOffset,
-                                    horizontalDeltaPx = horizontalDelta,
-                                    maxRevealPx = maxRevealPx,
-                                )
+                                draggedPx = (swipeOffset + horizontalDelta).coerceIn(-maxDeletePx, maxRevealPx)
                                 swipeOffset = draggedPx
                                 change.consume()
                             }
@@ -1282,6 +1351,9 @@ private fun ConversationTextRow(
                         if (shouldCommitConversationPin(draggedPx, pinThresholdPx)) {
                             hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                             currentOnTogglePin()
+                        } else if (draggedPx <= -deleteThresholdPx) {
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            currentOnDelete()
                         }
                     } finally {
                         settleVersion++
@@ -1292,58 +1364,101 @@ private fun ConversationTextRow(
         Box(
             modifier = Modifier
                 .matchParentSize()
+                .alpha(if (swipeOffset == 0f) 0f else 1f)
                 .squircleSurface(
-                    color = MiuixTheme.colorScheme.tertiaryContainer,
+                    color = if (swipeOffset < 0f) {
+                        MiuixTheme.colorScheme.errorContainer
+                    } else {
+                        MiuixTheme.colorScheme.tertiaryContainer
+                    },
                     cornerRadius = ConversationPanelMetrics.RowCornerRadius,
                 ),
-            contentAlignment = Alignment.CenterStart,
+            contentAlignment = if (swipeOffset < 0f) Alignment.CenterEnd else Alignment.CenterStart,
         ) {
             Row(
                 modifier = Modifier
-                    .padding(start = ConversationPanelMetrics.PinSwipeIconInset)
+                    .then(
+                        if (swipeOffset < 0f) Modifier.padding(end = ConversationPanelMetrics.PinSwipeIconInset)
+                        else Modifier.padding(start = ConversationPanelMetrics.PinSwipeIconInset),
+                    )
                     .padding(end = ConversationPanelMetrics.RowHorizontalPadding),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.PushPin,
+                    imageVector = if (swipeOffset < 0f) Icons.Outlined.Delete else Icons.Outlined.PushPin,
                     contentDescription = null,
                     modifier = Modifier.size(ConversationPanelMetrics.ActionIconSize),
-                    tint = MiuixTheme.colorScheme.onTertiaryContainer,
+                    tint = if (swipeOffset < 0f) MiuixTheme.colorScheme.onErrorContainer else MiuixTheme.colorScheme.onTertiaryContainer,
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = stringResource(
-                        if (conversation.isPinned) {
-                            R.string.action_unpin_conversation
-                        } else {
-                            R.string.action_pin_conversation
-                        },
+                    text = if (swipeOffset < 0f) "删除会话" else stringResource(
+                        if (conversation.isPinned) R.string.action_unpin_conversation else R.string.action_pin_conversation,
                     ),
                     style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onTertiaryContainer,
+                    color = if (swipeOffset < 0f) MiuixTheme.colorScheme.onErrorContainer else MiuixTheme.colorScheme.onTertiaryContainer,
                     maxLines = 1,
                 )
             }
+        }
+        val branchRailColor = MiuixTheme.colorScheme.primary.copy(alpha = .22f)
+        val stale = conversation.updatedAtMillis > 0L &&
+            System.currentTimeMillis() - conversation.updatedAtMillis >= 7L * 24 * 60 * 60 * 1_000
+        val rowAccent = when {
+            conversation.isActiveRun -> Color(0xFF2FA66A)
+            stale -> MiuixTheme.colorScheme.error
+            conversation.isPinned -> MiuixTheme.colorScheme.primary
+            else -> MiuixTheme.colorScheme.outline
         }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .offset { IntOffset(swipeOffset.roundToInt(), 0) }
                 .heightIn(min = ConversationPanelMetrics.RowMinHeight)
+                .drawBehind {
+                    if (!hasBranchChildren && !isBranchChild) return@drawBehind
+                    val railX = ConversationPanelMetrics.RowHorizontalPadding.toPx() + 9.dp.toPx()
+                    val centerY = size.height / 2f
+                    if (isBranchChild) {
+                        drawLine(
+                            color = branchRailColor,
+                            start = androidx.compose.ui.geometry.Offset(railX, 0f),
+                            end = androidx.compose.ui.geometry.Offset(railX, centerY),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+                    if (hasBranchChildren) {
+                        drawLine(
+                            color = branchRailColor,
+                            start = androidx.compose.ui.geometry.Offset(railX, centerY),
+                            end = androidx.compose.ui.geometry.Offset(railX, size.height),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                    }
+                }
                 .squircleSurface(
                     color = if (selected) {
                         MiuixTheme.colorScheme.tertiaryContainer
                     } else {
-                        conversationPaneContainerColor()
+                        MiuixTheme.colorScheme.surfaceContainerHigh
                     },
                     cornerRadius = ConversationPanelMetrics.RowCornerRadius,
                 )
+                .squircleBorder(
+                    width = .5.dp,
+                    color = if (selected) rowAccent.copy(alpha = .42f) else rowAccent.copy(alpha = .13f),
+                    cornerRadius = ConversationPanelMetrics.RowCornerRadius,
+                )
+                .dragAndDropSource { _: androidx.compose.ui.geometry.Offset ->
+                    DragAndDropTransferData(
+                        clipData = ClipData.newPlainText("eta-conversation", conversation.id),
+                        localState = conversation.id,
+                        flags = 0,
+                    )
+                }
                 .combinedClickable(
                     onClick = onClick,
-                    onLongClick = {
-                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                        showActionMenu = true
-                    },
+                    onLongClick = null,
                 )
                 .padding(
                     horizontal = ConversationPanelMetrics.RowHorizontalPadding,
@@ -1351,11 +1466,13 @@ private fun ConversationTextRow(
                 ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            ConversationStatusMarker(conversation)
+            Spacer(Modifier.width(8.dp))
             conversation.characterName?.let { name ->
                 CharacterAvatar(
                     name = name,
                     avatarPath = conversation.characterAvatarPath,
-                    size = 32.dp,
+                    size = 28.dp,
                     shape = CircleShape,
                 )
                 Spacer(Modifier.width(12.dp))
@@ -1369,26 +1486,18 @@ private fun ConversationTextRow(
                     } else {
                         MiuixTheme.colorScheme.onSurface
                     },
-                    style = MiuixTheme.textStyles.body1,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    style = MiuixTheme.textStyles.body2,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                // 标题与角色名相同（如未改名的角色会话）时不再重复第二行。
-                conversation.characterName?.takeIf { it != title }?.let { name ->
+                val secondary = conversation.runStatus
+                    ?: conversation.characterName?.takeIf { it != title }
+                    ?: conversation.timeLabel
+                secondary?.takeIf(String::isNotBlank)?.let { value ->
                     Text(
-                        text = name,
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
-                conversation.runStatus?.let { status ->
-                    Text(
-                        text = status,
-                        style = MiuixTheme.textStyles.footnote1,
+                        text = value,
+                        style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -1396,13 +1505,15 @@ private fun ConversationTextRow(
                     )
                 }
             }
-            if (conversation.isActiveRun) {
-                Box(
-                    modifier = Modifier
-                        .padding(start = ConversationPanelMetrics.ActiveDotGap)
-                        .size(ConversationPanelMetrics.ActiveDotSize)
-                        .clip(CircleShape)
-                        .background(MiuixTheme.colorScheme.primary),
+            IconButton(
+                onClick = { showActionMenu = true },
+                modifier = Modifier.size(34.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.MoreHoriz,
+                    contentDescription = "会话操作",
+                    modifier = Modifier.size(18.dp),
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
                 )
             }
         }
@@ -1639,51 +1750,32 @@ private fun EmptyConversations(isSearching: Boolean, isArchive: Boolean) {
 
 @Composable
 private fun PaneDock(
+    mode: ConversationPaneMode,
+    onModeChange: (ConversationPaneMode) -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenModelProviders: () -> Unit,
-    onOpenTools: () -> Unit,
-    onOpenSkills: () -> Unit,
-    onOpenCharacters: () -> Unit,
-    onOpenPermissions: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         DockEntry(
             icon = Icons.Outlined.Settings,
             label = "设置",
             onClick = onOpenSettings,
+            modifier = Modifier.weight(0.8f),
+        )
+        DockEntry(
+            label = "会话",
+            selected = mode == ConversationPaneMode.Chats,
+            onClick = { onModeChange(ConversationPaneMode.Chats) },
             modifier = Modifier.weight(1f),
         )
         DockEntry(
-            icon = Icons.Outlined.Cloud,
-            label = "模型",
-            onClick = onOpenModelProviders,
-            modifier = Modifier.weight(1f),
-        )
-        DockEntry(
-            icon = Icons.Outlined.Widgets,
-            label = "工具",
-            onClick = onOpenTools,
-            modifier = Modifier.weight(1f),
-        )
-        DockEntry(
-            icon = Icons.Outlined.AutoStories,
-            label = "Skills",
-            onClick = onOpenSkills,
-            modifier = Modifier.weight(1f),
-        )
-        DockEntry(
-            icon = Icons.Outlined.Shield,
-            label = "权限",
-            onClick = onOpenPermissions,
-            modifier = Modifier.weight(1f),
-        )
-        DockEntry(
-            icon = Icons.Outlined.SportsBar,
-            label = "角色",
-            onClick = onOpenCharacters,
+            label = "会议室",
+            selected = mode == ConversationPaneMode.Meetings,
+            onClick = { onModeChange(ConversationPaneMode.Meetings) },
             modifier = Modifier.weight(1f),
         )
     }
@@ -1691,27 +1783,42 @@ private fun PaneDock(
 
 @Composable
 private fun DockEntry(
-    icon: ImageVector,
+    icon: ImageVector? = null,
     label: String,
+    selected: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier = modifier
-            .heightIn(min = 46.dp)
+            .height(36.dp)
             .squircleSurface(
-                color = Color.Transparent,
-                cornerRadius = ConversationPanelMetrics.DockEntryCornerRadius,
+                color = if (selected) {
+                    MiuixTheme.colorScheme.tertiaryContainer
+                } else {
+                    MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = .58f)
+                },
+                cornerRadius = 11.dp,
             )
             .clickable(onClickLabel = label, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = label,
-            modifier = Modifier.size(ConversationPanelMetrics.DockEntryIconSize),
-            tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
-        )
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(ConversationPanelMetrics.DockEntryIconSize),
+                tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+            )
+        } else {
+            Text(
+                text = label,
+                style = MiuixTheme.textStyles.footnote1,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MiuixTheme.colorScheme.onTertiaryContainer
+                else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
     }
 }
 

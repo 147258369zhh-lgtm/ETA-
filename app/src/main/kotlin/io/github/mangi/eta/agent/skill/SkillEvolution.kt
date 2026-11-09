@@ -9,6 +9,8 @@ import io.github.mangi.eta.agent.model.*
 import io.github.mangi.eta.agent.runtime.*
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.fork.learning.LearningDatabase
+import io.github.mangi.eta.fork.learning.LearningKind
+import io.github.mangi.eta.fork.learning.SedimentReviewPolicy
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -79,7 +81,10 @@ internal object SkillEvolution {
             require(target.state !in setOf("rejected", "merged", "conflict"))
             dao.moveEvidence(source.id, target.id)
             val enough = dao.evidence(target.id).count { it.state == "accepted" } >= MIN_EVIDENCE
-            dao.save(target.copy(state = if (target.state == "paused") "paused" else if (enough) "review" else "collecting", updatedAt = System.currentTimeMillis()))
+            dao.save(target.copy(
+                state = if (target.state == "paused") "paused" else if (enough) reviewRecipe(target, dao) else "collecting",
+                updatedAt = System.currentTimeMillis(),
+            ))
             dao.save(source.copy(state = "merged", revision = target.id, updatedAt = System.currentTimeMillis()))
         }
     }
@@ -123,6 +128,9 @@ internal object SkillEvolution {
             val recipe = checkNotNull(dao.recipe(id))
             require(recipe.updatedAt == expectedUpdatedAt) { "候选已更新，请重新查看" }
             require(dao.evidence(id).count { it.state == "accepted" } >= MIN_EVIDENCE) { "至少需要 3 个独立任务证据" }
+            require(recipe.state != "rejected" && reviewRecipe(recipe.copy(body = body), dao) == "butler_approved") {
+                "该技能未通过软件管家质量审核，不能提交人工启用"
+            }
             require(body.length in 20..24000 && !MemoryAutomationPolicy.sensitive(body))
             val args = JSONObject().put("action", if (recipe.version == 0) "create" else "update")
                 .put("skillId", id).put("description", recipe.description).put("bodyMarkdown",
@@ -193,8 +201,12 @@ internal class SkillEvolutionWorker(context: Context, parameters: WorkerParamete
                                 else {
                                     dao.update(source.copy(state = "accepted", recipeId = recipeId))
                                     val count = dao.evidence(recipeId).count { it.state == "accepted" }
-                                    dao.save(proposal.copy(id = recipeId, version = existing?.version ?: 0, revision = existing?.revision.orEmpty(),
-                                        state = if (existing?.state == "paused") "paused" else if (count >= SkillEvolution.MIN_EVIDENCE) "review" else "collecting"))
+                                    val candidate = proposal.copy(id = recipeId, version = existing?.version ?: 0, revision = existing?.revision.orEmpty())
+                                    dao.save(candidate.copy(
+                                        state = if (existing?.state == "paused") "paused"
+                                        else if (count >= SkillEvolution.MIN_EVIDENCE) reviewRecipe(candidate, dao)
+                                        else "collecting",
+                                    ))
                                 }
                             }
                         }
@@ -214,4 +226,23 @@ internal class SkillEvolutionWorker(context: Context, parameters: WorkerParamete
             "不得保存私人内容、固定坐标、临时节点或凭据。相同任务类型使用相同英文 kebab-case key。所有步骤 tools 必须来自证据。仅返回 JSON：" +
             "{\"reusable\":true,\"key\":\"stable-task-type\",\"title\":\"名称\",\"scenario\":\"适用场景和限制\",\"triggers\":\"相似任务触发描述\",\"inputs\":\"输入和前置条件\",\"steps\":[{\"instruction\":\"可复用步骤\",\"tools\":[\"实际成功工具\"]}],\"outputs\":\"输出\",\"verification\":\"成功验证\",\"cautions\":\"风险与边界\"}。不值得提炼返回 {\"reusable\":false}。2-16 个步骤，最多 12000 字符。"
     }
+}
+
+private suspend fun reviewRecipe(
+    recipe: SkillRecipe,
+    dao: io.github.mangi.eta.agent.skill.SkillEvolutionDao,
+): String {
+    val evidence = dao.evidence(recipe.id)
+        .filter { it.state == "accepted" }
+        .joinToString("\n") { it.detail.ifBlank { it.state } }
+    val decision = SedimentReviewPolicy.reviewLearning(
+        kind = LearningKind.PROCEDURE,
+        title = recipe.title,
+        content = recipe.body,
+        evidence = evidence.ifBlank { "${dao.evidence(recipe.id).count { it.state == "accepted" }} 个独立任务证据" },
+        sourceRef = "run:${recipe.id}",
+        confidence = 0.86,
+        hasConflict = false,
+    )
+    return if (decision.approved) "butler_approved" else "rejected"
 }

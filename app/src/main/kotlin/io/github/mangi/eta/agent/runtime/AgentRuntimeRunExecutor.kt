@@ -33,8 +33,6 @@ import io.github.mangi.eta.agent.mcp.McpToolExecutor
 import io.github.mangi.eta.agent.mcp.RoutingToolExecutor
 import io.github.mangi.eta.agent.capability.ApiConnectorSnapshot
 import io.github.mangi.eta.agent.capability.ApiToolExecutor
-import io.github.mangi.eta.agent.capability.ManagedToolPackageRuntimeSnapshot
-import io.github.mangi.eta.agent.capability.ManagedToolPackageToolExecutor
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
 import io.github.mangi.eta.agent.skill.SkillContext
@@ -259,18 +257,9 @@ internal class AgentRuntimeRunExecutor(
                 }
                 ApiConnectorSnapshot.EMPTY
             }
-            val managedPackageSnapshot = runCatching {
-                ManagedToolPackageRuntimeSnapshot.load(appContext)
-            }.getOrElse { throwable ->
-                AndroidAgentLogger.warnThrottled("agent_managed_packages_snapshot_failed") {
-                    "Plugin and sandbox tool snapshot unavailable: type=${throwable.safeLogType()}"
-                }
-                ManagedToolPackageRuntimeSnapshot(appContext, emptyList())
-            }
             val externalTools = JSONArray().also { tools ->
                 mcpSnapshot.appendModelTools(tools)
                 apiSnapshot.appendModelTools(tools)
-                managedPackageSnapshot.appendModelTools(tools)
             }
             val browserKey = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
             browserBinding = BrowserSessionRegistry.acquireRun(browserKey, request.runId)
@@ -366,7 +355,6 @@ internal class AgentRuntimeRunExecutor(
                 providers = listOf(
                     McpToolExecutor(mcpSnapshot),
                     ApiToolExecutor(appContext, apiSnapshot),
-                    ManagedToolPackageToolExecutor(managedPackageSnapshot, executor),
                 ),
             )
             toolExecutor = routingExecutor

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Schedule
@@ -55,7 +56,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.os.SystemClock
+import io.github.mangi.eta.agent.control.EtaAppControlAuditStore
 import io.github.mangi.eta.agent.control.EtaAppControlRegistry
+import io.github.mangi.eta.agent.control.EtaControlDanger
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
@@ -83,9 +87,16 @@ private data class ControlShortcut(
     val route: AppRoute,
 )
 
+private data class EtaControlAuditSummary(
+    val total: Int = 0,
+    val failed: Int = 0,
+    val lastTimestamp: Long = 0L,
+)
+
 private val controlShortcuts = listOf(
     ControlShortcut("模型", Icons.Rounded.Memory, AppRoute.ModelProviders),
     ControlShortcut("记忆", Icons.Rounded.AutoAwesome, AppRoute.Memory),
+    ControlShortcut("角色与指令", Icons.Rounded.Description, AppRoute.Characters),
     ControlShortcut("能力", Icons.Rounded.Build, AppRoute.CapabilityCenter),
     ControlShortcut("自动任务", Icons.Rounded.Schedule, AppRoute.TaskCenter),
     ControlShortcut("权限", Icons.Rounded.Security, AppRoute.Permissions),
@@ -98,10 +109,11 @@ private val CONTROL_PROMPT = """
 规则：
 1. 软件能力必须先通过 eta_control 的 list/search 查询稳定 ID；不要猜测 ID。
 2. 需要打开页面、读取或修改设置时调用 eta_control，不能只用文字声称已完成。
-3. 自动任务、记忆、Skill、MCP、文件、设备等能力应优先调用各自对应工具；eta_control 负责软件入口和注册表能力。
-4. 删除、清空、恢复、取消运行等不可逆或影响现有状态的操作，必须先说明影响并取得用户明确同意。可逆导航和读取可直接执行。
-5. 工具失败时如实报告代码与原因，禁止虚构成功。答复保持简洁，清楚说明实际执行结果。
-6. 用户提供模糊目标时，先读取相关状态再决定；不要反复询问已经能从软件内确认的信息。
+3. 自动任务、记忆、Skill、MCP、REST API、文件、终端、设备、A2A 等能力应调用各自对应工具；eta_control 负责软件入口和注册表能力。两者共同覆盖管家可用的全部公开接口。
+4. 修改后要回读状态确认实际结果；需要排查此前操作或用户询问操作记录时调用 eta_control 的 audit。
+5. 删除、清空、恢复、取消运行等不可逆或影响现有状态的操作，必须先说明影响并取得用户明确同意。可逆导航和读取可直接执行。
+6. 工具失败时如实报告代码与原因，禁止虚构成功。答复保持简洁，清楚说明实际执行结果。
+7. 用户提供模糊目标时，先读取相关状态再决定；不要反复询问已经能从软件内确认的信息。
 """.trimIndent()
 
 internal fun appControlRoute(key: String): AppRoute? = when (key) {
@@ -153,6 +165,9 @@ internal fun AppControlScreen(
         AgentRuntimeClient(context.applicationContext, AndroidAgentLogger)
     }
     val historyStore = remember(context.applicationContext) { AppControlHistoryStore(context.applicationContext) }
+    val auditStore = remember(context.applicationContext) { EtaAppControlAuditStore(context.applicationContext) }
+    val capabilities = remember { EtaAppControlRegistry.list() }
+    val toolStarts = remember { mutableMapOf<String, Long>() }
     val listState = rememberLazyListState()
     var messages by remember { mutableStateOf<List<AppControlMessage>>(emptyList()) }
     var draft by remember { mutableStateOf("") }
@@ -160,6 +175,7 @@ internal fun AppControlScreen(
     var loadingConfig by remember { mutableStateOf(true) }
     var running by remember { mutableStateOf(false) }
     var activeRunId by remember { mutableStateOf<String?>(null) }
+    var auditSummary by remember { mutableStateOf<EtaControlAuditSummary>(EtaControlAuditSummary()) }
 
     fun updateAssistant(id: String, transform: (AppControlMessage) -> AppControlMessage) {
         messages = messages.map { message -> if (message.id == id) transform(message) else message }
@@ -220,16 +236,35 @@ internal fun AppControlScreen(
                                     }
                                 }
                                 is AgentEvent.ToolStarted -> updateAssistant(assistantId) { message ->
+                                    toolStarts[event.toolCallId] = SystemClock.elapsedRealtime()
                                     message.copy(toolStatus = "正在执行 ${event.name.controlToolName()}")
                                 }
-                                is AgentEvent.ToolFinished -> updateAssistant(assistantId) { message ->
-                                    message.copy(
-                                        toolStatus = if (event.success != false) {
-                                            "${event.name.controlToolName()} 已完成"
-                                        } else {
-                                            "${event.name.controlToolName()} 未完成"
-                                        },
-                                    )
+                                is AgentEvent.ToolFinished -> {
+                                    val startedAt = toolStarts.remove(event.toolCallId)
+                                    if (event.name != "eta_control") {
+                                        val success = event.success != false
+                                        scope.launch(Dispatchers.IO) {
+                                            runCatching {
+                                                auditStore.append(
+                                                    operation = "tool",
+                                                    capabilityId = "tool:${event.name}",
+                                                    parameters = org.json.JSONObject().put("toolName", event.name),
+                                                    success = success,
+                                                    errorCode = if (success) "" else "TOOL_FAILED",
+                                                    durationMs = startedAt?.let { SystemClock.elapsedRealtime() - it } ?: 0L,
+                                                )
+                                            }
+                                        }
+                                    }
+                                    updateAssistant(assistantId) { message ->
+                                        message.copy(
+                                            toolStatus = if (event.success != false) {
+                                                "${event.name.controlToolName()} 已完成"
+                                            } else {
+                                                "${event.name.controlToolName()} 未完成"
+                                            },
+                                        )
+                                    }
                                 }
                                 is AgentEvent.RunFailed -> updateAssistant(assistantId) { message ->
                                     message.copy(text = event.reason, isError = true, toolStatus = "")
@@ -273,11 +308,27 @@ internal fun AppControlScreen(
             running = false
             activeRunId = null
             saveMessages()
+            auditSummary = withContext(Dispatchers.IO) {
+                val summary = runCatching { auditStore.summary() }.getOrNull()
+                EtaControlAuditSummary(
+                    total = summary?.optInt("total", 0) ?: 0,
+                    failed = summary?.optInt("failed", 0) ?: 0,
+                    lastTimestamp = summary?.optLong("lastTimestamp", 0L) ?: 0L,
+                )
+            }
         }
     }
 
     LaunchedEffect(Unit) {
         messages = withContext(Dispatchers.IO) { historyStore.load() }
+        auditSummary = withContext(Dispatchers.IO) {
+            val summary = runCatching { auditStore.summary() }.getOrNull()
+            EtaControlAuditSummary(
+                total = summary?.optInt("total", 0) ?: 0,
+                failed = summary?.optInt("failed", 0) ?: 0,
+                lastTimestamp = summary?.optLong("lastTimestamp", 0L) ?: 0L,
+            )
+        }
         config = withContext(Dispatchers.IO) { RuntimeConfigRepository.currentRuntimeConfig() }
         loadingConfig = false
     }
@@ -309,6 +360,10 @@ internal fun AppControlScreen(
                         model = config,
                         loading = loadingConfig,
                         running = running,
+                        capabilityCount = capabilities.size,
+                        writeCount = capabilities.count { it.danger == EtaControlDanger.WRITE },
+                        confirmationCount = capabilities.count { it.danger == EtaControlDanger.CONFIRM },
+                        audit = auditSummary,
                         onStop = {
                             activeRunId?.let(runtime::cancelRun)
                         },
@@ -349,6 +404,10 @@ private fun ControlStatusCard(
     model: AgentModelClient.ModelConfig?,
     loading: Boolean,
     running: Boolean,
+    capabilityCount: Int,
+    writeCount: Int,
+    confirmationCount: Int,
+    audit: EtaControlAuditSummary,
     onStop: () -> Unit,
 ) {
     val scheme = MiuixTheme.colorScheme
@@ -359,89 +418,129 @@ private fun ControlStatusCard(
         else -> scheme.error
     }
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 15.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Box(
+        Column {
+            Row(
                 modifier = Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(13.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                scheme.primary.copy(alpha = 0.18f),
-                                scheme.primary.copy(alpha = 0.06f),
-                            ),
-                        ),
-                    ),
-                contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .padding(horizontal = 15.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.AutoAwesome,
-                    contentDescription = null,
-                    tint = scheme.primary,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(statusColor),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = when {
-                            loading -> "正在读取模型"
-                            running -> "正在执行"
-                            ready -> "随时待命"
-                            else -> "需要配置"
-                        },
-                        style = MiuixTheme.textStyles.body2,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-                Text(
-                    text = model?.modelDisplayName?.takeIf(String::isNotBlank)
-                        ?: model?.model
-                        ?: "尚未配置可用模型",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = scheme.onSurfaceVariantSummary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (model != null && !model.supportsTools) {
-                    Text(
-                        text = "当前模型未声明工具调用能力",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = scheme.error,
-                    )
-                }
-            }
-            if (running) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .background(scheme.surfaceContainerHigh)
-                        .clickable(onClick = onStop),
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    scheme.primary.copy(alpha = 0.20f),
+                                    scheme.primary.copy(alpha = 0.06f),
+                                ),
+                            ),
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Stop,
-                        contentDescription = "停止",
-                        modifier = Modifier.size(16.dp),
-                        tint = scheme.onSurface,
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = scheme.primary,
+                        modifier = Modifier.size(22.dp),
                     )
                 }
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(statusColor),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = when {
+                                loading -> "正在读取模型"
+                                running -> "正在执行"
+                                ready -> "管理员在线"
+                                else -> "需要配置"
+                            },
+                            style = MiuixTheme.textStyles.body2,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Text(
+                        text = model?.modelDisplayName?.takeIf(String::isNotBlank)
+                            ?: model?.model
+                            ?: "尚未配置可用模型",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = scheme.onSurfaceVariantSummary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (model != null && !model.supportsTools) {
+                        Text(
+                            text = "当前模型未声明工具调用能力",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = scheme.error,
+                        )
+                    }
+                }
+                if (running) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(scheme.surfaceContainerHigh)
+                            .clickable(onClick = onStop),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Stop,
+                            contentDescription = "停止",
+                            modifier = Modifier.size(16.dp),
+                            tint = scheme.onSurface,
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(scheme.surfaceContainer.copy(alpha = 0.62f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ControlMetric("公开接口", capabilityCount.toString(), Modifier.weight(1f))
+                ControlMetric("可直接写", writeCount.toString(), Modifier.weight(1f))
+                ControlMetric("强确认", confirmationCount.toString(), Modifier.weight(1f))
+                ControlMetric(
+                    label = "审计记录",
+                    value = if (audit.failed > 0) "${audit.total} · ${audit.failed} 失败" else audit.total.toString(),
+                    modifier = Modifier.weight(1.35f),
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun ControlMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    val scheme = MiuixTheme.colorScheme
+    Column(modifier) {
+        Text(
+            text = value,
+            style = MiuixTheme.textStyles.footnote1,
+            fontWeight = FontWeight.SemiBold,
+            color = scheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.footnote2,
+            color = scheme.onSurfaceVariantSummary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -489,14 +588,15 @@ private fun ControlIntroduction(onExampleClick: (String) -> Unit) {
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "可以创建任务、管理 Agent、切换页面、修改设置和调用现有工具。",
+                text = "我会先读取真实状态，再通过公开接口执行、回读结果并留下脱敏审计。高风险操作会单独确认。",
                 style = MiuixTheme.textStyles.body2,
                 color = scheme.onSurfaceVariantSummary,
                 lineHeight = 20.sp,
             )
             ControlPromptExample("把记忆整理改成每天凌晨执行", onExampleClick)
-            ControlPromptExample("打开模型设置，并检查当前模型是否支持工具", onExampleClick)
-            ControlPromptExample("给项目创建一个归档自动任务", onExampleClick)
+            ControlPromptExample("审核最近的学习候选，垃圾经验不要交给我批准", onExampleClick)
+            ControlPromptExample("检查会议室、子 Agent 和当前模型的运行状态", onExampleClick)
+            ControlPromptExample("导出最近一次失败操作和对应审计记录", onExampleClick)
         }
     }
 }

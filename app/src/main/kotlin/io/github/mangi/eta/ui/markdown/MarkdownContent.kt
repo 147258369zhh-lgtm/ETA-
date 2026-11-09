@@ -134,6 +134,9 @@ private fun MarkdownBlockView(block: MarkdownBlock, scope: MarkdownRenderScope) 
             modifier = Modifier.semantics { heading() },
         )
         is MarkdownCode -> MarkdownCodeBlock(block, scope)
+        is MarkdownMath -> MarkdownMathBlock(block, scope)
+        is MarkdownImage -> MarkdownImageBlock(block)
+        is MarkdownFootnote -> MarkdownFootnoteBlock(block, scope)
         is MarkdownQuote -> MarkdownQuoteBlock(block, scope)
         is MarkdownAlert -> MarkdownAlertBlock(block, scope)
         is MarkdownList -> MarkdownListBlock(block, scope)
@@ -145,6 +148,58 @@ private fun MarkdownBlockView(block: MarkdownBlock, scope: MarkdownRenderScope) 
                 .padding(vertical = 4.dp)
                 .height(0.5.dp)
                 .background(scope.style.dividerColor),
+        )
+    }
+}
+
+@Composable
+private fun MarkdownMathBlock(block: MarkdownMath, scope: MarkdownRenderScope) {
+    val rendered = remember(block.latex) { LatexToUnicodeFormatter.format(block.latex) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .squircleSurface(scope.style.codeBackground, 12.dp)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "LaTeX",
+                style = MiuixTheme.textStyles.footnote2,
+                color = scope.style.secondaryColor,
+                modifier = Modifier.weight(1f),
+            )
+            CopyButton(text = block.latex, tint = scope.style.secondaryColor)
+        }
+        Text(
+            text = rendered,
+            style = scope.style.body.copy(
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+                lineHeight = scope.style.body.lineHeight * 1.2f,
+            ),
+            color = MiuixTheme.colorScheme.onSurface,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun MarkdownFootnoteBlock(block: MarkdownFootnote, scope: MarkdownRenderScope) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(
+            text = "[${block.label}]",
+            style = scope.style.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+            color = scope.style.markerColor,
+            modifier = Modifier.width(42.dp),
+        )
+        Text(
+            text = block.text,
+            style = scope.style.body.copy(fontSize = scope.style.body.fontSize * .92f),
+            color = scope.style.secondaryColor,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -180,6 +235,20 @@ private fun MarkdownText(
 @Composable
 private fun MarkdownCodeBlock(block: MarkdownCode, scope: MarkdownRenderScope) {
     val style = scope.style
+    val colors = MiuixTheme.colorScheme
+    val palette = remember(style, colors) {
+        CodeHighlightPalette(
+            keyword = colors.primary,
+            string = StatusSuccess,
+            number = StatusWarning,
+            comment = style.secondaryColor.copy(alpha = .78f),
+            function = colors.secondary,
+            type = colors.primary.copy(alpha = .82f),
+        )
+    }
+    val highlighted = remember(block.text, block.language, palette) {
+        highlightCode(block.text.text, block.language, palette)
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -208,9 +277,32 @@ private fun MarkdownCodeBlock(block: MarkdownCode, scope: MarkdownRenderScope) {
                 .horizontalScroll(rememberScrollState())
                 .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
         ) {
-            MarkdownText(block, style.code, scope, softWrap = false)
+            HighlightedCodeText(block, highlighted, style.code, scope)
         }
     }
+}
+
+@Composable
+private fun HighlightedCodeText(
+    block: MarkdownCode,
+    text: AnnotatedString,
+    style: TextStyle,
+    scope: MarkdownRenderScope,
+) {
+    val reveal = scope.reveal
+    if (reveal == null || text.isEmpty()) {
+        Text(text = text, style = style, softWrap = false)
+        return
+    }
+    val revealState = rememberSmoothTextRevealState(block.revealKey, reveal)
+    val animatedStyle = remember(style) { style.copy(textMotion = TextMotion.Animated) }
+    Text(
+        text = text,
+        style = animatedStyle,
+        softWrap = false,
+        modifier = Modifier.smoothTextReveal(revealState),
+        onTextLayout = { layout -> revealState.onTextLayout(text.text, layout) },
+    )
 }
 
 @Composable

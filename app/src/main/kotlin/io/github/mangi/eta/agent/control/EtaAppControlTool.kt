@@ -44,6 +44,9 @@ internal object EtaAppControlTool {
                     parameters = args.optJSONObject("parameters") ?: JSONObject(),
                 ).toString()
             }
+            "audit" -> {
+                EtaAppControlRegistry.audit(context, args.optInt("limit", 50)).toString()
+            }
             else -> error("不支持的 eta_control 操作：${action.ifBlank { "(empty)" }}")
         }
     }

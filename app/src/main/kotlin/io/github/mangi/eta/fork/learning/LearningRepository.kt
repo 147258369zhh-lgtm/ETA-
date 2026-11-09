@@ -35,6 +35,7 @@ internal data class LearningCandidateView(
     val promotedRuleId: String?,
     val evidence: List<LearningEvidenceView>,
     val conflicts: List<LearningConflictView> = emptyList(),
+    val reviewSummary: String = "",
 )
 
 internal data class LearningConflictView(val id: String, val title: String, val content: String, val version: Int)
@@ -114,40 +115,39 @@ internal class LearningRepository(
         })?.let { existing ->
             dao.insertEvidence(evidence.copy(id = "${existing.id}:$evidenceHash", candidateId = existing.id))
             dao.touchCandidate(existing.id, now)
-            return@withTransaction LearningProposalResult.Existing(candidateView(checkNotNull(dao.candidate(existing.id))))
+            val reviewed = reviewCandidateInTransaction(checkNotNull(dao.candidate(existing.id)), now)
+            return@withTransaction LearningProposalResult.Existing(candidateView(reviewed))
         }
         val candidateId = ids()
-        val status = if (policy.conflict == null) LearningStatus.PENDING else LearningStatus.CONFLICT
         val candidate = LearningCandidateEntity(
             id = candidateId,
             kind = input.kind.wireValue,
             title = policy.title,
             content = policy.content,
             contentHash = hash,
-            status = status.wireValue,
+            status = LearningStatus.BUTLER_REVIEW.wireValue,
             confidence = policy.confidence,
             sourceRef = sourceRef,
             createdAt = now,
             updatedAt = now,
         )
-        database.withTransaction {
-            dao.insertCandidate(candidate)
-            dao.insertEvidence(
-                evidence.copy(
-                    id = "$candidateId:$evidenceHash",
-                    candidateId = candidateId,
-                ),
-            )
-        }
-        LearningProposalResult.Created(candidateView(candidate))
+        dao.insertCandidate(candidate)
+        dao.insertEvidence(
+            evidence.copy(
+                id = "$candidateId:$evidenceHash",
+                candidateId = candidateId,
+            ),
+        )
+        val reviewed = reviewCandidateInTransaction(candidate, now)
+        LearningProposalResult.Created(candidateView(reviewed))
     }
 
     suspend fun confirm(candidateId: String, overrideConflict: Boolean = false, expectedConflict: String? = null): LearningMutationResult {
         val now = clock()
         val outcome = database.withTransaction {
-            val candidate = dao.candidate(candidateId)
+            var candidate = dao.candidate(candidateId)
                 ?: return@withTransaction Rejected("学习候选不存在")
-            val status = LearningStatus.entries.firstOrNull { it.wireValue == candidate.status }
+            var status = LearningStatus.entries.firstOrNull { it.wireValue == candidate.status }
                 ?: return@withTransaction Rejected("学习候选状态无效")
             if (status in setOf(
                     LearningStatus.CONFIRMED,
@@ -156,6 +156,14 @@ internal class LearningRepository(
                 )
             ) {
                 return@withTransaction Rejected("该候选已结束，不能再次确认")
+            }
+            if (status != LearningStatus.BUTLER_APPROVED) {
+                candidate = reviewCandidateInTransaction(candidate, now)
+                status = LearningStatus.entries.firstOrNull { it.wireValue == candidate.status }
+                    ?: return@withTransaction Rejected("软件管家审核状态无效")
+            }
+            if (status != LearningStatus.BUTLER_APPROVED) {
+                return@withTransaction Rejected("候选未通过软件管家审核，不能提交人工批准")
             }
             val currentConflicts = conflictsFor(candidate)
             val signature = conflictSignature(currentConflicts)
@@ -185,6 +193,18 @@ internal class LearningRepository(
         }
         if (outcome is Rejected) return rejected(outcome.reason)
         return success()
+    }
+
+    suspend fun reviewCandidate(candidateId: String): LearningMutationResult = database.withTransaction {
+        val candidate = dao.candidate(candidateId)
+            ?: return@withTransaction LearningMutationResult.Rejected("学习候选不存在")
+        val reviewed = reviewCandidateInTransaction(candidate, clock().coerceAtLeast(candidate.updatedAt + 1))
+        if (reviewed.status == LearningStatus.REJECTED.wireValue) {
+            val reason = dao.feedback(candidateId).lastOrNull { it.action == "butler_reject" }?.note
+                ?: "软件管家审核未通过"
+            return@withTransaction LearningMutationResult.Rejected(reason)
+        }
+        success()
     }
 
     suspend fun reject(candidateId: String): LearningMutationResult {
@@ -340,14 +360,70 @@ internal class LearningRepository(
 
     suspend fun editCandidate(id: String, content: String): LearningMutationResult = database.withTransaction {
         val candidate = dao.candidate(id) ?: return@withTransaction rejected("候选不存在")
-        if (candidate.status !in setOf("pending", "conflict")) return@withTransaction rejected("该候选不能修改")
+        if (candidate.status !in setOf("butler_approved", "pending", "conflict")) {
+            return@withTransaction rejected("只有待人工批准的候选可以修改")
+        }
         val kind = LearningKind.fromWire(candidate.kind) ?: return@withTransaction rejected("类型无效")
         val policy = LearningPolicy.evaluate(kind, candidate.title, content, candidateView(candidate).evidence.firstOrNull()?.excerpt.orEmpty(), dao.activeRules())
         if (policy !is LearningPolicyResult.Accepted) return@withTransaction rejected("内容无效或用户禁止保存")
         val hash = LearningPolicy.fingerprint(kind, policy.title, policy.content)
         if (dao.candidateByHash(hash)?.id?.let { it != id } == true) return@withTransaction rejected("已存在相同候选")
-        dao.updateCandidate(candidate.copy(content = policy.content, contentHash = hash, status = if (policy.conflict == null) "pending" else "conflict", updatedAt = clock()))
+        val edited = candidate.copy(
+            content = policy.content,
+            contentHash = hash,
+            status = LearningStatus.BUTLER_REVIEW.wireValue,
+            updatedAt = clock().coerceAtLeast(candidate.updatedAt + 1),
+        )
+        dao.updateCandidate(edited)
+        reviewCandidateInTransaction(edited, edited.updatedAt)
         success()
+    }
+
+    private suspend fun reviewCandidateInTransaction(
+        candidate: LearningCandidateEntity,
+        now: Long,
+    ): LearningCandidateEntity {
+        if (candidate.status == LearningStatus.BUTLER_APPROVED.wireValue ||
+            candidate.status in setOf(
+                LearningStatus.CONFIRMED.wireValue,
+                LearningStatus.PROMOTED.wireValue,
+                LearningStatus.REJECTED.wireValue,
+            )
+        ) return candidate
+        val kind = LearningKind.fromWire(candidate.kind) ?: return candidate.copy(status = LearningStatus.REJECTED.wireValue)
+        val evidence = dao.evidence(candidate.id)
+        val conflicts = conflictsFor(candidate)
+        val decision = SedimentReviewPolicy.reviewLearning(
+            kind = kind,
+            title = candidate.title,
+            content = candidate.content,
+            evidence = evidence.joinToString("\n") { it.excerpt },
+            sourceRef = candidate.sourceRef,
+            confidence = candidate.confidence,
+            hasConflict = conflicts.isNotEmpty(),
+        )
+        val nextStatus = if (decision.approved) LearningStatus.BUTLER_APPROVED else LearningStatus.REJECTED
+        val transitioned = dao.transitionCandidateState(
+            id = candidate.id,
+            expectedStatus = candidate.status,
+            newStatus = nextStatus.wireValue,
+            updatedAt = now.coerceAtLeast(candidate.updatedAt + 1),
+        )
+        val updated = if (transitioned == 1) {
+            dao.insertFeedback(
+                LearningFeedbackEntity(
+                    id = "butler-${candidate.id}-${nextStatus.wireValue}",
+                    candidateId = candidate.id,
+                    action = if (decision.approved) "butler_approve" else "butler_reject",
+                    note = decision.summary.take(240),
+                    createdAt = now,
+                ),
+            )
+            dao.candidate(candidate.id) ?: candidate.copy(status = nextStatus.wireValue)
+        } else {
+            dao.candidate(candidate.id) ?: candidate
+        }
+        return updated
     }
 
     private suspend fun conflictsFor(candidate: LearningCandidateEntity): List<LearningRuleEntity> {
@@ -369,7 +445,13 @@ internal class LearningRepository(
     ).map { snapshot() }.flowOn(Dispatchers.IO)
 
     suspend fun snapshot(): LearningSnapshot = database.withTransaction {
-        val candidates = dao.candidates().map { candidate ->
+        val candidates = dao.candidates().map { rawCandidate ->
+            val candidate = if (rawCandidate.status in setOf(
+                    LearningStatus.BUTLER_REVIEW.wireValue,
+                    LearningStatus.PENDING.wireValue,
+                    LearningStatus.CONFLICT.wireValue,
+                )
+            ) reviewCandidateInTransaction(rawCandidate, clock()) else rawCandidate
             candidateView(candidate, dao.evidence(candidate.id).map { evidence ->
                 LearningEvidenceView(evidence.id, evidence.sourceRef, evidence.excerpt, evidence.observedAt)
             })
@@ -444,7 +526,7 @@ internal class LearningRepository(
         kind = LearningKind.fromWire(candidate.kind) ?: LearningKind.FACT,
         title = candidate.title,
         content = candidate.content,
-        status = LearningStatus.entries.firstOrNull { it.wireValue == candidate.status } ?: LearningStatus.PENDING,
+        status = LearningStatus.entries.firstOrNull { it.wireValue == candidate.status } ?: LearningStatus.BUTLER_REVIEW,
         confidence = candidate.confidence,
         sourceRef = candidate.sourceRef,
         createdAt = candidate.createdAt,
@@ -452,6 +534,10 @@ internal class LearningRepository(
         promotedRuleId = candidate.promotedRuleId,
             evidence = actualEvidence,
             conflicts = conflictsFor(candidate).map { LearningConflictView(it.id, it.title, it.content, it.currentVersion) },
+            reviewSummary = dao.feedback(candidate.id)
+                .lastOrNull { it.action == "butler_approve" || it.action == "butler_reject" }
+                ?.note
+                .orEmpty(),
         )
     }
 
@@ -495,6 +581,10 @@ internal object LearningSettingsStore {
     /** 首版固定关闭；任何规则仍需用户确认，避免静默污染长期记忆。 */
     fun automaticPromotionEnabled(context: Context): Boolean =
         isEnabled(context) && preferences(context).getBoolean(AUTO_PROMOTE, false)
+
+    fun setAutomaticPromotionEnabled(context: Context, enabled: Boolean) {
+        preferences(context).edit().putBoolean(AUTO_PROMOTE, enabled).apply()
+    }
 
     private fun preferences(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

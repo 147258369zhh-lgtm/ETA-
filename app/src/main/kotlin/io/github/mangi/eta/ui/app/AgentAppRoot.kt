@@ -12,9 +12,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -28,6 +33,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -68,6 +76,8 @@ import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import io.github.mangi.eta.ui.model.AgentToolsAction
 import io.github.mangi.eta.ui.components.ConversationFolderDialogs
 import io.github.mangi.eta.ui.components.ConversationFolderDialogRequest
+import io.github.mangi.eta.ui.components.HomeSwipeGestureAction
+import io.github.mangi.eta.ui.components.HomeSwipeGesturePolicy
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.LOCAL_NETWORK_PERMISSION_ITEM_ID
 import io.github.mangi.eta.ui.model.PermissionHealthAction
@@ -84,6 +94,7 @@ import io.github.mangi.eta.ui.screens.browser.AgentBrowserActivity
 import io.github.mangi.eta.agent.browser.BrowserSessionRegistry
 import io.github.mangi.eta.ui.screens.capability.CapabilityCenterScreen
 import io.github.mangi.eta.ui.screens.capability.ApiConnectorsScreen
+import io.github.mangi.eta.ui.screens.capability.ConnectorCenterScreen
 import io.github.mangi.eta.ui.screens.control.AppControlScreen
 import io.github.mangi.eta.ui.screens.control.EtaAppControlConfirmationHost
 import io.github.mangi.eta.ui.screens.control.appControlRoute
@@ -94,6 +105,7 @@ import io.github.mangi.eta.ui.screens.characters.CharacterMemoryScreen
 import io.github.mangi.eta.ui.screens.characters.CharacterPersonaScreen
 import io.github.mangi.eta.ui.screens.enhance.SystemEnhanceScreen
 import io.github.mangi.eta.ui.screens.home.AgentHomeScreen
+import io.github.mangi.eta.ui.screens.conversations.ConversationInsightsScreen
 import io.github.mangi.eta.ui.screens.mcp.McpServerDetailScreen
 import io.github.mangi.eta.ui.screens.mcp.McpServersScreen
 import io.github.mangi.eta.ui.screens.mcp.McpCatalogScreen
@@ -136,6 +148,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
@@ -393,6 +406,34 @@ fun AgentAppRoot(
         conversationPaneOpen = false
     }
 
+    fun selectHomeMode(showMeetings: Boolean, preferredMeetingRoomId: String? = null) {
+        focusManager.clearFocus()
+        navigator.popToHome()
+        conversationPaneOpen = false
+        conversationPaneShowsMeetings = showMeetings
+        meetingArchiveViewOpen = false
+        if (!showMeetings) {
+            activeMeetingRoomId = null
+            return
+        }
+        val roomId = preferredMeetingRoomId ?: activeMeetingRoomId
+        if (roomId != null) {
+            activeMeetingRoomId = roomId
+        } else {
+            uiScope.launch {
+                val firstRoomId = withContext(Dispatchers.IO) {
+                    MeetingRepository.firstActiveRoomId(context.applicationContext)
+                }
+                if (firstRoomId == null) {
+                    activeMeetingRoomId = null
+                    createMeetingRoomDialogOpen = true
+                } else {
+                    activeMeetingRoomId = firstRoomId
+                }
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         EtaAppControlEvents.events.collect { event ->
             when (event) {
@@ -428,19 +469,7 @@ fun AgentAppRoot(
             onDismissConversationPane = { conversationPaneOpen = false },
             onSearchConversations = { query -> agentState.updateSearchQuery(query) },
             onConversationPaneModeChange = { showMeetings, meetingRoomId ->
-                focusManager.clearFocus()
-                navigator.popToHome()
-                conversationPaneShowsMeetings = showMeetings
-                if (showMeetings) {
-                    val roomId = meetingRoomId ?: activeMeetingRoomId
-                    if (roomId == null) {
-                        createMeetingRoomDialogOpen = true
-                    } else {
-                        activeMeetingRoomId = roomId
-                    }
-                } else {
-                    activeMeetingRoomId = null
-                }
+                selectHomeMode(showMeetings, meetingRoomId)
             },
             onOpenTerminal = { pushRoute(AppRoute.Terminal) },
             onOpenBranches = { pushRoute(AppRoute.ConversationBranches(agentState.conversationPaneState.selectedConversationId)) },
@@ -495,6 +524,9 @@ fun AgentAppRoot(
             },
             onConversationMoveToFolder = { conversation ->
                 folderDialogRequest = ConversationFolderDialogRequest.MoveConversation(conversation)
+            },
+            onConversationDropToFolder = { conversationId, folderId ->
+                uiScope.launch { agentState.moveConversationToFolder(conversationId, folderId) }
             },
             onOpenMeetingRoom = { roomId ->
                 focusManager.clearFocus()
@@ -609,96 +641,151 @@ fun AgentAppRoot(
                 cornerClipRadius = rememberNavSystemCornerRadius(),
             ),
         ) {
-            entry<AppRoute.Home>(swipeDismiss = swipeDismiss) {
+            // 首页拥有自己的中央模式切换与右侧详情手势，导航返回滑动不能参与竞争。
+            entry<AppRoute.Home>() {
                 RoutedShell(route = AppRoute.Home) {
+                    val insightSwipeThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 56.dp.toPx() }
                     BackHandler(
                         enabled = activeMeetingRoomId != null && !conversationPaneOpen,
                     ) {
                         activeMeetingRoomId = null
                         conversationPaneShowsMeetings = false
                     }
-                    if (activeMeetingRoomId != null) {
-                        MeetingRoomConversationStage(
-                            roomId = requireNotNull(activeMeetingRoomId),
-                            onDeleted = {
-                                activeMeetingRoomId = null
-                                conversationPaneShowsMeetings = false
-                            },
-                            onArchived = {
-                                activeMeetingRoomId = null
-                                conversationPaneShowsMeetings = true
-                                meetingArchiveViewOpen = true
-                            },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else {
-                        AgentHomeScreen(
-                            state = agentState.homeState,
-                            modelPickerState = agentState.modelPickerState,
-                            conversationKey = agentState.conversationPaneState.selectedConversationId,
-                            onNewConversation = { createConversation() },
-                            onAction = { action ->
-                                when (action) {
-                                is AgentHomeAction.ReasoningEffortChanged ->
-                                    agentState.updateReasoningEffort(action.effort)
-                                AgentHomeAction.CompactContext -> agentState.compactCurrentContext()
-                                AgentHomeAction.ConfigureContextBudget -> {
-                                    contextBudgetConversationId = agentState.conversationPaneState.selectedConversationId
-                                }
-                                AgentHomeAction.LoadEarlierMessages -> agentState.loadEarlierMessages()
-                                is AgentHomeAction.ForkMessage -> agentState.createConversationBranch(action.id)
-                                is AgentHomeAction.HistoryViewportChanged -> agentState.updateHistoryViewport(action.atLatest)
-                                AgentHomeAction.RetryConversationLoad -> agentState.retryConversationLoad()
-                                is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId)
-                                is AgentHomeAction.InputSyncApplied -> agentState.consumeInputSync(action.conversationId, action.version, action.text)
-                                is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text) }
-                                is AgentHomeAction.SteerQueuedMessage -> { requestExecutionNotifications(); agentState.steerQueuedMessage(action.id) }
-                                is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText)
-                                is AgentHomeAction.RemoveQueuedMessage -> agentState.removeQueuedMessage(action.id)
-                                AgentHomeAction.StopRun -> agentState.stopCurrentRun()
-                                is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
-                                is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
-                                is AgentHomeAction.FilesAttached -> agentState.attachFiles(action.uris)
-                                is AgentHomeAction.FolderAttached -> agentState.attachFolder(action.uri)
-                                is AgentHomeAction.FilePathAttached -> agentState.attachFilePath(action.path)
-                                is AgentHomeAction.RemoveFileReference ->
-                                    agentState.removePendingFileReference(action.id)
-                                is AgentHomeAction.EditMessage -> agentState.beginMessageEdit(action.id)
-                                AgentHomeAction.CancelMessageEdit -> agentState.cancelMessageEdit()
-                                is AgentHomeAction.DeleteMessage -> {
-                                    agentState.messageRevisionImpact(action.id)?.let { impact ->
-                                        messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .pointerInput(activeMeetingRoomId, conversationPaneOpen, insightSwipeThreshold) {
+                                if (conversationPaneOpen) return@pointerInput
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    // 左侧抽屉边缘由 SidePaneScaffold 独占，不在这里消费。
+                                    if (down.position.x < size.width * 0.18f) return@awaitEachGesture
+                                    val gestureStartX = down.position.x
+                                    val gestureStartY = down.position.y
+                                    var gestureDistance = 0f
+                                    val active = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                                        gestureDistance = overSlop
+                                        change.consume()
+                                    } ?: return@awaitEachGesture
+                                    while (active.pressed) {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull { it.id == active.id } ?: break
+                                        val delta = change.positionChange().x
+                                        if (delta != 0f) {
+                                            gestureDistance += delta
+                                            change.consume()
+                                        }
+                                        if (!change.pressed) break
+                                    }
+                                    when (HomeSwipeGesturePolicy.classify(
+                                        startX = gestureStartX,
+                                        width = size.width.toFloat(),
+                                        totalDragX = gestureDistance,
+                                        thresholdPx = insightSwipeThreshold,
+                                        startY = gestureStartY,
+                                        height = size.height.toFloat(),
+                                    )) {
+                                        HomeSwipeGestureAction.OpenInsights -> {
+                                            val meetingRoomId = activeMeetingRoomId
+                                            if (meetingRoomId != null) {
+                                                pushRoute(AppRoute.ConversationInsights(meetingRoomId = meetingRoomId))
+                                            } else {
+                                                agentState.conversationPaneState.selectedConversationId?.let { id ->
+                                                    pushRoute(AppRoute.ConversationInsights(conversationId = id))
+                                                }
+                                            }
+                                        }
+                                        HomeSwipeGestureAction.SwitchConversationMeeting -> {
+                                            selectHomeMode(showMeetings = activeMeetingRoomId == null)
+                                        }
+                                        HomeSwipeGestureAction.None -> Unit
                                     }
                                 }
-                                is AgentHomeAction.RegenerateMessage -> {
-                                    val impact = agentState.messageRevisionImpact(action.id)
-                                    if (agentState.homeState.roleplay != null || impact?.laterTurnCount == 0) {
-                                        agentState.regenerateMessage(action.id)
-                                    } else if (impact != null) {
-                                        messageRegenerateTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                            },
+                    ) {
+                        if (activeMeetingRoomId != null) {
+                            MeetingRoomConversationStage(
+                                roomId = requireNotNull(activeMeetingRoomId),
+                                onDeleted = {
+                                    activeMeetingRoomId = null
+                                    conversationPaneShowsMeetings = false
+                                },
+                                onArchived = {
+                                    activeMeetingRoomId = null
+                                    conversationPaneShowsMeetings = true
+                                    meetingArchiveViewOpen = true
+                                },
+                                onOpenSettings = { pushRoute(AppRoute.MeetingSettings) },
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else {
+                            AgentHomeScreen(
+                                state = agentState.homeState,
+                                modelPickerState = agentState.modelPickerState,
+                                conversationKey = agentState.conversationPaneState.selectedConversationId,
+                                onNewConversation = { createConversation() },
+                                onAction = { action ->
+                                    when (action) {
+                                    is AgentHomeAction.ReasoningEffortChanged ->
+                                        agentState.updateReasoningEffort(action.effort)
+                                    AgentHomeAction.CompactContext -> agentState.compactCurrentContext()
+                                    AgentHomeAction.ConfigureContextBudget -> {
+                                        contextBudgetConversationId = agentState.conversationPaneState.selectedConversationId
                                     }
-                                }
-                                is AgentHomeAction.SelectReplyCandidate -> agentState.selectReplyCandidate(action.id, action.index)
-                                AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
-                                AgentHomeAction.OpenSkills -> pushRoute(AppRoute.CapabilityCenter)
-                                AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
-                                AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
-                                AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
-                                AgentHomeAction.OpenBrowser -> openConversationBrowser()
-                                AgentHomeAction.ExpandRunTrace -> Unit
-                                }
-                            },
-                            isLoadingConversation = agentState.isLoadingConversation,
-                            onSubmitMessage = { text, interrupt ->
-                                requestExecutionNotifications()
-                                if (interrupt) agentState.interruptAndSendCurrentMessage(text)
-                                else agentState.sendCurrentMessage(text)
-                            },
-                            conversationLoadFailed = agentState.conversationLoadFailed,
-                            historyLoadState = agentState.historyLoadState,
-                            isDrawerOpen = conversationPaneOpen,
-                        )
+                                    AgentHomeAction.LoadEarlierMessages -> agentState.loadEarlierMessages()
+                                    is AgentHomeAction.ForkMessage -> agentState.createConversationBranch(action.id)
+                                    is AgentHomeAction.HistoryViewportChanged -> agentState.updateHistoryViewport(action.atLatest)
+                                    AgentHomeAction.RetryConversationLoad -> agentState.retryConversationLoad()
+                                    is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId)
+                                    is AgentHomeAction.InputSyncApplied -> agentState.consumeInputSync(action.conversationId, action.version, action.text)
+                                    is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
+                                    is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text) }
+                                    is AgentHomeAction.SteerQueuedMessage -> { requestExecutionNotifications(); agentState.steerQueuedMessage(action.id) }
+                                    is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText)
+                                    is AgentHomeAction.RemoveQueuedMessage -> agentState.removeQueuedMessage(action.id)
+                                    AgentHomeAction.StopRun -> agentState.stopCurrentRun()
+                                    is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
+                                    is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
+                                    is AgentHomeAction.FilesAttached -> agentState.attachFiles(action.uris)
+                                    is AgentHomeAction.FolderAttached -> agentState.attachFolder(action.uri)
+                                    is AgentHomeAction.FilePathAttached -> agentState.attachFilePath(action.path)
+                                    is AgentHomeAction.RemoveFileReference ->
+                                        agentState.removePendingFileReference(action.id)
+                                    is AgentHomeAction.EditMessage -> agentState.beginMessageEdit(action.id)
+                                    AgentHomeAction.CancelMessageEdit -> agentState.cancelMessageEdit()
+                                    is AgentHomeAction.DeleteMessage -> {
+                                        agentState.messageRevisionImpact(action.id)?.let { impact ->
+                                            messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                        }
+                                    }
+                                    is AgentHomeAction.RegenerateMessage -> {
+                                        val impact = agentState.messageRevisionImpact(action.id)
+                                        if (agentState.homeState.roleplay != null || impact?.laterTurnCount == 0) {
+                                            agentState.regenerateMessage(action.id)
+                                        } else if (impact != null) {
+                                            messageRegenerateTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                        }
+                                    }
+                                    is AgentHomeAction.SelectReplyCandidate -> agentState.selectReplyCandidate(action.id, action.index)
+                                    AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
+                                    AgentHomeAction.OpenSkills -> pushRoute(AppRoute.CapabilityCenter)
+                                    AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
+                                    AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
+                                    AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
+                                    AgentHomeAction.OpenBrowser -> openConversationBrowser()
+                                    AgentHomeAction.ExpandRunTrace -> Unit
+                                    }
+                                },
+                                isLoadingConversation = agentState.isLoadingConversation,
+                                onSubmitMessage = { text, interrupt ->
+                                    requestExecutionNotifications()
+                                    if (interrupt) agentState.interruptAndSendCurrentMessage(text)
+                                    else agentState.sendCurrentMessage(text)
+                                },
+                                conversationLoadFailed = agentState.conversationLoadFailed,
+                                historyLoadState = agentState.historyLoadState,
+                            )
+                        }
                     }
                 }
             }
@@ -787,8 +874,10 @@ fun AgentAppRoot(
                     onOpenSkills = { pushRoute(AppRoute.Skills) },
                     onOpenMcp = { pushRoute(AppRoute.McpServers) },
                     onOpenApiConnectors = { pushRoute(AppRoute.ApiConnectors) },
+                    onOpenA2A = { pushRoute(AppRoute.A2AAgents) },
+                    onOpenConnectorCenter = { pushRoute(AppRoute.ConnectorCenter) },
                     onOpenPermissions = { pushRoute(AppRoute.Permissions) },
-                    onOpenPromptInjection = { pushRoute(AppRoute.PromptInjection) },
+                    onOpenPromptInjection = { pushRoute(AppRoute.Characters) },
                     onOpenLocalModels = { pushRoute(AppRoute.LocalModels) },
                     onOpenSpeechRecognition = { pushRoute(AppRoute.SpeechRecognition) },
                     onOpenSpeechSynthesis = { pushRoute(AppRoute.SpeechSynthesis) },
@@ -797,11 +886,26 @@ fun AgentAppRoot(
             entry<AppRoute.ApiConnectors>(swipeDismiss = swipeDismiss) {
                 ApiConnectorsScreen(onBack = ::popRoute)
             }
+            entry<AppRoute.ConnectorCenter>(swipeDismiss = swipeDismiss) {
+                ConnectorCenterScreen(
+                    onBack = ::popRoute,
+                    onOpenA2A = { pushRoute(AppRoute.A2AAgents) },
+                    onOpenMcp = { pushRoute(AppRoute.McpServers) },
+                    onOpenRest = { pushRoute(AppRoute.ApiConnectors) },
+                )
+            }
             entry<AppRoute.Characters>(swipeDismiss = swipeDismiss) {
                 LaunchedEffect(backStack.lastOrNull() == AppRoute.Characters) {
                     if (backStack.lastOrNull() == AppRoute.Characters) characterStore.loadLibrary()
                 }
-                CharacterLibraryScreen(characterStore, { if (navigator.current() == AppRoute.Characters) pushRoute(it) }, ::popRoute)
+                CharacterLibraryScreen(
+                    store = characterStore,
+                    onNavigate = { if (navigator.current() == AppRoute.Characters) pushRoute(it) },
+                    onOpenInstructions = {
+                        if (navigator.current() == AppRoute.Characters) pushRoute(AppRoute.PromptInjection)
+                    },
+                    onBack = ::popRoute,
+                )
             }
             entry<AppRoute.CharacterDetail>(swipeDismiss = swipeDismiss) { route ->
                 LaunchedEffect(route.characterId, backStack.lastOrNull() == route) {
@@ -1027,6 +1131,7 @@ fun AgentAppRoot(
                 MeetingRoomScreen(
                     roomId = route.roomId,
                     onBack = ::popRoute,
+                    onOpenSettings = { pushRoute(AppRoute.MeetingSettings) },
                 )
             }
             entry<AppRoute.DataBackup>(swipeDismiss = swipeDismiss) {
@@ -1135,6 +1240,13 @@ fun AgentAppRoot(
                     isBusy = agentState::isConversationBusy,
                     onOpenRun = { pushRoute(AppRoute.AgentMetricDetail(it)) })
             }
+            entry<AppRoute.ConversationInsights>(swipeDismiss = swipeDismiss) { route ->
+                ConversationInsightsScreen(
+                    conversationId = route.conversationId,
+                    meetingRoomId = route.meetingRoomId,
+                    onBack = ::popRoute,
+                )
+            }
             entry<AppRoute.AgentTokenPricing>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.screens.metrics.AgentTokenPricingScreen(onBack = ::popRoute,
                     onEdit = { provider, model -> pushRoute(AppRoute.AgentTokenPriceEditor(provider, model)) })
@@ -1168,7 +1280,10 @@ fun AgentAppRoot(
 
     if (createMeetingRoomDialogOpen) {
         MeetingRoomCreateDialog(
-            onDismiss = { createMeetingRoomDialogOpen = false },
+            onDismiss = {
+                createMeetingRoomDialogOpen = false
+                if (activeMeetingRoomId == null) conversationPaneShowsMeetings = false
+            },
             onCreated = { roomId ->
                 createMeetingRoomDialogOpen = false
                 activeMeetingRoomId = roomId

@@ -1,12 +1,24 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -32,6 +44,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 internal fun AgentContextUsageButton(
     usage: AgentContextUsageUi,
+    isCompacting: Boolean = false,
     onCompact: () -> Unit = {},
     onConfigure: () -> Unit = {},
     canCompact: Boolean = false,
@@ -40,12 +53,14 @@ internal fun AgentContextUsageButton(
     val scope = rememberCoroutineScope()
     val tooltipState = rememberTooltipState(isPersistent = true)
     val progress = usage.progress
-    val progressColor = when {
-        progress == null -> MiuixTheme.colorScheme.onSurfaceVariantActions
-        progress >= 0.95f -> StatusError
-        progress >= 0.80f -> StatusWarning
-        else -> MiuixTheme.colorScheme.primary
-    }
+    val trackColor = MiuixTheme.colorScheme.secondaryContainer
+    val progressBrush = Brush.sweepGradient(listOf(StatusSuccess, StatusWarning, StatusError))
+    val pulse by rememberInfiniteTransition(label = "context-breathe").animateFloat(
+        initialValue = .92f,
+        targetValue = if (isCompacting) 1.08f else .92f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "context-breathe-scale",
+    )
     val locale = LocalConfiguration.current.locales[0]
     val summary = formatContextUsage(
         usage = usage,
@@ -113,19 +128,34 @@ internal fun AgentContextUsageButton(
                 detectTapGestures(onLongPress = { onConfigure() })
             },
         ) {
-            CircularProgressIndicator(
-                progress = progress ?: 0f,
-                colors = ProgressIndicatorDefaults.progressIndicatorColors(
-                    foregroundColor = progressColor,
-                    disabledForegroundColor = progressColor,
-                    backgroundColor = MiuixTheme.colorScheme.secondaryContainer,
-                ),
-                strokeWidth = 2.5.dp,
-                size = ChatInputActionIconSize,
-                modifier = Modifier.semantics {
-                    contentDescription = usageDescription
-                },
-            )
+            Canvas(
+                modifier = Modifier
+                    .size(ChatInputActionIconSize)
+                    .scale(if (isCompacting) pulse else 1f)
+                    .semantics { contentDescription = usageDescription },
+            ) {
+                val stroke = 2.5.dp.toPx()
+                drawCircle(
+                    color = trackColor,
+                    radius = (size.minDimension - stroke) / 2f,
+                    style = Stroke(width = stroke),
+                )
+                val current = progress
+                if (current != null && current > 0f) {
+                    drawArc(
+                        brush = progressBrush,
+                        startAngle = -90f,
+                        sweepAngle = 360f * current.coerceIn(0f, 1f),
+                        useCenter = false,
+                        topLeft = Offset(stroke / 2f, stroke / 2f),
+                        size = androidx.compose.ui.geometry.Size(
+                            size.width - stroke,
+                            size.height - stroke,
+                        ),
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                    )
+                }
+            }
         }
     }
 }

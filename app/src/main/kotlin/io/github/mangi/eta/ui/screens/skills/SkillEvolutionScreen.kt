@@ -54,14 +54,22 @@ internal fun SkillEvolutionScreen(onBack: () -> Unit) {
             var evidence by remember(recipe.updatedAt) { mutableIntStateOf(0) }
             LaunchedEffect(recipe.updatedAt) { evidence = withContext(Dispatchers.IO) { dao.evidence(recipe.id).count { it.state == "accepted" } } }
             DetailListRow(recipe.title, "${skillRecipeState(recipe.state)} · $evidence / ${SkillEvolution.MIN_EVIDENCE} 个来源 · ${skillScopeLabel(recipe.scope)}",
-                Icons.Rounded.AutoAwesome, preview = recipe.description, value = if (recipe.version > 0) "v${recipe.version}${if (recipe.state == "review") " · 有更新" else ""}" else null,
+                Icons.Rounded.AutoAwesome, preview = recipe.description,
+                value = if (recipe.version > 0) "v${recipe.version}${if (recipe.state == "butler_approved") " · 待启用" else ""}" else null,
                 onClick = { selected = recipe })
         } }
     }
 }
 
 internal fun skillRecipeState(state: String) = when (state) {
-    "review" -> "待验证"; "active" -> "已启用"; "rejected" -> "已拒绝"; "paused" -> "已暂停"; "merged" -> "已合并"; "conflict" -> "文件版本冲突，已停用"; else -> "积累中"
+    "review" -> "待软件管家复核"
+    "butler_approved" -> "管家已通过，待人工启用"
+    "active" -> "已启用"
+    "rejected" -> "未通过，已拒绝"
+    "paused" -> "已暂停"
+    "merged" -> "已合并"
+    "conflict" -> "文件版本冲突，已停用"
+    else -> "积累中"
 }
 
 internal fun skillScopeLabel(scope: String): String = when {
@@ -99,8 +107,11 @@ private fun SkillRecipeDetail(initial: SkillRecipe, onBack: () -> Unit) {
         }
     }
     MiuixScaffoldPage(recipe.title, onBack, actions = {
-        IconButton(enabled = !busy && evidence.count { it.state == "accepted" } >= SkillEvolution.MIN_EVIDENCE,
-            onClick = { action { SkillEvolution.publish(context, recipe.id, recipe.updatedAt, body) } }) { Icon(Icons.Rounded.Check, "验证并启用") }
+        IconButton(
+            enabled = !busy && recipe.state != "rejected" &&
+                evidence.count { it.state == "accepted" } >= SkillEvolution.MIN_EVIDENCE,
+            onClick = { action { SkillEvolution.publish(context, recipe.id, recipe.updatedAt, body) } },
+        ) { Icon(Icons.Rounded.Check, "软件管家复核后启用") }
     }) {
         item { SmallTitle("${skillRecipeState(recipe.state)} · ${skillScopeLabel(recipe.scope)} · v${recipe.version}") }
         if (message.isNotBlank()) item { Text(message, modifier = Modifier.padding(20.dp), style = MiuixTheme.textStyles.body2) }

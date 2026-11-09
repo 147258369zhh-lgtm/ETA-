@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.prompt.PromptBlock
 import io.github.mangi.eta.agent.prompt.PromptInjectionStore
+import io.github.mangi.eta.agent.prompt.PromptIssueLevel
 import io.github.mangi.eta.agent.prompt.PromptScopeType
 import io.github.mangi.eta.agent.prompt.PromptTarget
 import io.github.mangi.eta.agent.prompt.PromptTemplate
@@ -66,6 +67,7 @@ import java.util.UUID
 private const val TAB_TEMPLATES = 0
 private const val TAB_BINDINGS = 1
 private const val TAB_TRANSFER = 2
+private const val TAB_GOVERNANCE = 3
 
 private sealed interface PromptPage {
     data object Library : PromptPage
@@ -210,7 +212,7 @@ private fun PromptLibraryScaffold(
     val deleteFailed = stringResource(R.string.prompt_injection_delete_failed)
 
     MiuixScaffoldPage(
-        title = stringResource(R.string.prompt_injection_title),
+        title = "角色与指令",
         onBack = onBack,
         actions = {
             if (tab == TAB_TEMPLATES) {
@@ -226,6 +228,7 @@ private fun PromptLibraryScaffold(
                     stringResource(R.string.prompt_injection_tab_templates),
                     stringResource(R.string.prompt_injection_tab_bindings),
                     stringResource(R.string.prompt_injection_tab_transfer),
+                    "治理",
                 ),
                 selectedTabIndex = tab,
                 onTabSelected = onTabChange,
@@ -273,6 +276,7 @@ private fun PromptLibraryScaffold(
                     onOpenExportPicker = onOpenExportPicker,
                 )
             }
+            TAB_GOVERNANCE -> governanceItems(store)
         }
     }
 
@@ -559,6 +563,105 @@ private fun PromptTemplateCard(
                     )
                 }
             }
+        }
+    }
+}
+
+private fun LazyListScope.governanceItems(store: PromptInjectionUiStore) {
+    val report = store.analyzeLibrary()
+    item(key = "prompt_governance_overview") {
+        SmallTitle("指令治理")
+        CardMaterialMetric(
+            title = "运行装配检查",
+            value = when {
+                report.errors.isNotEmpty() -> "${report.errors.size} 个阻断问题"
+                report.warnings.isNotEmpty() -> "${report.warnings.size} 个风险提示"
+                else -> "结构正常"
+            },
+            summary = "检查空模板、重复绑定、失效绑定、权限绕过措辞和上下文预算风险。",
+            warning = report.errors.isNotEmpty() || report.warnings.isNotEmpty(),
+        )
+    }
+    item(key = "prompt_governance_issues") {
+        SmallTitle("检查结果")
+        Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            val visible = report.issues
+                .sortedBy { it.level.ordinal }
+                .take(8)
+            if (visible.isEmpty()) {
+                DetailListRow(
+                    title = "未发现结构问题",
+                    subtitle = "指令将按全局、模型、角色、会话和子 Agent 等作用域逐层装配。",
+                    icon = Icons.Rounded.Description,
+                )
+            } else {
+                visible.forEach { issue ->
+                    DetailListRow(
+                        title = when (issue.level) {
+                            PromptIssueLevel.ERROR -> "阻断"
+                            PromptIssueLevel.WARNING -> "风险"
+                            PromptIssueLevel.INFO -> "提示"
+                        },
+                        subtitle = issue.message,
+                        icon = when (issue.level) {
+                            PromptIssueLevel.ERROR -> Icons.Rounded.DeleteOutline
+                            PromptIssueLevel.WARNING -> Icons.Rounded.Public
+                            PromptIssueLevel.INFO -> Icons.Rounded.Description
+                        },
+                    )
+                }
+            }
+        }
+    }
+    item(key = "prompt_governance_pipeline") {
+        SmallTitle("装配顺序")
+        PromptSectionNote(
+            "固定安全与工具合同 → 全局 → 模型 → 会议室 → 角色 → 子 Agent → 自动化 → 会话 → 参与者 → 当前用户输入。" +
+                "越具体的范围只能调整表达和工作重点，不能增加 Root、文件、网络或工具权限。",
+        )
+    }
+    item(key = "prompt_governance_channels") {
+        SmallTitle("覆盖通道")
+        Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            listOf(
+                "普通对话" to "会话级指令、角色指令和模型指令共同生效",
+                "会议室" to "主持人与参与者可分别绑定，不混用身份",
+                "子 Agent" to "按 Profile 继承并可追加独立指令",
+                "角色与剧情" to "角色卡主指令、后置规则和世界书分开记录",
+                "自动任务" to "任务触发时只加载该自动化作用域指令",
+            ).forEach { (title, summary) ->
+                DetailListRow(
+                    title = title,
+                    subtitle = summary,
+                    icon = Icons.Rounded.Description,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CardMaterialMetric(title: String, value: String, summary: String, warning: Boolean) {
+    val colors = MiuixTheme.colorScheme
+    Card(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        colors = CardDefaults.defaultColors(
+            color = (if (warning) colors.secondaryContainer else colors.surfaceContainer).copy(alpha = 0.42f),
+            contentColor = colors.onSurface,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold)
+            Text(
+                value,
+                style = MiuixTheme.textStyles.title3,
+                color = if (warning) colors.primary else colors.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(summary, style = MiuixTheme.textStyles.footnote1, color = colors.onSurfaceVariantSummary)
         }
     }
 }

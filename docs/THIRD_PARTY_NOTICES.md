@@ -165,16 +165,6 @@ SOFTWARE.
 
 OpenAI、Anthropic、Claude、阿里云百炼、Qwen、DeepSeek、Kimi、Xiaomi MiMo、MiniMax、StepFun、Z.ai、ChatGLM、Gemini、Gemma、Grok、Meta、Mistral、豆包、混元、Yi、硅基流动和 OpenRouter 的名称、图标及其他品牌标识归各自权利人所有。Eta 展示这些图标仅用于准确标识用户正在配置的模型服务，不表示这些厂商对 Eta 的赞助、认可或合作关系。OpenAI 图标的使用还应遵循其[品牌规范](https://openai.com/brand/)。
 
-## Operit 默认沙盒包
-
-能力中心的“插件与沙盒”兼容 Operit ToolPkg 容器和 JavaScript 包格式。应用随附的 31 个默认沙盒包来源固定为
-[AAswordman/Operit](https://github.com/AAswordman/Operit) 的提交
-`16cffb98f52a11dc77bd0a789ffa0b01ed398ee4`，对应源目录
-`app/src/main/assets/packages/`。这些文件作为独立运行时资产随应用分发，声明中保留原始包名称、版本和来源。
-
-Operit 项目采用 GNU Lesser General Public License v3.0；完整许可证随资产保存在
-`app/src/main/assets/operit-sandbox-packages/LICENSE-Operit.txt`。Eta 对宿主执行层、权限映射和管理界面的实现独立于这些脚本；未复制 AGPLv3 许可的 Operit2 源码。
-
 ## 可选语言运行时
 
 Eta 不把 uv 或 Node.js 打包进 APK。用户主动安装对应 profile 时，Eta 下载当前固定的最新正式版制品；Debian 使用 Node.js 官方 Linux glibc 发行包，Alpine 使用其稳定仓库中的 `nodejs-current`，uv 按所选发行版下载官方 glibc 或 musl 制品。

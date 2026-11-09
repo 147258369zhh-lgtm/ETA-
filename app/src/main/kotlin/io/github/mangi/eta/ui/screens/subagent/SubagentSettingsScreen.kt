@@ -73,6 +73,7 @@ import io.github.mangi.eta.data.model.enabledModel
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.components.EtaChoiceChip
+import io.github.mangi.eta.ui.components.AgentIdentityAvatar
 import io.github.mangi.eta.ui.components.DialogChoicePreference
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -801,19 +802,12 @@ private fun SubagentProfileRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .squircleSurface(MiuixTheme.colorScheme.primaryContainer, 12.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = subagentRoleIcon(profile),
-                contentDescription = null,
-                tint = MiuixTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(21.dp),
-            )
-        }
+        AgentIdentityAvatar(
+            displayName = subagentDisplayName(profile.name),
+            seed = profile.name,
+            size = 42.dp,
+            icon = subagentRoleIcon(profile),
+        )
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -1569,19 +1563,12 @@ private fun SubagentProfileDetailContent(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(50.dp)
-                            .squircleSurface(MiuixTheme.colorScheme.primaryContainer, 15.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = subagentRoleIcon(profile),
-                            contentDescription = null,
-                            tint = MiuixTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(25.dp),
-                        )
-                    }
+                    AgentIdentityAvatar(
+                        displayName = subagentDisplayName(profile.name),
+                        seed = profile.name,
+                        size = 50.dp,
+                        icon = subagentRoleIcon(profile),
+                    )
                     Column(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(3.dp),

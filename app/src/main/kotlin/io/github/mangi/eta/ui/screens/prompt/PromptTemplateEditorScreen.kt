@@ -30,6 +30,8 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.prompt.PromptBlock
 import io.github.mangi.eta.agent.prompt.PromptBlockPosition
 import io.github.mangi.eta.agent.prompt.PromptInjectionStore
+import io.github.mangi.eta.agent.prompt.PromptIssueLevel
+import io.github.mangi.eta.agent.prompt.PromptAnalysisReport
 import io.github.mangi.eta.agent.prompt.PromptTemplate
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -73,6 +75,16 @@ internal fun PromptTemplateEditorScreen(
 
     val dirty = name != template.name || description != template.description ||
         enabled != template.enabled || blocks != baselineBlocks
+    val analysis: PromptAnalysisReport = remember(name, description, enabled, blocksJson) {
+        store.analyzeTemplate(
+            template.copy(
+                name = name.trim(),
+                description = description.trim(),
+                enabled = enabled,
+                blocks = blocks.mapIndexed { index, block -> block.copy(order = index * 10) },
+            ),
+        )
+    }
     val nameRequired = stringResource(R.string.prompt_injection_name_required)
     val saveFailed = stringResource(R.string.prompt_injection_save_failed)
     val saveSuccess = stringResource(R.string.prompt_injection_save_success)
@@ -106,7 +118,7 @@ internal fun PromptTemplateEditorScreen(
                         store.report(saveSuccess)
                         onSaved()
                     } else {
-                        error = saveFailed
+                        error = store.validationError ?: saveFailed
                     }
                 }
             }
@@ -179,6 +191,7 @@ internal fun PromptTemplateEditorScreen(
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
+                        PromptEditorAnalysis(analysis)
                         error?.let { message ->
                             PromptInlineStatus(text = message, isError = true)
                         }
@@ -265,6 +278,28 @@ internal fun PromptTemplateEditorScreen(
                     showDiscard = false
                     onBack()
                 },
+            )
+        }
+    }
+}
+
+@Composable
+private fun PromptEditorAnalysis(report: PromptAnalysisReport) {
+    val visible = (report.errors + report.warnings + report.issues.filter { it.level == PromptIssueLevel.INFO })
+        .distinctBy { it.code to it.message }
+        .take(4)
+    if (visible.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        visible.forEach { issue ->
+            val color = when (issue.level) {
+                PromptIssueLevel.ERROR -> MiuixTheme.colorScheme.error
+                PromptIssueLevel.WARNING -> MiuixTheme.colorScheme.primary
+                PromptIssueLevel.INFO -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+            }
+            Text(
+                text = issue.message,
+                style = MiuixTheme.textStyles.footnote2,
+                color = color,
             )
         }
     }

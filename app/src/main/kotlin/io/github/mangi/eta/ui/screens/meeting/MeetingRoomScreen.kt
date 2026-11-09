@@ -34,12 +34,14 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -85,6 +87,7 @@ import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.ConversationStage
 import io.github.mangi.eta.ui.components.AgentConversationMessages
+import io.github.mangi.eta.ui.components.AgentIdentityAvatar
 import io.github.mangi.eta.ui.components.toTimelineEntries
 import io.github.mangi.eta.ui.components.ConversationTextEditor
 import io.github.mangi.eta.ui.components.ConversationDraftFeedback
@@ -133,6 +136,7 @@ internal fun MeetingRoomScreen(
     onBack: () -> Unit,
     onDeleted: () -> Unit = onBack,
     onArchived: () -> Unit = onBack,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -163,6 +167,7 @@ internal fun MeetingRoomScreen(
                     state = state,
                     onDeleted = onDeleted,
                     onArchived = onArchived,
+                    onOpenSettings = onOpenSettings,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = padding.calculateTopPadding())
@@ -180,6 +185,7 @@ internal fun MeetingRoomConversationStage(
     roomId: String,
     onDeleted: () -> Unit = {},
     onArchived: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -194,6 +200,7 @@ internal fun MeetingRoomConversationStage(
                 state = state,
                 onDeleted = onDeleted,
                 onArchived = onArchived,
+                onOpenSettings = onOpenSettings,
                 modifier = modifier
                     .fillMaxSize()
                     .imePadding(),
@@ -207,6 +214,7 @@ private fun MeetingRoomContent(
     state: MeetingRoomUiState,
     onDeleted: () -> Unit,
     onArchived: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -438,6 +446,10 @@ private fun MeetingRoomContent(
                     }
                 }
             },
+            onOpenSettings = {
+                managementOpen = false
+                onOpenSettings()
+            },
             onDelete = {
                 managementOpen = false
                 deleteOpen = true
@@ -474,6 +486,7 @@ private fun MeetingRoomManagementDialog(
     onRename: () -> Unit,
     onExport: () -> Unit,
     onArchive: () -> Unit,
+    onOpenSettings: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -493,6 +506,17 @@ private fun MeetingRoomManagementDialog(
                     )
                 },
                 onClick = onRename,
+            )
+            ArrowPreference(
+                title = "会议参数设置",
+                summary = "主持人调度、并行上限、超时、上下文压缩和自动汇总",
+                startAction = {
+                    MeetingManageActionIcon(
+                        icon = Icons.Rounded.Settings,
+                        tint = MiuixTheme.colorScheme.primary,
+                    )
+                },
+                onClick = onOpenSettings,
             )
             ArrowPreference(
                 title = "导出完整记录",
@@ -841,64 +865,17 @@ private fun MeetingAgentAvatar(
     selected: Boolean = false,
     size: androidx.compose.ui.unit.Dp,
 ) {
-    val palette = listOf(
-        MiuixTheme.colorScheme.primary,
-        MiuixTheme.colorScheme.secondary,
-        MiuixTheme.colorScheme.onSurfaceVariantSummary,
-    )
-    val accent = palette[(displayName.hashCode() and Int.MAX_VALUE) % palette.size]
     val statusColor = meetingProcessColor(task, roomStatus, isHost)
     val statusDescription = meetingProcessLabel(task, roomStatus, isHost)
-    Box(
-        modifier = Modifier
-            .size(size + 4.dp)
-            .clip(CircleShape)
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        accent.copy(alpha = if (selected) 0.18f else 0.08f),
-                        accent.copy(alpha = 0.01f),
-                    ),
-                ),
-            )
-            .semantics { contentDescription = "$displayName，$statusDescription" },
-    ) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .size(size)
-                .clip(CircleShape)
-                .background(
-                    Brush.linearGradient(
-                        listOf(
-                            accent.copy(alpha = if (selected) 0.34f else 0.22f),
-                            MiuixTheme.colorScheme.surface.copy(alpha = 0.35f),
-                        ),
-                    ),
-                )
-                .border(
-                    width = if (selected) 1.dp else 0.5.dp,
-                    color = accent.copy(alpha = if (selected) 0.8f else 0.36f),
-                    shape = CircleShape,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = displayName.trim().take(1).uppercase().ifBlank { "A" },
-                style = MiuixTheme.textStyles.footnote2,
-                fontWeight = FontWeight.Bold,
-                color = accent,
-            )
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .size(9.dp)
-                .squircleSurface(MiuixTheme.colorScheme.surface, 5.dp)
-                .padding(1.5.dp)
-                .squircleSurface(statusColor, 4.dp),
-        )
-    }
+    AgentIdentityAvatar(
+        displayName = displayName,
+        seed = displayName,
+        size = size,
+        icon = if (isHost) Icons.Rounded.Groups else Icons.Rounded.AutoAwesome,
+        statusColor = statusColor,
+        statusDescription = statusDescription,
+        selected = selected,
+    )
 }
 
 private fun meetingStatusHint(state: MeetingRoomUiState): String = when {
@@ -1156,61 +1133,100 @@ private fun MeetingComposer(
     var anchorTop by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
     val maxHeight = with(density) { anchorTop.toDp() }.coerceAtLeast(200.dp)
-    Column {
-        ConversationDraftFeedback(editor, Modifier.padding(horizontal = 12.dp))
-        ConversationAttachmentFeedback(attachments, Modifier.padding(horizontal = 20.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding()
+            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+    ) {
+        ConversationDraftFeedback(editor)
+        ConversationAttachmentFeedback(attachments)
         if (attachments.value.images.isNotEmpty()) PendingImageStrip(attachments.value.images, attachments::removeImage,
-            Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+            Modifier.padding(vertical = 4.dp))
         if (attachments.value.files.isNotEmpty()) PendingFileReferenceStrip(attachments.value.files, attachments::removeFile,
-            Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
-        Row(
+            Modifier.padding(vertical = 4.dp))
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp)
                 .onGloballyPositioned { anchorTop = it.positionInWindow().y.toInt() }
-                .navigationBarsPadding()
                 .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 20.dp)
                 .squircleBorder(
                     width = 0.5.dp,
-                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
+                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
                     cornerRadius = 20.dp,
                 )
-                .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
         ) {
-            if (attachments.ready) AgentAttachmentPickerButton(
-                popupAnchorTopPx = anchorTop,
-                popupMaxHeight = maxHeight,
-                onAttachImage = attachments::image,
-                onAttachFiles = attachments::files,
-                onAttachFolder = attachments::folder,
-                onAttachFilePath = attachments::path,
-                modifier = Modifier.size(48.dp),
-            )
             ConversationTextEditor(
                 state = editor.field,
                 onUserEdit = editor::onUserEdit,
                 placeholder = stringResource(if (running) R.string.meeting_room_queue_hint else R.string.meeting_room_mention_hint),
                 maxLines = 5,
                 maxLength = 32_000,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
             )
-            if (running) IconButton(onClick = onStop, minWidth = 48.dp, minHeight = 48.dp) {
-                Icon(Icons.Rounded.Stop, contentDescription = stringResource(R.string.chat_stop))
-            }
-            IconButton(
-                onClick = onSend,
-                enabled = canSend && (editor.field.text.isNotBlank() || !attachments.value.isEmpty) && attachments.ready && attachments.pending == 0 &&
-                    (draftStatus == ConversationDraftStatus.READY || draftStatus == ConversationDraftStatus.SAVE_FAILED),
-                minWidth = 48.dp,
-                minHeight = 48.dp,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.Send,
-                    contentDescription = if (running) "排队发送" else stringResource(R.string.meeting_room_send),
-                    tint = if (canSend) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                if (attachments.ready) AgentAttachmentPickerButton(
+                    popupAnchorTopPx = anchorTop,
+                    popupMaxHeight = maxHeight,
+                    onAttachImage = attachments::image,
+                    onAttachFiles = attachments::files,
+                    onAttachFolder = attachments::folder,
+                    onAttachFilePath = attachments::path,
+                    modifier = Modifier.size(40.dp),
                 )
+                Spacer(Modifier.weight(1f))
+                if (running) {
+                    IconButton(onClick = onStop, minWidth = 40.dp, minHeight = 40.dp) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(MiuixTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Rounded.Stop,
+                                contentDescription = stringResource(R.string.chat_stop),
+                                modifier = Modifier.size(12.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(2.dp))
+                }
+                val sendEnabled = canSend &&
+                    (editor.field.text.isNotBlank() || !attachments.value.isEmpty) &&
+                    attachments.ready && attachments.pending == 0 &&
+                    (draftStatus == ConversationDraftStatus.READY || draftStatus == ConversationDraftStatus.SAVE_FAILED)
+                IconButton(
+                    onClick = onSend,
+                    enabled = sendEnabled,
+                    minWidth = 40.dp,
+                    minHeight = 40.dp,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (sendEnabled) MiuixTheme.colorScheme.primary
+                                else MiuixTheme.colorScheme.surfaceContainerHigh,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.Send,
+                            contentDescription = if (running) "排队发送" else stringResource(R.string.meeting_room_send),
+                            modifier = Modifier.size(17.dp),
+                            tint = if (sendEnabled) MiuixTheme.colorScheme.onPrimary
+                            else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
             }
         }
     }

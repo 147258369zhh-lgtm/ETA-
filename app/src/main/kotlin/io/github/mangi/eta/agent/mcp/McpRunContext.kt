@@ -111,7 +111,7 @@ internal class McpToolExecutor(
     private val snapshot: McpRunSnapshot,
 ) : CapabilityToolProvider {
     private val lifecycleLock = Any()
-    private val clients = mutableMapOf<String, McpHttpClient>()
+    private val clients = mutableMapOf<String, McpClient>()
     private var closed = false
 
     override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
@@ -124,14 +124,14 @@ internal class McpToolExecutor(
         return runCatching {
             val client = synchronized(lifecycleLock) {
                 if (closed) return failure("MCP_EXECUTOR_CLOSED", "MCP 工具执行器已关闭")
-                clients[tool.server.id] ?: McpHttpClient(
+                clients[tool.server.id] ?: McpClientFactory.create(
                     server = tool.server,
                     bearerToken = tool.bearerToken,
                 ).also { clients[tool.server.id] = it }
             }
             adaptResult(tool, client.callTool(tool.definition, arguments))
-        }.getOrElse {
-            failure("MCP_CALL_FAILED", "MCP 工具调用失败")
+        }.getOrElse { failure ->
+            failure("MCP_CALL_FAILED", McpFailureDiagnostics.describe(tool.server, failure))
         }
     }
 

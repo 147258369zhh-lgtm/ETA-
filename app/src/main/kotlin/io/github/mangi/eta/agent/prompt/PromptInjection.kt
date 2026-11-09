@@ -439,6 +439,7 @@ internal object PromptInjectionStore {
 
     fun saveTemplate(template: PromptTemplate): Boolean = synchronized(lock) {
         val normalized = normalize(template)
+        if (!PromptConflictAnalyzer.analyzeTemplate(normalized).canSave) return@synchronized false
         val current = loadUnlocked()
         val currentTemplates = current.templates.distinctBy(PromptTemplate::id)
         val existing = currentTemplates.indexOfFirst { it.id == normalized.id }
@@ -477,12 +478,14 @@ internal object PromptInjectionStore {
     fun replace(config: PromptInjectionConfig): Boolean = synchronized(lock) {
         val templates = config.templates.distinctBy(PromptTemplate::id).take(MAX_TEMPLATES).map(::normalize)
         val ids = templates.mapTo(hashSetOf(), PromptTemplate::id)
+        val normalized = PromptInjectionConfig(
+            templates = templates,
+            bindings = config.bindings.filter { it.templateId in ids }
+                .distinctBy { it.target.key }.take(MAX_BINDINGS),
+        )
+        if (!PromptConflictAnalyzer.analyzeConfig(normalized).canSave) return@synchronized false
         persist(
-            PromptInjectionConfig(
-                templates = templates,
-                bindings = config.bindings.filter { it.templateId in ids }
-                    .distinctBy { it.target.key }.take(MAX_BINDINGS),
-            ),
+            normalized,
         )
     }
 

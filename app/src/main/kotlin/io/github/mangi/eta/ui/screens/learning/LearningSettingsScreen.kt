@@ -176,8 +176,19 @@ internal fun LearningSettingsScreen(
             SmallTitle("学习概况")
             KnowledgeMetricsCard(
                 activeCount = snapshot.rules.count { it.active },
-                pendingCount = snapshot.candidates.count { it.status in setOf(LearningStatus.PENDING, LearningStatus.CONFLICT) },
-                conflictCount = snapshot.candidates.count { it.status == LearningStatus.CONFLICT },
+                pendingCount = snapshot.candidates.count {
+                    it.status in setOf(
+                        LearningStatus.BUTLER_APPROVED,
+                        LearningStatus.PENDING,
+                        LearningStatus.CONFLICT,
+                    )
+                },
+                conflictCount = snapshot.candidates.count {
+                    it.conflicts.isNotEmpty() && it.status !in setOf(
+                        LearningStatus.REJECTED,
+                        LearningStatus.PROMOTED,
+                    )
+                },
                 activeLabel = "生效经验",
                 pendingLabel = "待审阅",
                 conflictLabel = "冲突",
@@ -197,7 +208,7 @@ internal fun LearningSettingsScreen(
                 )
                 SwitchPreference(
                     title = "自动捕获候选",
-                    summary = "失败与可复用经验会先脱敏、去重并进入待审批区",
+                    summary = "先脱敏、去重，再由软件管家检查证据和质量；通过后才进入人工批准区",
                     checked = enabled && autoCapture,
                     enabled = enabled,
                     onCheckedChange = {
@@ -206,7 +217,7 @@ internal fun LearningSettingsScreen(
                     },
                 )
                 Text(
-                    text = "确认并启用后供 Agent 参考，规则保留历史版本。",
+                    text = "软件管家会拒绝空泛、重复、缺证据和不可执行的经验；只有审核通过的候选才显示给用户批准。确认并启用后供 Agent 参考，规则保留历史版本。",
                     style = MiuixTheme.textStyles.footnote2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -231,7 +242,12 @@ internal fun LearningSettingsScreen(
         }
 
         val pending = snapshot.candidates.filter {
-            (showHistory || it.status in setOf(LearningStatus.PENDING, LearningStatus.CONFLICT, LearningStatus.CONFIRMED)) &&
+            (showHistory || it.status in setOf(
+                LearningStatus.BUTLER_APPROVED,
+                LearningStatus.PENDING,
+                LearningStatus.CONFLICT,
+                LearningStatus.CONFIRMED,
+            )) &&
                 (search.isBlank() || (it.title + it.content).contains(search, ignoreCase = true))
         }
         if (tab == 0) {
@@ -241,7 +257,7 @@ internal fun LearningSettingsScreen(
                 Card(modifier = Modifier.padding(horizontal = 12.dp)) {
                     ListEmptyState(
                         title = "没有待审批经验",
-                        summary = "Agent 提交的经验会先显示在这里，不会直接改变长期记忆。",
+                        summary = "软件管家审核通过的经验才会显示在这里；拒绝内容不会进入人工批准队列。",
                         icon = Icons.Rounded.Psychology,
                     )
                 }
@@ -294,7 +310,11 @@ private fun CandidateCard(candidate: LearningCandidateView, onClick: () -> Unit)
     Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth()) {
         DetailListRow(title = candidate.title, preview = candidate.content,
             subtitle = "${candidate.status.displayName()} · ${candidate.kind.displayName()} · 置信度 ${(candidate.confidence * 100).toInt()}%",
-            icon = if (candidate.status == LearningStatus.CONFLICT) Icons.Rounded.CompareArrows else Icons.Rounded.FactCheck, onClick = onClick)
+            icon = if (candidate.conflicts.isNotEmpty() || candidate.status == LearningStatus.CONFLICT) {
+                Icons.Rounded.CompareArrows
+            } else Icons.Rounded.FactCheck,
+            onClick = onClick,
+        )
     }
 }
 
@@ -320,7 +340,12 @@ private fun CandidateDetail(
     ) {
         if (editing) TextField(value = draft, onValueChange = { draft = it.take(4000) }, label = "经验内容", modifier = Modifier.fillMaxWidth())
         else Text(candidate.content, style = MiuixTheme.textStyles.body1)
-        if (candidate.status in setOf(LearningStatus.PENDING, LearningStatus.CONFLICT)) {
+        if (candidate.status in setOf(
+                LearningStatus.BUTLER_APPROVED,
+                LearningStatus.PENDING,
+                LearningStatus.CONFLICT,
+            )
+        ) {
             TextButton(if (editing) "保存修改" else "修改内容", enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
                 if (editing) onEdit(draft)
                 editing = !editing
@@ -335,6 +360,15 @@ private fun CandidateDetail(
             style = MiuixTheme.textStyles.footnote2,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
+        if (candidate.reviewSummary.isNotBlank()) {
+            Text(
+                text = candidate.reviewSummary,
+                style = MiuixTheme.textStyles.footnote1,
+                color = if (candidate.status == LearningStatus.REJECTED) {
+                    MiuixTheme.colorScheme.error
+                } else MiuixTheme.colorScheme.primary,
+            )
+        }
         if (candidate.evidence.isNotEmpty()) {
             SmallTitle("证据")
             candidate.evidence.forEach { evidence ->
@@ -347,7 +381,12 @@ private fun CandidateDetail(
         }
         error?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote1) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (candidate.status in setOf(LearningStatus.PENDING, LearningStatus.CONFLICT)) {
+            if (candidate.status in setOf(
+                    LearningStatus.BUTLER_APPROVED,
+                    LearningStatus.PENDING,
+                    LearningStatus.CONFLICT,
+                )
+            ) {
                 TextButton(text = "拒绝", onClick = onReject, enabled = !busy, modifier = Modifier.weight(1f))
                 TextButton(
                     text = if (candidate.conflicts.isNotEmpty()) "替换并启用" else "确认并启用",
@@ -422,8 +461,13 @@ private fun RuleVersions(
 }
 
 private fun LearningStatus.displayName(): String = when (this) {
-    LearningStatus.PENDING -> "待确认"; LearningStatus.CONFLICT -> "存在冲突"; LearningStatus.CONFIRMED -> "已确认待启用";
-    LearningStatus.PROMOTED -> "已启用"; LearningStatus.REJECTED -> "已拒绝"
+    LearningStatus.BUTLER_REVIEW -> "软件管家审核中"
+    LearningStatus.BUTLER_APPROVED -> "管家已通过，待人工批准"
+    LearningStatus.PENDING -> "待软件管家审核"
+    LearningStatus.CONFLICT -> "待复核冲突"
+    LearningStatus.CONFIRMED -> "人工已确认，待启用"
+    LearningStatus.PROMOTED -> "已启用"
+    LearningStatus.REJECTED -> "未通过，已拒绝"
 }
 private fun LearningKind.displayName(): String = when (this) {
     LearningKind.FACT -> "事实"; LearningKind.PREFERENCE -> "偏好"; LearningKind.PROCEDURE -> "做事步骤"; LearningKind.FAILURE_FIX -> "纠错经验"

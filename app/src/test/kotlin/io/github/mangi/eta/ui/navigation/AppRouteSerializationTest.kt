@@ -20,6 +20,7 @@ class AppRouteSerializationTest {
         val routes = listOf<AppRoute>(
             AppRoute.Home,
             AppRoute.AppControlCenter,
+            AppRoute.ConversationInsights(conversationId = "conversation-a"),
             AppRoute.Browser(),
             AppRoute.Browser("conversation-a"),
             AppRoute.Browser("conversation-b"),

@@ -142,7 +142,8 @@ class LearningRepositoryTest {
         createRule()
         val candidate = (repository.propose(LearningProposalInput(LearningKind.PROCEDURE,
             "发布前检查", "每次发布前运行全部测试并等待 31 分钟再发布")) as LearningProposalResult.Created).candidate
-        assertEquals(LearningStatus.CONFLICT, candidate.status)
+        assertEquals(LearningStatus.BUTLER_APPROVED, candidate.status)
+        assertEquals(1, candidate.conflicts.size)
         assertEquals(2, repository.snapshot().candidates.size)
     }
 
@@ -203,5 +204,20 @@ class LearningRepositoryTest {
         assertEquals(8, repository.context(8).length)
         repository.archiveRule(rule.id)
         assertFalse(repository.context().contains(rule.title))
+    }
+
+    @Test fun `software butler rejects low value candidates before human approval`() = runBlocking {
+        val candidate = (repository.propose(LearningProposalInput(
+            kind = LearningKind.PROCEDURE,
+            title = "任务状态",
+            content = "好的好的好的好的好的好的",
+            evidence = "完成",
+            sourceRef = "conversation:noise",
+        ))) as LearningProposalResult.Created
+
+        assertEquals(LearningStatus.REJECTED, candidate.candidate.status)
+        assertTrue(candidate.candidate.reviewSummary.contains("审核拒绝"))
+        assertTrue(repository.confirm(candidate.candidate.id) is LearningMutationResult.Rejected)
+        assertTrue(repository.snapshot().rules.isEmpty())
     }
 }

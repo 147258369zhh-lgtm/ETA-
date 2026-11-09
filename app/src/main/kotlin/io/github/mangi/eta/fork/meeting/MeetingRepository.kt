@@ -13,6 +13,7 @@ import io.github.mangi.eta.data.repository.ConversationAttachments
 import io.github.mangi.eta.data.repository.ConversationDraftRepository
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -91,6 +92,11 @@ internal object MeetingRepository {
 
     fun rooms(context: Context): Flow<List<MeetingRoomSummaryRow>> =
         MeetingDatabase.get(context).meetingDao().roomSummariesFlow()
+
+    suspend fun firstActiveRoomId(context: Context): String? =
+        MeetingDatabase.get(context).meetingDao().roomsFlow().first()
+            .firstOrNull { it.archivedAt == null }
+            ?.id
 
     fun room(context: Context, roomId: String): Flow<MeetingRoomEntity?> =
         MeetingDatabase.get(context).meetingDao().roomFlow(roomId)
@@ -372,6 +378,54 @@ internal object MeetingRepository {
         return task
     }
 
+    suspend fun createDynamicParticipant(
+        context: Context,
+        roomId: String,
+        profileName: String,
+        displayName: String,
+        profileSummary: String,
+        providerId: String? = null,
+        modelId: String? = null,
+    ): MeetingParticipantEntity {
+        val normalizedProfile = profileName.trim().lowercase()
+        require(Regex("[a-z0-9][a-z0-9_-]{1,47}").matches(normalizedProfile)) {
+            "动态 Agent profile 名称无效"
+        }
+        val safeDisplayName = displayName.trim().take(80).ifBlank { normalizedProfile }
+        val safeSummary = profileSummary.trim().take(2_000)
+        val database = MeetingDatabase.get(context)
+        return database.withTransaction {
+            val dao = database.meetingDao()
+            requireNotNull(dao.room(roomId)) { "MEETING_NOT_FOUND" }
+            val existing = dao.participants(roomId).firstOrNull { it.profileName == normalizedProfile }
+            if (existing != null) return@withTransaction existing
+            val participant = MeetingParticipantEntity(
+                roomId = roomId,
+                profileName = normalizedProfile,
+                displayName = safeDisplayName,
+                profileSummary = safeSummary,
+                providerId = providerId?.takeIf(String::isNotBlank),
+                modelId = modelId?.takeIf(String::isNotBlank),
+                isHost = false,
+                sortOrder = (dao.participants(roomId).maxOfOrNull { it.sortOrder } ?: 0) + 1,
+                enabled = true,
+            )
+            dao.insertParticipants(listOf(participant))
+            dao.insertEvent(
+                MeetingEventEntity(
+                    roomId = roomId,
+                    type = "dynamic_agent_created",
+                    payloadJson = JSONObject()
+                        .put("profile", normalizedProfile)
+                        .put("displayName", safeDisplayName)
+                        .toString(),
+                    createdAt = System.currentTimeMillis(),
+                ),
+            )
+            participant
+        }
+    }
+
     suspend fun updateTask(
         context: Context,
         task: MeetingTaskEntity,
@@ -553,17 +607,19 @@ internal object MeetingRepository {
         roomId: String,
         profileName: String,
         messages: List<MeetingMessageEntity>,
+        isHost: Boolean = true,
     ): List<AgentModelClient.ConversationMessage> {
         val attachments = decodeMessageAttachments(context, MeetingDatabase.get(context).meetingDao().messageAttachmentEvents(roomId))
         val checkpoint = MeetingDatabase.get(context).meetingDao()
             .participantContext(roomId, profileName)
-            ?: return MeetingContextHistory.forParticipant(messages, profileName, attachments)
+            ?: return MeetingContextHistory.forParticipant(messages, profileName, attachments, isHost)
         val compacted = AgentContextSnapshot.decode(checkpoint.snapshotJson)?.messages
-            ?: return MeetingContextHistory.forParticipant(messages, profileName, attachments)
+            ?: return MeetingContextHistory.forParticipant(messages, profileName, attachments, isHost)
         val appended = MeetingContextHistory.forParticipant(
             messages = messages.filter { it.sortIndex > checkpoint.lastMessageSortIndex },
             participantProfile = profileName,
             attachments = attachments,
+            isHost = isHost,
         )
         return compacted + appended
     }

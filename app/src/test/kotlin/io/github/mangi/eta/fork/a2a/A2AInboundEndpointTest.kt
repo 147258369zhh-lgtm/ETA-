@@ -7,7 +7,7 @@ import org.junit.Test
 
 class A2AInboundEndpointTest {
     @Test
-    fun `advertised transport endpoint derives card url and loopback binding`() {
+    fun `advertised transport endpoint derives card url and wildcard binding`() {
         val snapshot = A2AInboundSnapshot(
             enabled = true,
             port = 43121,
@@ -19,7 +19,7 @@ class A2AInboundEndpointTest {
 
         assertEquals("http://100.88.20.10:43121/a2a", snapshot.endpointUrl)
         assertEquals("http://100.88.20.10:43121/.well-known/agent-card.json", snapshot.agentCardUrl)
-        assertEquals("127.0.0.1", snapshot.bindAddress)
+        assertEquals("0.0.0.0", snapshot.bindAddress)
     }
 
     @Test

@@ -1,7 +1,9 @@
 package io.github.mangi.eta.ui.app
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -9,10 +11,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
@@ -72,6 +77,7 @@ import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowListPopup
 
@@ -110,6 +116,7 @@ internal fun AgentAppShell(
     onConversationArchive: (ConversationSummaryUi) -> Unit,
     onConversationRestore: (ConversationSummaryUi) -> Unit,
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
+    onConversationDropToFolder: (conversationId: String, folderId: String) -> Unit = { _, _ -> },
     onOpenMeetingRoom: (String) -> Unit,
     onMeetingRoomRename: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomTogglePin: (MeetingRoomSummaryRow) -> Unit,
@@ -148,25 +155,40 @@ internal fun AgentAppShell(
             topBar = {
                 if (currentRoute !is AppRoute.Settings) {
                     TopBarBackdrop(backdrop) {
-                        AgentTopBar(
-                            route = currentRoute,
-                            scrollBehavior = scrollBehavior,
-                            color = topBarColor,
-                            onBack = onBack,
-                            onOpenConversationPane = onOpenConversationPane,
-                            onOpenTerminal = onOpenTerminal,
-                            onLaunchKimiWeb = onLaunchKimiWeb,
-                            kimiWebLabel = kimiWebLabel,
-                            canStopKimiWeb = canStopKimiWeb,
-                            onStopKimiWeb = onStopKimiWeb,
-                            onRefreshKimiWeb = onRefreshKimiWeb,
-                            onOpenBrowser = onOpenBrowser,
-                            onOpenBranches = onOpenBranches,
-                            homeTitle = homeTitle,
-                            homeCharacter = homeCharacter,
-                            onOpenCharacter = onOpenCharacter,
-                            onOpenAppControl = onOpenAppControl,
-                        )
+                        Box {
+                            AgentTopBar(
+                                route = currentRoute,
+                                scrollBehavior = scrollBehavior,
+                                color = topBarColor,
+                                onBack = onBack,
+                                onOpenConversationPane = onOpenConversationPane,
+                                onOpenTerminal = onOpenTerminal,
+                                onLaunchKimiWeb = onLaunchKimiWeb,
+                                kimiWebLabel = kimiWebLabel,
+                                canStopKimiWeb = canStopKimiWeb,
+                                onStopKimiWeb = onStopKimiWeb,
+                                onRefreshKimiWeb = onRefreshKimiWeb,
+                                onOpenBrowser = onOpenBrowser,
+                                onOpenBranches = onOpenBranches,
+                                homeTitle = homeTitle,
+                                homeCharacter = homeCharacter,
+                                onOpenCharacter = onOpenCharacter,
+                                onOpenAppControl = onOpenAppControl,
+                            )
+                            if (currentRoute is AppRoute.Home) {
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    HomeModeSwitch(
+                                        showMeetings = showMeetingsByDefault,
+                                        onSelect = { onConversationPaneModeChange(it, null) },
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -199,6 +221,7 @@ internal fun AgentAppShell(
                 onConversationArchive = onConversationArchive,
                 onConversationRestore = onConversationRestore,
                 onConversationMoveToFolder = onConversationMoveToFolder,
+                onConversationDropToFolder = onConversationDropToFolder,
                 onOpenMeetingRoom = onOpenMeetingRoom,
                 onMeetingRoomRename = onMeetingRoomRename,
                 onMeetingRoomTogglePin = onMeetingRoomTogglePin,
@@ -303,6 +326,70 @@ private fun AgentTopBar(
             scrollBehavior = scrollBehavior,
             navigationIcon = navigationIcon,
             actions = actions,
+        )
+    }
+}
+
+/**
+ * 首页主舞台的模式切换固定在顶栏操作区，与右侧溢出菜单共用同一条垂直中心线。
+ * 控件保持小块玻璃胶囊形态，不占用聊天正文高度。
+ */
+@Composable
+private fun HomeModeSwitch(
+    showMeetings: Boolean,
+    onSelect: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MiuixTheme.colorScheme
+    Row(
+        modifier = modifier
+            .width(126.dp)
+            .height(32.dp)
+            .squircleSurface(colors.surfaceContainerHigh.copy(alpha = .98f), 16.dp)
+            .border(.5.dp, colors.outline.copy(alpha = .20f), CircleShape)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HomeModeSwitchItem(
+            label = "会话",
+            selected = !showMeetings,
+            onClick = { onSelect(false) },
+            modifier = Modifier.weight(1f),
+        )
+        HomeModeSwitchItem(
+            label = "会议室",
+            selected = showMeetings,
+            onClick = { onSelect(true) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun HomeModeSwitchItem(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MiuixTheme.colorScheme
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .squircleSurface(
+                if (selected) colors.tertiaryContainer else Color.Transparent,
+                12.dp,
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.footnote2,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) colors.onTertiaryContainer else colors.onSurfaceVariantSummary,
+            maxLines = 1,
         )
     }
 }
@@ -475,18 +562,20 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Tools -> stringResource(R.string.route_tools)
     is AppRoute.WebToolsSettings -> stringResource(R.string.web_tools_settings_title)
     is AppRoute.Skills -> stringResource(R.string.route_skills)
-    is AppRoute.PromptInjection -> stringResource(R.string.prompt_injection_title)
+    is AppRoute.PromptInjection -> "角色与指令"
     is AppRoute.CapabilityCenter -> "能力中心"
     is AppRoute.ApiConnectors -> "REST API 连接"
     is AppRoute.Subagents -> "Subagent"
     is AppRoute.TaskCenter -> stringResource(R.string.route_task_center)
     is AppRoute.A2AAgents -> stringResource(R.string.route_a2a_agents)
     is AppRoute.SelfLearning -> stringResource(R.string.route_self_learning)
-    is AppRoute.Characters -> "角色"
+    is AppRoute.Characters -> "角色与指令"
     is AppRoute.CharacterDetail -> "角色详情"
     is AppRoute.CharacterEditor -> "编辑角色"
     is AppRoute.CharacterPersona -> "我的人设"
     is AppRoute.CharacterMemory -> "剧情记忆"
+    is AppRoute.ConversationInsights -> "会话详情"
+    is AppRoute.ConnectorCenter -> "统一连接中心"
     is AppRoute.Permissions -> stringResource(R.string.route_permissions)
     is AppRoute.SystemEnhance -> stringResource(R.string.route_system_enhancements)
     is AppRoute.Settings -> stringResource(R.string.route_settings)

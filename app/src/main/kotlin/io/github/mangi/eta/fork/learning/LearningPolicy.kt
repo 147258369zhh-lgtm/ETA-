@@ -16,6 +16,8 @@ internal enum class LearningKind(val wireValue: String) {
 }
 
 internal enum class LearningStatus(val wireValue: String) {
+    BUTLER_REVIEW("butler_review"),
+    BUTLER_APPROVED("butler_approved"),
     PENDING("pending"),
     CONFLICT("conflict"),
     CONFIRMED("confirmed"),

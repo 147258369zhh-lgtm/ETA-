@@ -60,4 +60,12 @@ class ConversationPaneMotionTest {
         assertEquals(compact.progress, wide.progress, 0f)
         assertEquals(compact.panelOffset / 280f, wide.panelOffset / 340f, 0.00001f)
     }
+
+    @Test
+    fun conversationRowsSeparatePinDeleteAndCancelGestures() {
+        assertEquals(ConversationRowGesture.Pin, classifyConversationRowGesture(80f, 64f, 64f))
+        assertEquals(ConversationRowGesture.Delete, classifyConversationRowGesture(-80f, 64f, 64f))
+        assertEquals(ConversationRowGesture.Cancel, classifyConversationRowGesture(30f, 64f, 64f))
+        assertEquals(ConversationRowGesture.Cancel, classifyConversationRowGesture(Float.NaN, 64f, 64f))
+    }
 }

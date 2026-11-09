@@ -6,8 +6,10 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,7 +24,9 @@ import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FilterAlt
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderSpecial
+import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.GppMaybe
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Hearing
@@ -66,7 +70,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -104,7 +110,6 @@ import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.StatusWarning
 import io.github.mangi.eta.ui.navigation.AppRoute
-import io.github.mangi.eta.ui.screens.meeting.MeetingSettingsPreferenceEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -233,6 +238,19 @@ private fun SettingsPageContent(
     }
     var checkingUpdate by remember { mutableStateOf(false) }
     var availableUpdate by remember { mutableStateOf<AppLatestRelease?>(null) }
+    var showSupportDialog by remember { mutableStateOf(false) }
+    val openQqGroup: () -> Unit = {
+        val qqIntent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("mqqapi://card/show_pslcard?src_type=internal&version=1&uin=1107693849"),
+        )
+        val failed = runCatching { context.startActivity(qqIntent) }.isFailure
+        if (failed) {
+            context.getSystemService(android.content.ClipboardManager::class.java)
+                .setPrimaryClip(android.content.ClipData.newPlainText("Eta QQ 群", "1107693849"))
+            Toast.makeText(context, "QQ 群号 1107693849 已复制", Toast.LENGTH_LONG).show()
+        }
+    }
     val checkForUpdate: () -> Unit = {
         if (!checkingUpdate) {
             checkingUpdate = true
@@ -333,22 +351,6 @@ private fun SettingsPageContent(
         title = stringResource(R.string.ui_set_up_7debf9),
         onBack = onBack,
     ) {
-            item(key = "section_app_control") {
-                SmallTitle("智能控制")
-                SettingsGroupCard {
-                    ArrowPreference(
-                        title = "软件管家",
-                        summary = "用对话管理 Agent、自动任务、能力、文件与软件设置",
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.SupportAgent,
-                                tint = SettingsIconColors.Blue,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.AppControlCenter) },
-                    )
-                }
-            }
             // ── LLM 提供商 ──────────────────────────────────────────────
             item(key = "section_agent") {
                 SmallTitle(stringResource(R.string.settings_llm_providers))
@@ -399,15 +401,15 @@ private fun SettingsPageContent(
                         onClick = { onNavigate(AppRoute.Memory) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.prompt_injection_title),
-                        summary = stringResource(R.string.prompt_injection_settings_summary),
+                        title = "角色与指令",
+                        summary = "角色人格、世界书、作用域指令、冲突检查与导入导出",
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Description,
                                 tint = SettingsIconColors.Green,
                             )
                         },
-                        onClick = { onNavigate(AppRoute.PromptInjection) },
+                        onClick = { onNavigate(AppRoute.Characters) },
                     )
                     ArrowPreference(
                         title = "Subagent",
@@ -430,31 +432,12 @@ private fun SettingsPageContent(
                         onClick = { onNavigate(AppRoute.TaskCenter) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.route_a2a_agents),
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.CloudQueue,
-                                tint = SettingsIconColors.Blue,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.A2AAgents) },
-                    )
-                    ArrowPreference(
                         title = stringResource(R.string.route_agent_metrics),
                         summary = stringResource(R.string.route_agent_metrics_summary),
                         startAction = {
                             SettingsIcon(Icons.Rounded.Dashboard, tint = SettingsIconColors.Green)
                         },
                         onClick = { onNavigate(AppRoute.AgentMetrics) },
-                    )
-                    MeetingSettingsPreferenceEntry(
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.Groups,
-                                tint = SettingsIconColors.Orange,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.MeetingSettings) },
                     )
                     ArrowPreference(
                         title = "能力中心",
@@ -466,16 +449,6 @@ private fun SettingsPageContent(
                             )
                         },
                         onClick = { onNavigate(AppRoute.CapabilityCenter) },
-                    )
-                    ArrowPreference(
-                        title = "角色",
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.SportsBar,
-                                tint = SettingsIconColors.Orange,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.Characters) },
                     )
                 }
             }
@@ -973,7 +946,7 @@ private fun SettingsPageContent(
                                 tint = SettingsIconColors.Orange,
                             )
                         },
-                        onClick = { openUrl("https://github.com/Mangi-11/Eta/issues") },
+                        onClick = { openUrl("https://github.com/147258369zhh-lgtm/ETA-/issues") },
                     )
                     ArrowPreference(
                         title = stringResource(R.string.ui_about_github_star_title),
@@ -984,9 +957,50 @@ private fun SettingsPageContent(
                                 tint = SettingsIconColors.Blue,
                             )
                         },
-                        onClick = { openUrl("https://github.com/Mangi-11/Eta") },
+                        onClick = { openUrl("https://github.com/147258369zhh-lgtm/ETA-") },
+                    )
+                    ArrowPreference(
+                        title = "加入 QQ 群",
+                        summary = "群号：1107693849",
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.Forum,
+                                tint = SettingsIconColors.Blue,
+                            )
+                        },
+                        onClick = openQqGroup,
+                    )
+                    ArrowPreference(
+                        title = "微信赞赏支持",
+                        summary = "扫码支持 Eta 持续开发",
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.Favorite,
+                                tint = SettingsIconColors.Green,
+                            )
+                        },
+                        onClick = { showSupportDialog = true },
                     )
                 }
+            }
+        }
+
+        WindowDialog(
+            show = showSupportDialog,
+            title = "微信赞赏支持",
+            summary = "感谢支持 Eta 持续开发",
+            onDismissRequest = { showSupportDialog = false },
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.wechat_reward_qr),
+                    contentDescription = "微信赞赏码",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                )
             }
         }
 
