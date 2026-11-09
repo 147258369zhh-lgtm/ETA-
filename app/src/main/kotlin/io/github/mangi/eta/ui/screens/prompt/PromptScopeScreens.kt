@@ -31,6 +31,7 @@ import io.github.mangi.eta.agent.prompt.PromptTemplate
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -68,7 +69,8 @@ internal fun PromptScopeTargetsScreen(
         item(key = "scope_targets_summary") {
             val colors = MiuixTheme.colorScheme
             Card(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
                 colors = CardDefaults.defaultColors(
                     color = colors.secondaryContainer.copy(alpha = 0.28f),
                     contentColor = colors.onSurface,
@@ -121,7 +123,8 @@ internal fun PromptScopeTargetsScreen(
                     val template = store.template(binding?.templateId)
                     val colors = MiuixTheme.colorScheme
                     Card(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            .etaGlassSurface(accent = if (binding != null) colors.primary else colors.secondary, cornerRadius = 16.dp),
                         colors = CardDefaults.defaultColors(
                             color = if (binding != null) {
                                 colors.secondaryContainer.copy(alpha = 0.38f)
@@ -255,7 +258,8 @@ internal fun PromptScopePickerScreen(
         item(key = "picker_target") {
             val colors = MiuixTheme.colorScheme
             Card(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
                 colors = CardDefaults.defaultColors(
                     color = colors.secondaryContainer.copy(alpha = 0.26f),
                     contentColor = colors.onSurface,
@@ -324,7 +328,8 @@ internal fun PromptScopePickerScreen(
                     val selected = currentBinding?.templateId == template.id
                     val colors = MiuixTheme.colorScheme
                     Card(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            .etaGlassSurface(accent = colors.primary, cornerRadius = 16.dp),
                         colors = CardDefaults.defaultColors(
                             color = when {
                                 selected -> colors.secondaryContainer.copy(alpha = 0.48f)

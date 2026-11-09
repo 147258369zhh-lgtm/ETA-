@@ -35,6 +35,18 @@ class AgentMetricsActivityTest {
         assertEquals(2, AgentMetricsActivity.streak(days, today))
     }
 
+    @Test fun selectableWindowsUseTheRequestedCalendarSpan() {
+        val today = LocalDate.of(2026, 11, 7)
+        val oneDay = AgentMetricsActivity.days(emptyList(), emptyMap(), today, ZoneId.of("Asia/Shanghai"), daysBack = 1)
+        val sevenDays = AgentMetricsActivity.days(emptyList(), emptyMap(), today, ZoneId.of("Asia/Shanghai"), daysBack = 7)
+        val thirtyDays = AgentMetricsActivity.days(emptyList(), emptyMap(), today, ZoneId.of("Asia/Shanghai"), daysBack = 30)
+        assertEquals(listOf(today), oneDay.map { it.date })
+        assertEquals(today.minusDays(6), sevenDays.first().date)
+        assertEquals(7, sevenDays.size)
+        assertEquals(today.minusDays(29), thirtyDays.first().date)
+        assertEquals(30, thirtyDays.size)
+    }
+
     @Test fun requestTimingKeepsRetriesSeparateAndLeavesOldTextLatencyUnknown() {
         fun event(seq: Long, time: Long, kind: String, label: String = "") = AgentMetricTraceEntity("r", seq, time, kind, 1, label, null)
         val trace = listOf(event(0, 0, "request"), event(1, 100, "response", "429"), event(2, 200, "retry"), event(3, 500, "request"), event(4, 700, "response", "200"), event(5, 900, "first_text"), event(6, 1400, "assistant"))

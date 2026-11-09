@@ -227,10 +227,10 @@ private fun AutomationOverviewCard(
                     modifier = Modifier.padding(end = 12.dp),
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TagChip("$totalCount 个任务")
-                TagChip("$recentRuns 条运行")
-                TagChip("Android 事件")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                AutomationMetric("任务", totalCount.toString(), Modifier.weight(1f))
+                AutomationMetric("启用", enabledCount.toString(), Modifier.weight(1f), EtaIconTone.SYSTEM.accent)
+                AutomationMetric("最近运行", recentRuns.toString(), Modifier.weight(1f), EtaIconTone.MODEL.accent)
             }
             ArrowPreference(
                 title = "待处理与运行记录",
@@ -238,6 +238,23 @@ private fun AutomationOverviewCard(
                 onClick = onOpenInbox,
             )
         }
+    }
+}
+
+@Composable
+private fun AutomationMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    accent: androidx.compose.ui.graphics.Color = EtaIconTone.AUTOMATION.accent,
+) {
+    Column(
+        modifier.squircleSurface(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = .64f), 11.dp)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(value, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold, color = accent)
+        Text(label, style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1)
     }
 }
 

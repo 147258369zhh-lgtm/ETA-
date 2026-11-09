@@ -42,6 +42,7 @@ import io.github.mangi.eta.agent.prompt.PromptImportResult
 import io.github.mangi.eta.agent.prompt.PromptTemplate
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -140,6 +141,7 @@ internal fun PromptTransferPanel(
     ) {
         val colors = MiuixTheme.colorScheme
         Card(
+            modifier = Modifier.etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
             colors = CardDefaults.defaultColors(
                 color = colors.secondaryContainer.copy(alpha = 0.28f),
                 contentColor = colors.onSurface,
@@ -163,7 +165,7 @@ internal fun PromptTransferPanel(
         }
         status?.let { message -> PromptInlineStatus(text = message, isError = statusError) }
         SmallTitle(stringResource(R.string.prompt_injection_native_json))
-        Card {
+        Card(Modifier.etaGlassSurface(accent = colors.secondary, cornerRadius = 16.dp)) {
             ArrowPreference(
                 title = stringResource(R.string.prompt_injection_export_json),
                 summary = stringResource(R.string.prompt_injection_export_json_summary),
@@ -178,7 +180,7 @@ internal fun PromptTransferPanel(
             )
         }
         SmallTitle(stringResource(R.string.prompt_injection_text_formats))
-        Card {
+        Card(Modifier.etaGlassSurface(accent = colors.secondary, cornerRadius = 16.dp)) {
             ArrowPreference(
                 title = stringResource(R.string.prompt_injection_import_md),
                 summary = stringResource(R.string.prompt_injection_import_md_summary),

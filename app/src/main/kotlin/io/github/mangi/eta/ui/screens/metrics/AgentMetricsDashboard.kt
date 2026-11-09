@@ -40,6 +40,7 @@ import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaMotion
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import top.yukonga.miuix.kmp.basic.*
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.time.LocalDate
 import java.time.format.TextStyle
@@ -166,43 +167,38 @@ internal fun AgentMetricDistributionCard(
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text("Token 占比", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                Text("${compactMetric(total)} Token", style = MiuixTheme.textStyles.footnote1, color = colors.onSurfaceVariantSummary)
             }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
-                    Canvas(Modifier.fillMaxSize()) {
-                        val stroke = size.minDimension * .14f
-                        val diameter = size.minDimension - stroke
-                        var start = -90f
-                        visible.forEachIndexed { index, item ->
-                            val sweep = item.value.toFloat() / total * 360f
-                            drawArc(
-                                color = palette[index % palette.size],
-                                startAngle = start,
-                                sweepAngle = (sweep - 2f).coerceAtLeast(1f) * reveal,
-                                useCenter = false,
-                                topLeft = Offset(stroke / 2, stroke / 2),
-                                size = Size(diameter, diameter),
-                                style = Stroke(width = stroke, cap = StrokeCap.Round),
-                            )
-                            start += sweep
-                        }
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(compactMetric(total), style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold)
-                        Text("总计", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+            if (visible.isEmpty()) {
+                Text("暂无 Token 用量", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+            } else {
+                Row(Modifier.fillMaxWidth().height(10.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    visible.forEachIndexed { index, item ->
+                        Box(
+                            Modifier.weight(item.value.toFloat()).fillMaxHeight().background(
+                                palette[index % palette.size].copy(alpha = .68f + .32f * reveal),
+                                RoundedCornerShape(5.dp),
+                            ),
+                        )
                     }
                 }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    visible.take(5).forEachIndexed { index, item ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    visible.take(6).forEachIndexed { index, item ->
+                        Row(
+                            Modifier.fillMaxWidth().squircleSurface(colors.surfaceContainerHigh.copy(alpha = .52f), 10.dp)
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                        ) {
                             Box(Modifier.size(8.dp).background(palette[index % palette.size], CircleShape))
-                            Spacer(Modifier.width(7.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(item.label, style = MiuixTheme.textStyles.footnote1, maxLines = 1)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                Text(item.label, style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.Medium, maxLines = 1)
                                 if (item.detail.isNotBlank()) Text(item.detail, style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary, maxLines = 1)
                             }
-                            Text("${item.value * 100 / total}%", style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold)
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("${item.value * 100 / total}%", style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold)
+                                Text(compactMetric(item.value), style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                            }
                         }
                     }
                 }
@@ -309,103 +305,101 @@ private fun RunMetricCell(label: String, value: String, modifier: Modifier = Mod
 internal fun AgentActivityCalendar(days: List<AgentActivityDay>, selected: LocalDate?, onSelect: (LocalDate?) -> Unit) {
     var mode by remember { mutableIntStateOf(0) }
     val maximum = days.maxOfOrNull { if (mode == 0) it.runs.toLong() else it.tokens ?: 0 }?.coerceAtLeast(1) ?: 1
-    val weeks = days.chunked(7)
-    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("近 13 周", style = MiuixTheme.textStyles.footnote1)
-            Text("连续 ${AgentMetricsActivity.streak(days)} 天", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-        }
-        TabRow(tabs = listOf("运行", "Token"), selectedTabIndex = mode, onTabSelected = { mode = it })
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val locale = LocalLocale.current.platformLocale
-            val gap = 3.dp
-            val dayLabelWidth = 12.dp
-            val cellSize = ((maxWidth - dayLabelWidth - gap * weeks.size) / weeks.size)
-                .coerceAtLeast(14.dp)
-            val weekdayLabels = listOf(
-                java.time.DayOfWeek.MONDAY,
-                java.time.DayOfWeek.TUESDAY,
-                java.time.DayOfWeek.WEDNESDAY,
-                java.time.DayOfWeek.THURSDAY,
-                java.time.DayOfWeek.FRIDAY,
-                java.time.DayOfWeek.SATURDAY,
-                java.time.DayOfWeek.SUNDAY,
-            ).map { it.getDisplayName(TextStyle.NARROW, locale) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
-                Column(
-                    modifier = Modifier.width(dayLabelWidth),
-                    verticalArrangement = Arrangement.spacedBy(gap),
-                ) {
-                    Spacer(Modifier.height(18.dp))
-                    weekdayLabels.forEachIndexed { index, label ->
-                        Text(
-                            text = if (index % 2 == 0 || index == 6) label else "",
-                            modifier = Modifier.height(cellSize).fillMaxWidth(),
-                            style = MiuixTheme.textStyles.footnote2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                            textAlign = TextAlign.End,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            maxLines = 1,
-                        )
-                    }
+    val colors = MiuixTheme.colorScheme
+    val locale = LocalLocale.current.platformLocale
+    val weekdayLabels = listOf(
+        java.time.DayOfWeek.MONDAY,
+        java.time.DayOfWeek.TUESDAY,
+        java.time.DayOfWeek.WEDNESDAY,
+        java.time.DayOfWeek.THURSDAY,
+        java.time.DayOfWeek.FRIDAY,
+        java.time.DayOfWeek.SATURDAY,
+        java.time.DayOfWeek.SUNDAY,
+    ).map { it.getDisplayName(TextStyle.NARROW, locale) }
+    val leading = days.firstOrNull()?.date?.dayOfWeek?.value?.minus(1) ?: 0
+    val cells: List<AgentActivityDay?> = buildList {
+        repeat(leading) { add(null) }
+        addAll(days)
+        while (size % 7 != 0) add(null)
+    }
+    Card(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
+        colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        when (days.size) { 1 -> "今天"; 7 -> "最近 7 天"; 30 -> "最近 30 天"; else -> "最近 ${days.size} 天" },
+                        style = MiuixTheme.textStyles.body1,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text("连续 ${AgentMetricsActivity.streak(days)} 天", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
                 }
-                weeks.forEach { week ->
-                    Column(
-                        modifier = Modifier.width(cellSize),
-                        verticalArrangement = Arrangement.spacedBy(gap),
-                    ) {
-                        val monthStart = week.firstOrNull { it.date.dayOfMonth == 1 }?.date
-                            ?: week.first().date.takeIf { week == weeks.first() }
-                        Text(
-                            text = monthStart?.let { "${it.monthValue}月" }.orEmpty(),
-                            modifier = Modifier.height(18.dp).fillMaxWidth(),
-                            style = MiuixTheme.textStyles.footnote2.copy(fontSize = 10.sp, lineHeight = 12.sp),
-                            maxLines = 1,
-                            textAlign = TextAlign.Center,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                        repeat(7) { index ->
-                            val day = week.getOrNull(index)
+            }
+            TabRow(tabs = listOf("运行", "Token"), selectedTabIndex = mode, onTabSelected = { mode = it })
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                weekdayLabels.forEach { label ->
+                    Text(
+                        label,
+                        Modifier.weight(1f),
+                        style = MiuixTheme.textStyles.footnote2,
+                        textAlign = TextAlign.Center,
+                        color = colors.onSurfaceVariantSummary,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                cells.chunked(7).forEach { week ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        week.forEach { day ->
                             val value = if (mode == 0) day?.runs?.toLong() ?: 0 else day?.tokens ?: 0
-                            val level = if (value == 0L) 0f else (value.toFloat() / maximum).coerceIn(.28f, 1f)
-                            val fill = if (level == 0f) {
-                                MiuixTheme.colorScheme.surfaceContainerHigh
-                            } else {
-                                MiuixTheme.colorScheme.primary.copy(alpha = .28f + .72f * level)
-                            }
+                            val level = if (value == 0L) 0f else (value.toFloat() / maximum).coerceIn(.24f, 1f)
+                            val fill = if (level == 0f) colors.surfaceContainerHigh.copy(alpha = .72f)
+                                else colors.primary.copy(alpha = .18f + .68f * level)
                             val isSelected = day?.date == selected
-                            Box(
+                            Column(
                                 Modifier
-                                    .size(cellSize)
-                                    .background(
-                                        if (day == null) androidx.compose.ui.graphics.Color.Transparent else fill,
-                                        RoundedCornerShape(4.dp),
+                                    .weight(1f)
+                                    .height(54.dp)
+                                    .background(if (day == null) androidx.compose.ui.graphics.Color.Transparent else fill, RoundedCornerShape(9.dp))
+                                    .then(
+                                        if (isSelected) Modifier.border(1.5.dp, colors.primary, RoundedCornerShape(9.dp))
+                                        else Modifier,
                                     )
                                     .then(
-                                        if (isSelected) {
-                                            Modifier.border(2.dp, MiuixTheme.colorScheme.onSurface, RoundedCornerShape(4.dp))
-                                        } else {
-                                            Modifier
-                                        },
+                                        if (day != null) Modifier
+                                            .semantics { contentDescription = "${day.date}，${day.runs} 次运行，${day.tokens?.toString() ?: "未知"} Token" }
+                                            .clickable { onSelect(day.date.takeIf { it != selected }) }
+                                        else Modifier,
                                     )
-                                    .then(
-                                        if (day != null) {
-                                            Modifier
-                                                .semantics {
-                                                    contentDescription = "${day.date}，${day.runs} 次运行，${day.tokens?.toString() ?: "未知"} Token"
-                                                }
-                                                .clickable { onSelect(day.date.takeIf { it != selected }) }
-                                        } else {
-                                            Modifier
-                                        },
-                                    ),
-                            )
+                                    .padding(horizontal = 4.dp, vertical = 5.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                if (day != null) {
+                                    Text(day.date.dayOfMonth.toString(), style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.Medium, maxLines = 1)
+                                    Text(
+                                        if (mode == 0) "${day.runs}次" else if (day.tokens == null) "—" else compactMetric(day.tokens),
+                                        style = MiuixTheme.textStyles.footnote2,
+                                        color = if (day.runs == 0) colors.onSurfaceVariantSummary else colors.onSurface,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
+            val day = days.firstOrNull { it.date == selected }
+            Text(
+                day?.let { "${it.date} · ${it.runs} 次运行 · ${it.tokens?.toString() ?: "用量未知"} Token${if (!it.complete) " · 部分用量" else ""}" }
+                    ?: "按当前筛选与保留记录统计",
+                style = MiuixTheme.textStyles.footnote2,
+                color = colors.onSurfaceVariantSummary,
+            )
         }
-        val day = days.firstOrNull { it.date == selected }
-        Text(day?.let { "${it.date} · ${it.runs} 次运行 · ${it.tokens?.toString() ?: "用量未知"} Token${if (!it.complete) " · 部分用量" else ""}" }
-            ?: "按当前筛选与保留记录统计", style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     }
 }

@@ -15,13 +15,16 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.runtime.AgentMetricDay
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import java.text.NumberFormat
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.max
@@ -29,34 +32,85 @@ import kotlin.math.max
 @Composable
 internal fun AgentMetricsTrendCard(days: List<AgentMetricDay>) {
     if (days.isEmpty()) return
-    val maxRuns = days.maxOf { it.runs }.coerceAtLeast(1)
+    val buckets = if (days.size <= 10) {
+        days.map { TrendBucket(it.date, it.date, it.runs, it.inputTokens, it.outputTokens, it.incompleteUsage) }
+    } else {
+        val chunkSize = (days.size + 9) / 10
+        days.chunked(chunkSize).map { chunk ->
+            TrendBucket(
+                start = chunk.first().date,
+                end = chunk.last().date,
+                runs = chunk.sumOf { it.runs },
+                inputTokens = chunk.mapNotNull { it.inputTokens }.takeIf { it.isNotEmpty() }?.sum(),
+                outputTokens = chunk.mapNotNull { it.outputTokens }.takeIf { it.isNotEmpty() }?.sum(),
+                incomplete = chunk.sumOf { it.incompleteUsage },
+            )
+        }
+    }
+    val maxRuns = buckets.maxOf { it.runs }.coerceAtLeast(1)
     val dateFormat = DateTimeFormatter.ofLocalizedDate(FormatStyle.SHORT)
-    Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(stringResource(R.string.metrics_trend_range, days.first().date.format(dateFormat), days.last().date.format(dateFormat)),
-                style = MiuixTheme.textStyles.body2)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                days.forEach { day ->
-                    val description = stringResource(R.string.metrics_trend_description, day.date.format(dateFormat), day.runs,
-                        metricNumber(day.inputTokens), metricNumber(day.outputTokens), day.incompleteUsage)
+    val colors = MiuixTheme.colorScheme
+    Card(
+        Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+            .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
+        colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("运行次数", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        stringResource(R.string.metrics_trend_range, days.first().date.format(dateFormat), days.last().date.format(dateFormat)),
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = colors.onSurfaceVariantSummary,
+                    )
+                }
+                Text("${days.sumOf { it.runs }} 次", style = MiuixTheme.textStyles.footnote1, color = colors.primary, fontWeight = FontWeight.SemiBold)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                buckets.forEach { day ->
+                    val description = stringResource(R.string.metrics_trend_description, day.start.format(dateFormat), day.runs,
+                        metricNumber(day.inputTokens), metricNumber(day.outputTokens), day.incomplete)
                     Column(Modifier.weight(1f).clearAndSetSemantics { contentDescription = description },
                         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(NumberFormat.getIntegerInstance().format(day.runs), style = MiuixTheme.textStyles.footnote1)
-                        Box(Modifier.height(100.dp).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
-                            Box(Modifier.fillMaxWidth().height((100f * day.runs / maxRuns).coerceAtLeast(2f).dp)
-                                .background(if (day.runs > 0) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceVariant,
-                                    RoundedCornerShape(6.dp)))
+                        Box(Modifier.height(92.dp).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height((92f * day.runs / maxRuns).coerceAtLeast(2f).dp)
+                                    .background(
+                                        if (day.runs > 0) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHigh,
+                                        RoundedCornerShape(6.dp),
+                                    ),
+                            )
                         }
-                        Text(day.date.dayOfMonth.toString(), style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        Text(
+                            if (day.start == day.end) "${day.start.monthValue}/${day.start.dayOfMonth}"
+                            else "${day.start.dayOfMonth}-${day.end.dayOfMonth}",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = colors.onSurfaceVariantSummary,
+                            maxLines = 1,
+                        )
                     }
                 }
             }
-            Text(stringResource(R.string.metrics_trend_note), style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            if (days.any { it.incompleteUsage > 0 }) {
+                Text(stringResource(R.string.metrics_trend_note), style = MiuixTheme.textStyles.footnote2,
+                    color = colors.onSurfaceVariantSummary)
+            }
         }
     }
 }
+
+private data class TrendBucket(
+    val start: java.time.LocalDate,
+    val end: java.time.LocalDate,
+    val runs: Int,
+    val inputTokens: Long?,
+    val outputTokens: Long?,
+    val incomplete: Int,
+)
 
 @Composable
 internal fun AgentTokenUsageTrendCard(days: List<AgentMetricDay>) {

@@ -44,16 +44,20 @@ import io.github.mangi.eta.agent.memory.MemoryMaintenanceScheduler
 import io.github.mangi.eta.ui.screens.memory.MemoryAutomationSettingsPanel
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.DetailListRow
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
 import io.github.mangi.eta.ui.components.KnowledgeMetricsCard
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusError
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.StatusWarning
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -195,27 +199,43 @@ internal fun LearningSettingsScreen(
             )
         }
         if (tab == 2) item(key = "switches") {
-            SmallTitle("学习策略")
-            Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-                SwitchPreference(
-                    title = "启用自学习",
-                    summary = "检索规则并提交候选经验",
-                    checked = enabled,
-                    onCheckedChange = {
-                        enabled = it
-                        LearningSettingsStore.setEnabled(context, it)
-                    },
-                )
-                SwitchPreference(
-                    title = "自动捕获候选",
-                    summary = "自动脱敏、去重并审核",
-                    checked = enabled && autoCapture,
-                    enabled = enabled,
-                    onCheckedChange = {
-                        autoCapture = it
-                        LearningSettingsStore.setAutomaticCaptureEnabled(context, it)
-                    },
-                )
+            Card(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    .etaGlassSurface(accent = EtaIconTone.MEMORY.accent, cornerRadius = 18.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+            ) {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        EtaIconTile(Icons.Rounded.Psychology, tone = EtaIconTone.MEMORY, size = 34.dp, glyphSize = 18.dp, enabled = enabled)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("学习策略", style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold)
+                            Text(if (enabled) "自动积累经验" else "已关闭", style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                    }
+                    SwitchPreference(
+                        title = "启用自学习",
+                        summary = "检索规则并提交候选经验",
+                        checked = enabled,
+                        onCheckedChange = {
+                            enabled = it
+                            LearningSettingsStore.setEnabled(context, it)
+                        },
+                    )
+                    SwitchPreference(
+                        title = "自动捕获候选",
+                        summary = "自动脱敏、去重并审核",
+                        checked = enabled && autoCapture,
+                        enabled = enabled,
+                        onCheckedChange = {
+                            autoCapture = it
+                            LearningSettingsStore.setAutomaticCaptureEnabled(context, it)
+                        },
+                    )
+                }
             }
         }
         if (tab == 2) item(key = "idle_settings") { MemoryAutomationSettingsPanel() }
@@ -300,7 +320,11 @@ internal fun LearningSettingsScreen(
 
 @Composable
 private fun CandidateCard(candidate: LearningCandidateView, onClick: () -> Unit) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth()) {
+    Card(
+        Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth()
+            .etaGlassSurface(accent = if (candidate.conflicts.isNotEmpty() || candidate.status == LearningStatus.CONFLICT) EtaIconTone.RISK.accent else EtaIconTone.MEMORY.accent, cornerRadius = 16.dp),
+        colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+    ) {
         DetailListRow(title = candidate.title, preview = candidate.content,
             subtitle = "${candidate.status.displayName()} · ${candidate.kind.displayName()} · 置信度 ${(candidate.confidence * 100).toInt()}%",
             icon = if (candidate.conflicts.isNotEmpty() || candidate.status == LearningStatus.CONFLICT) {
@@ -407,7 +431,11 @@ private fun CandidateDetail(
 
 @Composable
 private fun RuleCard(rule: LearningRuleView, onClick: () -> Unit) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth()) {
+    Card(
+        Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth()
+            .etaGlassSurface(accent = EtaIconTone.MEMORY.accent, cornerRadius = 16.dp),
+        colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+    ) {
         DetailListRow(title = rule.title, preview = rule.content,
             subtitle = "v${rule.currentVersion} · ${if (rule.active) "生效" else "已归档"}${if (rule.pinned) " · 已固定" else ""}",
             icon = if (rule.pinned) Icons.Rounded.PushPin else Icons.Rounded.History, onClick = onClick)

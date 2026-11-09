@@ -10,10 +10,15 @@ internal data class AgentMetricDay(
 
 internal object AgentMetricsTrend {
     fun lastWeek(records: List<AgentRunMetricsRecord>, now: Long = System.currentTimeMillis(),
+        zone: ZoneId = ZoneId.systemDefault(), usages: Map<String, List<AgentRunMetrics>> = emptyMap()): List<AgentMetricDay> =
+        window(records, daysBack = 7, now = now, zone = zone, usages = usages)
+
+    fun window(records: List<AgentRunMetricsRecord>, daysBack: Int, now: Long = System.currentTimeMillis(),
         zone: ZoneId = ZoneId.systemDefault(), usages: Map<String, List<AgentRunMetrics>> = emptyMap()): List<AgentMetricDay> {
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
         val grouped = records.groupBy { Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate() }
-        return (6L downTo 0).map { offset ->
+        val span = daysBack.coerceAtLeast(1).toLong()
+        return ((span - 1) downTo 0).map { offset ->
             val date = today.minusDays(offset)
             val runs = grouped[date].orEmpty()
             val metrics = runs.flatMap { usages[it.recordId] ?: listOf(it.metrics) }

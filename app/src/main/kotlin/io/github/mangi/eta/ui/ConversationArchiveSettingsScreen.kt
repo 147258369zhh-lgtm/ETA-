@@ -2,7 +2,13 @@ package io.github.mangi.eta.ui
 
 import android.text.format.DateUtils
 import android.widget.Toast
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -17,13 +23,20 @@ import io.github.mangi.eta.fork.conversations.ConversationArchiveScheduler
 import io.github.mangi.eta.fork.conversations.ConversationArchiveSettings
 import io.github.mangi.eta.fork.conversations.ConversationExtensionRepository
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaStatusPill
+import io.github.mangi.eta.ui.components.EtaStatusTone
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -53,9 +66,40 @@ internal fun ConversationArchiveSettingsScreen(onBack: () -> Unit) {
         title = stringResource(R.string.conversation_archive_settings_title),
         onBack = onBack,
     ) {
+        item(key = "archive_overview") {
+            Card(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+                    .etaGlassSurface(accent = EtaIconTone.DATA.accent, cornerRadius = 18.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    EtaIconTile(Icons.Rounded.Archive, tone = EtaIconTone.DATA, size = 42.dp, glyphSize = 22.dp)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("会话归档", style = MiuixTheme.textStyles.title3, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        Text(
+                            if (settings.enabled) "空闲 ${settings.idleDays} 天后自动归档" else "自动归档已关闭",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    EtaStatusPill(
+                        if (settings.enabled) "已启用" else "关闭",
+                        tone = if (settings.enabled) EtaStatusTone.Positive else EtaStatusTone.Neutral,
+                    )
+                }
+            }
+        }
         item(key = "archive_behavior") {
             SmallTitle(stringResource(R.string.conversation_archive_group_behavior))
-            Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Card(
+                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                    .etaGlassSurface(accent = EtaIconTone.AUTOMATION.accent, cornerRadius = 16.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+            ) {
                 SwitchPreference(
                     title = stringResource(R.string.conversation_archive_enabled),
                     summary = stringResource(R.string.conversation_archive_enabled_summary),
@@ -83,7 +127,11 @@ internal fun ConversationArchiveSettingsScreen(onBack: () -> Unit) {
 
         item(key = "archive_exemptions") {
             SmallTitle(stringResource(R.string.conversation_archive_group_exemptions))
-            Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Card(
+                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                    .etaGlassSurface(accent = EtaIconTone.TOOL.accent, cornerRadius = 16.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+            ) {
                 SwitchPreference(
                     title = stringResource(R.string.conversation_archive_exempt_pinned),
                     checked = settings.exemptPinned,
@@ -110,7 +158,11 @@ internal fun ConversationArchiveSettingsScreen(onBack: () -> Unit) {
 
         item(key = "archive_check") {
             SmallTitle(stringResource(R.string.conversation_archive_group_check))
-            Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Card(
+                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                    .etaGlassSurface(accent = EtaIconTone.SYSTEM.accent, cornerRadius = 16.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+            ) {
                 BasicComponent(
                     title = stringResource(R.string.conversation_archive_check_now),
                     summary = settings.lastError?.let { error ->

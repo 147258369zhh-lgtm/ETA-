@@ -8,10 +8,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.runtime.*
 import io.github.mangi.eta.fork.projects.ProjectRepository
@@ -53,7 +55,7 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
     var provider by rememberSaveable { mutableStateOf<String?>(null) }
     var project by rememberSaveable { mutableStateOf<String?>(null) }
     var status by rememberSaveable { mutableStateOf<String?>(null) }
-    var period by rememberSaveable { mutableIntStateOf(0) }
+    var period by rememberSaveable { mutableIntStateOf(1) }
     var selectedDay by rememberSaveable { mutableStateOf<String?>(null) }
     var filtersOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -65,7 +67,7 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
     val projectIds = records.map { it.projectId }.filter(String::isNotBlank).distinct()
     val statuses = listOf(AgentMetricStatus.RUNNING, AgentMetricStatus.SUCCEEDED, AgentMetricStatus.FAILED, AgentMetricStatus.CANCELLED, AgentMetricStatus.INTERRUPTED, AgentMetricStatus.LEGACY)
     val today = LocalDate.now()
-    val cutoff = when (period) { 1 -> today; 2 -> today.minusDays(6); 3 -> today.minusDays(29); else -> null }
+    val cutoff = when (period) { 0 -> today; 1 -> today.minusDays(6); 2 -> today.minusDays(29); else -> null }
     val matchingModels = modelRecords.filter { (provider == null || provider == it.providerId) && (model == null || model == "${it.providerId}:${it.modelId}") }
     val matchingIds = matchingModels.map { it.recordId }.toSet()
     val filtered = records.filter { (source == null || source == it.source) &&
@@ -91,18 +93,23 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
                 detail = "${records.size} 次运行 · ${records.sumOf { it.metrics.requestAttempts }} 请求",
             )
         }
-    val activity = AgentMetricsActivity.days(filtered, metricsByRun)
+    val earliestDay = filtered.minOfOrNull { AgentMetricsActivity.date(it.startedAt) }
+    val windowDays = when (period) {
+        0 -> 1
+        1 -> 7
+        2 -> 30
+        else -> earliestDay?.let { (today.toEpochDay() - it.toEpochDay() + 1).toInt().coerceAtLeast(1) } ?: 1
+    }
+    val activity = AgentMetricsActivity.days(filtered, metricsByRun, daysBack = windowDays)
     val day = selectedDay?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
     val shown = filtered.filter { day == null || AgentMetricsActivity.date(it.startedAt) == day }
-    val activeFilters = listOf(source, model, provider, project, status).count { it != null } + if (period != 0) 1 else 0
+    val activeFilters = listOf(source, model, provider, project, status).count { it != null }
 
     MiuixScaffoldPage(title = stringResource(R.string.route_agent_metrics), onBack = onBack,
         actions = { IconButton(onClick = { filtersOpen = true }) { Icon(Icons.Rounded.Tune, contentDescription = "筛选运行记录") } },
         overlay = {
             WindowDialog(show = filtersOpen, title = "筛选", onDismissRequest = { filtersOpen = false }) {
                 Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
-                    val periodLabels = listOf(allLabel, "今天", "近 7 天", "近 30 天")
-                    DialogChoicePreference("时间", periodLabels[period], periodLabels, period) { period = it; selectedDay = null }
                     val sourceLabels = listOf(allLabel) + sources.map { metricSourceLabel(it) }
                     val sourceIndex = sources.indexOf(source) + 1
                     DialogChoicePreference("来源", sourceLabels[sourceIndex], sourceLabels, sourceIndex) { source = sources.getOrNull(it - 1) }
@@ -131,7 +138,7 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
                         status = statuses.getOrNull(it - 1)
                     }
                 }
-                MiuixDialogActions(confirmText = "完成", cancelText = "重置", onCancel = { source = null; model = null; provider = null; project = null; status = null; period = 0; selectedDay = null }, onConfirm = { filtersOpen = false })
+                MiuixDialogActions(confirmText = "完成", cancelText = "重置", onCancel = { source = null; model = null; provider = null; project = null; status = null; period = 1; selectedDay = null }, onConfirm = { filtersOpen = false })
             }
             WindowDialog(show = confirmClear, title = "清除已完成记录", summary = stringResource(R.string.metrics_clear_note), onDismissRequest = { if (!clearing) confirmClear = false }) {
                 MiuixDialogActions(confirmText = "清除", destructive = true, confirmEnabled = !clearing, cancelEnabled = !clearing, onCancel = { confirmClear = false }, onConfirm = {
@@ -151,6 +158,9 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
             if (failed) ArrowPreference(title = "记录加载失败，点击重试", onClick = { loading = true; reload++ })
             if (activeFilters > 0) ArrowPreference(title = "已启用 $activeFilters 项筛选", onClick = { filtersOpen = true })
         }
+        item("range") {
+            MetricsRangeSelector(period) { period = it; selectedDay = null }
+        }
         item("activity") {
             SmallTitle("活跃轨迹")
             AgentActivityCalendar(activity, day) { selectedDay = it?.toString() }
@@ -164,7 +174,7 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
         }
         item("trends") {
             SmallTitle("使用趋势")
-            AgentMetricsTrendCard(AgentMetricsTrend.lastWeek(filtered, usages = metricsByRun))
+            AgentMetricsTrendCard(AgentMetricsTrend.window(filtered, daysBack = windowDays, usages = metricsByRun))
         }
         item("history") {
             SmallTitle(day?.let { "$it · ${shown.size} 次运行" } ?: "运行记录 · ${shown.size}")
@@ -197,6 +207,34 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
                 ArrowPreference(title = "清除已完成记录", enabled = !clearing && records.any { it.status != AgentMetricStatus.RUNNING }, onClick = { confirmClear = true })
             }
             Text(stringResource(R.string.metrics_retention_note), Modifier.padding(horizontal = 24.dp, vertical = 10.dp), style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        }
+    }
+}
+
+@Composable
+private fun MetricsRangeSelector(selected: Int, onSelected: (Int) -> Unit) {
+    val colors = MiuixTheme.colorScheme
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
+        colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("统计周期", Modifier.weight(1f), style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.SemiBold)
+                Text(
+                    when (selected) { 0 -> "今天"; 1 -> "最近一周"; 2 -> "最近一月"; else -> "全部记录" },
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = colors.onSurfaceVariantSummary,
+                )
+            }
+            TabRow(
+                tabs = listOf("今天", "7 天", "30 天", "全部"),
+                selectedTabIndex = selected,
+                onTabSelected = onSelected,
+            )
         }
     }
 }

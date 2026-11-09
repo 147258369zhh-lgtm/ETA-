@@ -7,6 +7,7 @@ import android.os.Process
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -177,14 +178,30 @@ internal fun DataBackupScreen(
         }
         item(key = "actions") {
             SmallTitle("备份与恢复", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap).etaGlassSurface()) {
-                ArrowPreference(title = "导出数据", summary = if (isExportOperation(vm.operation)) "正在导出" else null,
-                    startAction = { PreferenceIcon(Icons.Rounded.Upload, EtaIconTone.DATA) }, enabled = !busy && !pending,
-                    endActions = { if (isExportOperation(vm.operation)) InfiniteProgressIndicator(size = 20.dp) }, onClick = { password = ""; exportDialog = true })
-                ArrowPreference(title = "导入数据", summary = if (isImportOperation(vm.operation)) "正在校验或恢复" else null,
-                    startAction = { PreferenceIcon(Icons.Rounded.Download, EtaIconTone.DATA) }, enabled = !busy && !pending,
-                    endActions = { if (isImportOperation(vm.operation)) InfiniteProgressIndicator(size = 20.dp) },
-                    onClick = { importLauncher.launch(arrayOf("*/*")) })
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                BackupActionTile(
+                    title = "导出数据",
+                    caption = if (isExportOperation(vm.operation)) "正在导出" else "选择内容与格式",
+                    icon = Icons.Rounded.Upload,
+                    tone = EtaIconTone.DATA,
+                    enabled = !busy && !pending,
+                    busy = isExportOperation(vm.operation),
+                    onClick = { password = ""; exportDialog = true },
+                    modifier = Modifier.weight(1f),
+                )
+                BackupActionTile(
+                    title = "导入数据",
+                    caption = if (isImportOperation(vm.operation)) "正在校验或恢复" else "校验后恢复",
+                    icon = Icons.Rounded.Download,
+                    tone = EtaIconTone.SYSTEM,
+                    enabled = !busy && !pending,
+                    busy = isImportOperation(vm.operation),
+                    onClick = { importLauncher.launch(arrayOf("*/*")) },
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
         vm.progress?.let { progress -> item(key = "progress") {
@@ -212,7 +229,7 @@ internal fun DataBackupScreen(
         } }
         item(key = "automatic") {
             SmallTitle("自动备份", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
+            BackupGroup("备份计划", Icons.Rounded.Schedule, EtaIconTone.AUTOMATION, if (auto.enabled) "已启用" else "未启用") {
                 SwitchPreference(title = "定期备份", checked = auto.enabled, enabled = !busy && !pending && auto.tree.isNotBlank(), onCheckedChange = { saveAuto(auto.copy(enabled = it)) })
                 ArrowPreference(title = "备份目录", summary = backupDirectoryLabel(auto.tree),
                     enabled = !busy && !pending, onClick = { directoryLauncher.launch(auto.tree.takeIf { it.isNotBlank() }?.let(Uri::parse)) })
@@ -220,13 +237,78 @@ internal fun DataBackupScreen(
                 DialogChoicePreference(title = "备份间隔", value = dayOptions[auto.days - 1], options = dayOptions, selectedIndex = auto.days - 1, enabled = !busy && !pending, onSelectedIndexChange = { saveAuto(auto.copy(days = it + 1)) })
                 val hourOptions = (0..23).map { "%02d:00".format(it) }
                 DialogChoicePreference(title = "执行时间", value = hourOptions[auto.hour], options = hourOptions, selectedIndex = auto.hour, enabled = !busy && !pending, onSelectedIndexChange = { saveAuto(auto.copy(hour = it)) })
+                ArrowPreference(title = "立即备份一次", summary = autoStatus.takeIf { it.isNotBlank() }, enabled = !busy && !pending && auto.tree.isNotBlank(), onClick = { AutoBackupScheduler.enqueue(app); autoStatus = "已安排备份" })
+            }
+            BackupGroup("保留与安全", Icons.Rounded.Shield, EtaIconTone.SYSTEM, if (autoEncrypted) "已加密" else "未加密") {
                 val keepOptions = (1..30).map { "最近 $it 份" }
                 DialogChoicePreference(title = "保留份数", value = keepOptions[auto.keep - 1], options = keepOptions, selectedIndex = auto.keep - 1, enabled = !busy && !pending, onSelectedIndexChange = { saveAuto(auto.copy(keep = it + 1)) })
                 SwitchPreference(title = "仅充电时备份", checked = auto.chargingOnly, enabled = !busy && !pending, onCheckedChange = { saveAuto(auto.copy(chargingOnly = it)) })
                 ArrowPreference(title = "备份加密", summary = if (autoEncrypted) "已设置密码" else "未设置密码", enabled = !busy && !pending, onClick = { password = ""; autoPasswordDialog = true })
-                BackupOptionsPanel(auto.options, { saveAuto(auto.copy(options = it)) }, enabled = !busy && !pending)
-                ArrowPreference(title = "立即备份一次", summary = autoStatus.takeIf { it.isNotBlank() }, enabled = !busy && !pending && auto.tree.isNotBlank(), onClick = { AutoBackupScheduler.enqueue(app); autoStatus = "已安排备份" })
             }
+            BackupGroup("备份内容", Icons.Rounded.Inventory2, EtaIconTone.DATA, auto.options.format.title) {
+                BackupOptionsPanel(auto.options, { saveAuto(auto.copy(options = it)) }, enabled = !busy && !pending)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupActionTile(
+    title: String,
+    caption: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tone: EtaIconTone,
+    enabled: Boolean,
+    busy: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier.heightIn(min = 112.dp).etaGlassSurface(accent = tone.accent, cornerRadius = 18.dp)
+            .clickable(enabled = enabled, onClick = onClick),
+        colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                EtaIconTile(icon, tone = tone, size = 38.dp, glyphSize = 20.dp, enabled = enabled)
+                Spacer(Modifier.weight(1f))
+                if (busy) InfiniteProgressIndicator(size = 18.dp)
+                else Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.size(18.dp))
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MiuixTheme.textStyles.body1, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, maxLines = 1)
+                Text(caption, style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupGroup(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tone: EtaIconTone,
+    status: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val colors = MiuixTheme.colorScheme
+    Card(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            .etaGlassSurface(accent = tone.accent, cornerRadius = 18.dp),
+        colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface),
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                EtaIconTile(icon, tone = tone, size = 34.dp, glyphSize = 18.dp)
+                Text(title, Modifier.weight(1f), style = MiuixTheme.textStyles.body1, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                EtaStatusPill(status)
+            }
+            HorizontalDivider(color = colors.dividerLine.copy(alpha = .5f))
+            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), content = content)
         }
     }
 }

@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -15,6 +17,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AdminPanelSettings
+import androidx.compose.material.icons.rounded.Accessibility
+import androidx.compose.material.icons.rounded.Assistant
+import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.Terminal
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.app.description
 import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
@@ -23,9 +31,12 @@ import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaIconTone
 import io.github.mangi.eta.ui.components.EtaStatusPill
 import io.github.mangi.eta.ui.components.EtaStatusTone
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -45,7 +56,11 @@ fun SystemEnhanceScreen(
         modifier = modifier,
     ) {
         item(key = "overview") {
-            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Card(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+                    .etaGlassSurface(accent = EtaIconTone.SYSTEM.accent, cornerRadius = 18.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -77,7 +92,9 @@ fun SystemEnhanceScreen(
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 12.dp)
+                    .etaGlassSurface(accent = EtaIconTone.SYSTEM.accent, cornerRadius = 18.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
             ) {
                 BasicComponent(
                     title = "Root",
@@ -107,6 +124,12 @@ fun SystemEnhanceScreen(
                         if (capabilities.xposedConnected) R.string.capability_xposed_connected
                         else R.string.capability_xposed_disconnected,
                     ),
+                    endActions = {
+                        EtaStatusPill(
+                            if (capabilities.xposedConnected) "已连接" else "未连接",
+                            tone = if (capabilities.xposedConnected) EtaStatusTone.Positive else EtaStatusTone.Neutral,
+                        )
+                    },
                 )
             }
         }
@@ -114,7 +137,9 @@ fun SystemEnhanceScreen(
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 12.dp)
+                    .etaGlassSurface(accent = EtaIconTone.TOOL.accent, cornerRadius = 16.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
             ) {
                 BasicComponent(
                     title = stringResource(R.string.capability_xposed_help),
@@ -127,20 +152,15 @@ fun SystemEnhanceScreen(
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 12.dp)
+                    .etaGlassSurface(accent = EtaIconTone.SYSTEM.accent, cornerRadius = 18.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
             ) {
-                BasicComponent(
-                    title = stringResource(R.string.capability_root_device),
-                    summary = stringResource(R.string.capability_root_device_summary),
-                )
-                BasicComponent(
-                    title = stringResource(R.string.capability_root_data),
-                    summary = stringResource(R.string.capability_root_data_summary),
-                )
-                BasicComponent(
-                    title = stringResource(R.string.capability_root_linux),
-                    summary = stringResource(R.string.capability_root_linux_summary),
-                )
+                EnhanceFeatureRow(Icons.Rounded.PhoneAndroid, stringResource(R.string.capability_root_device), stringResource(R.string.capability_root_device_summary))
+                HorizontalDivider(color = MiuixTheme.colorScheme.dividerLine.copy(alpha = .45f))
+                EnhanceFeatureRow(Icons.Rounded.Storage, stringResource(R.string.capability_root_data), stringResource(R.string.capability_root_data_summary))
+                HorizontalDivider(color = MiuixTheme.colorScheme.dividerLine.copy(alpha = .45f))
+                EnhanceFeatureRow(Icons.Rounded.Terminal, stringResource(R.string.capability_root_linux), stringResource(R.string.capability_root_linux_summary))
             }
         }
         item(key = "hook-features") {
@@ -148,21 +168,36 @@ fun SystemEnhanceScreen(
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 12.dp)
+                    .etaGlassSurface(accent = EtaIconTone.TOOL.accent, cornerRadius = 18.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
             ) {
-                BasicComponent(
-                    title = stringResource(R.string.capability_hook_assistants),
-                    summary = stringResource(R.string.capability_hook_assistants_summary),
-                )
-                BasicComponent(
-                    title = stringResource(R.string.capability_hook_google),
-                    summary = stringResource(R.string.capability_hook_google_summary),
-                )
-                BasicComponent(
-                    title = stringResource(R.string.capability_hook_accessibility),
-                    summary = stringResource(R.string.capability_hook_accessibility_summary),
-                )
+                EnhanceFeatureRow(Icons.Rounded.Assistant, stringResource(R.string.capability_hook_assistants), stringResource(R.string.capability_hook_assistants_summary), EtaIconTone.AUTOMATION)
+                HorizontalDivider(color = MiuixTheme.colorScheme.dividerLine.copy(alpha = .45f))
+                EnhanceFeatureRow(Icons.Rounded.Search, stringResource(R.string.capability_hook_google), stringResource(R.string.capability_hook_google_summary), EtaIconTone.MODEL)
+                HorizontalDivider(color = MiuixTheme.colorScheme.dividerLine.copy(alpha = .45f))
+                EnhanceFeatureRow(Icons.Rounded.Accessibility, stringResource(R.string.capability_hook_accessibility), stringResource(R.string.capability_hook_accessibility_summary), EtaIconTone.SYSTEM)
             }
+        }
+    }
+}
+
+@Composable
+private fun EnhanceFeatureRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    summary: String,
+    tone: EtaIconTone = EtaIconTone.SYSTEM,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        EtaIconTile(icon, tone = tone, size = 34.dp, glyphSize = 18.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Medium)
+            Text(summary, style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 2)
         }
     }
 }

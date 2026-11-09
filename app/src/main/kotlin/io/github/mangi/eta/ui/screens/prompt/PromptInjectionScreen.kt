@@ -45,8 +45,14 @@ import io.github.mangi.eta.agent.prompt.PromptScopeType
 import io.github.mangi.eta.agent.prompt.PromptTarget
 import io.github.mangi.eta.agent.prompt.PromptTemplate
 import io.github.mangi.eta.ui.components.DetailListRow
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaStatusPill
+import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.etaGlassSurface
+import io.github.mangi.eta.ui.pages.providers.TagChip
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -243,6 +249,9 @@ private fun PromptLibraryScaffold(
                 )
             }
         }
+        item(key = "prompt_library_hero") {
+            PromptLibraryHero(store = store, onCreate = onCreate)
+        }
         when (tab) {
             TAB_TEMPLATES -> templateLibraryItems(
                 store = store,
@@ -325,9 +334,6 @@ private fun LazyListScope.templateLibraryItems(
         .sortedWith(compareByDescending<PromptTemplate> { it.updatedAt })
 
     if (templates.isNotEmpty()) {
-        item(key = "prompt_overview") {
-            PromptOverviewCard(store)
-        }
         item(key = "prompt_search") {
             TextField(
                 value = query,
@@ -360,9 +366,6 @@ private fun LazyListScope.templateLibraryItems(
             )
         }
     } else {
-        item(key = "prompt_empty_overview") {
-            PromptOverviewCard(store)
-        }
         item(key = "prompt_empty") {
             PromptEmptyState(
                 title = if (query.isBlank()) {
@@ -383,6 +386,75 @@ private fun LazyListScope.templateLibraryItems(
                     null
                 },
             )
+        }
+    }
+}
+
+@Composable
+private fun PromptLibraryHero(store: PromptInjectionUiStore, onCreate: () -> Unit) {
+    val report = store.analyzeLibrary()
+    val enabled = store.config.templates.count { it.enabled }
+    val issues = report.errors.size + report.warnings.size
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .etaGlassSurface(accent = MiuixTheme.colorScheme.primary, cornerRadius = 20.dp),
+        colors = CardDefaults.defaultColors(
+            color = MiuixTheme.colorScheme.surfaceContainer,
+            contentColor = MiuixTheme.colorScheme.onSurface,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                EtaIconTile(
+                    icon = Icons.Rounded.Description,
+                    tone = EtaIconTone.AUTOMATION,
+                    size = 42.dp,
+                    glyphSize = 22.dp,
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        "提示词与工具边界",
+                        style = MiuixTheme.textStyles.title3,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "先固定权限合同，再按作用域组装指令",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+                EtaStatusPill(
+                    text = when {
+                        report.errors.isNotEmpty() -> "需处理"
+                        issues > 0 -> "有提示"
+                        else -> "已就绪"
+                    },
+                    tone = when {
+                        report.errors.isNotEmpty() -> EtaStatusTone.Danger
+                        issues > 0 -> EtaStatusTone.Warning
+                        else -> EtaStatusTone.Positive
+                    },
+                )
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                TagChip("$enabled 个启用模板")
+                TagChip("${store.boundScopeCount()} 个作用域")
+                TagChip(if (issues == 0) "无冲突" else "$issues 项检查")
+            }
+            if (store.config.templates.isEmpty()) {
+                TextButton(text = "新建第一条指令", onClick = onCreate)
+            }
         }
     }
 }
@@ -473,7 +545,12 @@ private fun PromptTemplateCard(
 ) {
     val colors = MiuixTheme.colorScheme
     Card(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .etaGlassSurface(
+                accent = if (template.enabled) colors.primary else colors.outline,
+                cornerRadius = 18.dp,
+            ),
         colors = CardDefaults.defaultColors(
             color = if (template.enabled) {
                 colors.secondaryContainer.copy(alpha = 0.42f)
@@ -584,7 +661,11 @@ private fun LazyListScope.governanceItems(store: PromptInjectionUiStore) {
     }
     item(key = "prompt_governance_issues") {
         SmallTitle("检查结果")
-        Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+        Card(
+            Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                .etaGlassSurface(accent = MiuixTheme.colorScheme.primary, cornerRadius = 16.dp),
+            colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+        ) {
             val visible = report.issues
                 .sortedBy { it.level.ordinal }
                 .take(8)
@@ -622,7 +703,11 @@ private fun LazyListScope.governanceItems(store: PromptInjectionUiStore) {
     }
     item(key = "prompt_governance_channels") {
         SmallTitle("覆盖通道")
-        Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+        Card(
+            Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                .etaGlassSurface(accent = MiuixTheme.colorScheme.secondary, cornerRadius = 16.dp),
+            colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+        ) {
             listOf(
                 "普通对话" to "会话级指令、角色指令和模型指令共同生效",
                 "会议室" to "主持人与参与者可分别绑定，不混用身份",
@@ -644,7 +729,12 @@ private fun LazyListScope.governanceItems(store: PromptInjectionUiStore) {
 private fun CardMaterialMetric(title: String, value: String, summary: String, warning: Boolean) {
     val colors = MiuixTheme.colorScheme
     Card(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .etaGlassSurface(
+                accent = if (warning) colors.secondary else colors.primary,
+                cornerRadius = 18.dp,
+            ),
         colors = CardDefaults.defaultColors(
             color = (if (warning) colors.secondaryContainer else colors.surfaceContainer).copy(alpha = 0.42f),
             contentColor = colors.onSurface,
@@ -674,7 +764,8 @@ private fun LazyListScope.bindingOverviewItems(
     item(key = "binding_overview") {
         val colors = MiuixTheme.colorScheme
         Card(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
             colors = CardDefaults.defaultColors(
                 color = colors.secondaryContainer.copy(alpha = 0.28f),
                 contentColor = colors.onSurface,
@@ -706,7 +797,12 @@ private fun LazyListScope.bindingOverviewItems(
     item(key = "binding_global") {
         Column {
             SmallTitle(stringResource(R.string.prompt_injection_global))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp), onClick = onOpenGlobal) {
+            Card(
+                Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                    .etaGlassSurface(accent = MiuixTheme.colorScheme.primary, cornerRadius = 16.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+                onClick = onOpenGlobal,
+            ) {
                 DetailListRow(
                     title = stringResource(R.string.prompt_injection_global),
                     subtitle = stringResource(R.string.prompt_injection_global_summary),
@@ -732,7 +828,11 @@ private fun LazyListScope.bindingOverviewItems(
     item(key = "binding_scopes") {
         Column {
             SmallTitle(stringResource(R.string.prompt_injection_scope_targets))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(
+                Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                    .etaGlassSurface(accent = MiuixTheme.colorScheme.secondary, cornerRadius = 16.dp),
+                colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
+            ) {
                 editableScopes.forEach { type ->
                     val targets = store.targets(type)
                     val bound = targets.count { store.bindingFor(it.target) != null }

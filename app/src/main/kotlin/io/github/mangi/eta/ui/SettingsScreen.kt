@@ -8,6 +8,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -93,9 +94,6 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealth
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
-import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayBackend
-import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
-import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayLifecycle
 import io.github.mangi.eta.config.PowerAssistantTarget
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
@@ -129,6 +127,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -227,7 +226,6 @@ private fun SettingsPageContent(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val capabilities = rememberDeviceCapabilities()
-    val virtualDisplaySnapshot by VirtualDisplayController.snapshots.collectAsState()
     val enhancementHistory = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
     var hasConnectedFramework by remember { mutableStateOf(enhancementHistory.hasConnected) }
     var hasUsedSystemizer by remember { mutableStateOf(enhancementHistory.hasUsedSystemizer) }
@@ -402,22 +400,6 @@ private fun SettingsPageContent(
                         },
                         onClick = { onNavigate(AppRoute.ModelProviders) },
                     )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
-                        key = Prefs.Keys.AGENT_THINKING_ENABLED,
-                        icon = Icons.Rounded.Psychology,
-                        iconTint = SettingsIconColors.Blue,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.settings_auto_compaction),
-                        key = Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED,
-                        icon = Icons.Rounded.Layers,
-                        iconTint = SettingsIconColors.Blue,
-                    )
                 }
             }
 
@@ -454,16 +436,6 @@ private fun SettingsPageContent(
                             )
                         },
                         onClick = { onNavigate(AppRoute.Subagents) },
-                    )
-                    ArrowPreference(
-                        title = "提示词与工具边界",
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.Description,
-                                tint = SettingsIconColors.Automation,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.PromptInjection) },
                     )
                 }
             }
@@ -511,14 +483,6 @@ private fun SettingsPageContent(
                         startAction = { SettingsIcon(Icons.Rounded.Build, tint = SettingsIconColors.Tool) },
                         onClick = { onNavigate(AppRoute.Tools) },
                     )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_enable_web_browsing_tools_8b6b03),
-                        key = Prefs.Keys.AGENT_BROWSER_TOOLS,
-                        icon = Icons.Rounded.Language,
-                        iconTint = SettingsIconColors.Blue,
-                    )
                     ArrowPreference(
                         title = stringResource(R.string.web_tools_settings_title),
                         startAction = {
@@ -528,70 +492,6 @@ private fun SettingsPageContent(
                             )
                         },
                         onClick = { onNavigate(AppRoute.WebToolsSettings) },
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.settings_virtual_display_title),
-                        summary = when (virtualDisplaySnapshot.lifecycle) {
-                            VirtualDisplayLifecycle.ACTIVE -> when (virtualDisplaySnapshot.backend) {
-                                VirtualDisplayBackend.ROOT_BRIDGE -> stringResource(
-                                    R.string.settings_virtual_display_active_root,
-                                    virtualDisplaySnapshot.width,
-                                    virtualDisplaySnapshot.height,
-                                )
-                                VirtualDisplayBackend.IN_PROCESS -> stringResource(
-                                    R.string.settings_virtual_display_active_system,
-                                    virtualDisplaySnapshot.width,
-                                    virtualDisplaySnapshot.height,
-                                )
-                                VirtualDisplayBackend.NONE -> null
-                            }
-                            VirtualDisplayLifecycle.STARTING ->
-                                stringResource(R.string.settings_virtual_display_starting)
-                            VirtualDisplayLifecycle.RECOVERING ->
-                                stringResource(R.string.settings_virtual_display_recovering)
-                            VirtualDisplayLifecycle.FAILED ->
-                                stringResource(R.string.settings_virtual_display_failed)
-                            VirtualDisplayLifecycle.IDLE,
-                            VirtualDisplayLifecycle.RELEASING
-                            -> null
-                        },
-                        key = Prefs.Keys.AGENT_VIRTUAL_DISPLAY_ENABLED,
-                        icon = Icons.Rounded.Layers,
-                        iconTint = SettingsIconColors.Blue,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_enable_device_direct_tools_e2d595),
-                        key = Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS,
-                        icon = Icons.Rounded.Smartphone,
-                        iconTint = SettingsIconColors.Green,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_allow_reading_of_sensitive_device_information_feaec0),
-                        key = Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS,
-                        icon = Icons.Rounded.Visibility,
-                        iconTint = SettingsIconColors.Blue,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_allow_sensitive_device_operation_3d42ea),
-                        key = Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS,
-                        icon = Icons.Rounded.GppMaybe,
-                        iconTint = SettingsIconColors.Orange,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_enable_terminal_file_tools_18bb43),
-                        key = Prefs.Keys.AGENT_TERMINAL_TOOLS,
-                        icon = Icons.Rounded.Terminal,
-                        iconTint = SettingsIconColors.Green,
                     )
                     ArrowPreference(
                         title = stringResource(R.string.ui_linux_tool_environment_314d22),
@@ -604,6 +504,43 @@ private fun SettingsPageContent(
                         onClick = { onNavigate(AppRoute.LinuxEnvironment) },
                     )
                 }
+                CompactToolsGrid(
+                    context = context,
+                    prefs = agentPrefs,
+                    items = listOf(
+                        ToolToggleSpec("网页浏览", Prefs.Keys.AGENT_BROWSER_TOOLS, Icons.Rounded.Language, SettingsIconColors.Blue),
+                        ToolToggleSpec(
+                            stringResource(R.string.settings_virtual_display_title),
+                            Prefs.Keys.AGENT_VIRTUAL_DISPLAY_ENABLED,
+                            Icons.Rounded.Layers,
+                            SettingsIconColors.System,
+                        ),
+                        ToolToggleSpec(
+                            stringResource(R.string.ui_enable_device_direct_tools_e2d595),
+                            Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS,
+                            Icons.Rounded.Smartphone,
+                            SettingsIconColors.System,
+                        ),
+                        ToolToggleSpec(
+                            stringResource(R.string.ui_allow_reading_of_sensitive_device_information_feaec0),
+                            Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS,
+                            Icons.Rounded.Visibility,
+                            SettingsIconColors.Blue,
+                        ),
+                        ToolToggleSpec(
+                            stringResource(R.string.ui_allow_sensitive_device_operation_3d42ea),
+                            Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS,
+                            Icons.Rounded.GppMaybe,
+                            SettingsIconColors.Automation,
+                        ),
+                        ToolToggleSpec(
+                            stringResource(R.string.ui_enable_terminal_file_tools_18bb43),
+                            Prefs.Keys.AGENT_TERMINAL_TOOLS,
+                            Icons.Rounded.Terminal,
+                            SettingsIconColors.Tool,
+                        ),
+                    ),
+                )
             }
 
             // ── 系统助手接管 ──────────────────────────────────────────────
@@ -1181,6 +1118,111 @@ private fun SystemizerConfirmDialog(
             onCancel = onDismissRequest,
             onConfirm = onConfirm,
         )
+    }
+}
+
+private data class ToolToggleSpec(
+    val title: String,
+    val key: String,
+    val icon: ImageVector,
+    val accent: Color,
+)
+
+@Composable
+private fun CompactToolsGrid(
+    context: Context,
+    prefs: SharedPreferences?,
+    items: List<ToolToggleSpec>,
+) {
+    Column(
+        modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items.chunked(3).forEach { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowItems.forEach { item ->
+                    CompactToolToggle(
+                        context = context,
+                        prefs = prefs,
+                        item = item,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(3 - rowItems.size) { Box(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactToolToggle(
+    context: Context,
+    prefs: SharedPreferences?,
+    item: ToolToggleSpec,
+    modifier: Modifier = Modifier,
+) {
+    val default = Prefs.Keys.BOOLEAN_DEFAULTS[item.key] ?: true
+    val history = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
+    var checked by remember(prefs, item.key) {
+        mutableStateOf(prefs?.getBoolean(item.key, default) ?: history.checked(item.key, default))
+    }
+    DisposableEffect(prefs, item.key) {
+        val target = prefs ?: return@DisposableEffect onDispose {}
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { changed, key ->
+            if (key == item.key) checked = changed.getBoolean(item.key, default)
+        }
+        target.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { target.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    fun toggle() {
+        val target = prefs ?: return
+        val next = !checked
+        if (putBooleanSync(target, item.key, next)) {
+            checked = next
+            history.recordCommittedBoolean(item.key, next)
+            Prefs.reconcileAgentPreferences(EtaApp.serviceInstance)
+        } else {
+            Toast.makeText(context, R.string.settings_write_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+    Card(
+        modifier = modifier
+            .etaGlassSurface(accent = item.accent, cornerRadius = 15.dp)
+            .clickable(enabled = prefs != null) { toggle() },
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                EtaIconTile(
+                    icon = item.icon,
+                    accentColor = item.accent,
+                    enabled = prefs != null,
+                    size = 28.dp,
+                    glyphSize = 15.dp,
+                )
+                Switch(
+                    checked = checked,
+                    enabled = prefs != null,
+                    onCheckedChange = { toggle() },
+                )
+            }
+            Text(
+                text = item.title,
+                style = MiuixTheme.textStyles.footnote1,
+                fontWeight = FontWeight.Medium,
+                color = if (prefs != null) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.disabledOnSurface,
+                maxLines = 2,
+            )
+        }
     }
 }
 

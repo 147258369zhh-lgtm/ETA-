@@ -15,6 +15,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.SportsBar
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +79,28 @@ internal fun CharacterLibraryScreen(
                 onTabSelected = { index -> if (index == 1) onOpenInstructions() },
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
+        }
+        item(key = "prompt_and_tool_boundary") {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = CharacterCardPadding)
+                    .padding(top = 2.dp, bottom = 10.dp),
+            ) {
+                ArrowPreference(
+                    title = "提示词与工具边界",
+                    summary = "管理全局、模型、角色、会话与会议室的指令注入",
+                    startAction = {
+                        Icon(
+                            imageVector = Icons.Rounded.Tune,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.primary,
+                            modifier = Modifier.padding(end = 12.dp),
+                        )
+                    },
+                    onClick = { onNavigate(AppRoute.PromptInjection) },
+                )
+            }
         }
         item(key = "search") {
             SearchBar(

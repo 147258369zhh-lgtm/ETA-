@@ -8,9 +8,13 @@ internal data class AgentActivityDay(val date: LocalDate, val runs: Int, val tok
 
 internal object AgentMetricsActivity {
     fun days(records: List<AgentRunMetricsRecord>, metrics: Map<String, List<AgentRunMetrics>>,
-        today: LocalDate = LocalDate.now(), zone: ZoneId = ZoneId.systemDefault()): List<AgentActivityDay> {
+        today: LocalDate = LocalDate.now(), zone: ZoneId = ZoneId.systemDefault(), daysBack: Int = 91): List<AgentActivityDay> {
         val grouped = records.groupBy { date(it.startedAt, zone) }
-        val start = today.minusWeeks(12).with(java.time.DayOfWeek.MONDAY)
+        val start = if (daysBack == 91) {
+            today.minusWeeks(12).with(java.time.DayOfWeek.MONDAY)
+        } else {
+            today.minusDays(daysBack.coerceAtLeast(1).toLong() - 1)
+        }
         return generateSequence(start) { it.plusDays(1) }.takeWhile { !it.isAfter(today) }.map { day ->
             val runs = grouped[day].orEmpty()
             val usages = runs.flatMap { metrics[it.recordId] ?: listOf(it.metrics) }

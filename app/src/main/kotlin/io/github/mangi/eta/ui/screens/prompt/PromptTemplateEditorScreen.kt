@@ -36,6 +36,7 @@ import io.github.mangi.eta.agent.prompt.PromptTemplate
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -146,7 +147,8 @@ internal fun PromptTemplateEditorScreen(
                 SmallTitle(stringResource(R.string.prompt_injection_template_info))
                 val colors = MiuixTheme.colorScheme
                 Card(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                        .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
                     colors = CardDefaults.defaultColors(
                         color = colors.secondaryContainer.copy(alpha = 0.22f),
                         contentColor = colors.onSurface,
@@ -328,7 +330,8 @@ private fun PromptBlockEditor(
 ) {
     val colors = MiuixTheme.colorScheme
     Card(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            .etaGlassSurface(accent = colors.primary, cornerRadius = 16.dp),
         colors = CardDefaults.defaultColors(
             color = if (block.enabled) {
                 colors.secondaryContainer.copy(alpha = 0.34f)

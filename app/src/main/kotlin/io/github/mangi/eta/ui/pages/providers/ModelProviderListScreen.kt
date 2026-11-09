@@ -1,5 +1,7 @@
 package io.github.mangi.eta.ui.pages.providers
 
+import android.content.SharedPreferences
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -28,10 +30,12 @@ import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -46,11 +50,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.model.typeLabel
 import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.repository.ProviderCredentialRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -63,7 +70,9 @@ import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.navigation.AppRoute
 import io.github.mangi.eta.ui.navigation.NewProviderType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Checkbox
@@ -89,6 +98,11 @@ internal fun ModelProviderListScreen(
     val selectedModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
     val fallbackSettings by RuntimeConfigRepository.modelFallbackSettingsFlow()
         .collectAsState(initial = io.github.mangi.eta.data.model.ModelFallbackSettings())
+    val providerCredentialState by produceState<Map<String, Boolean>>(emptyMap(), providers) {
+        value = withContext(Dispatchers.IO) {
+            providers.associate { provider -> provider.id to provider.hasUsableCredentials() }
+        }
+    }
     var searchQuery by remember { mutableStateOf("") }
     var providerToDelete by remember { mutableStateOf<ProviderSetting?>(null) }
     var fallbackPickerOpen by remember { mutableStateOf(false) }
@@ -223,6 +237,19 @@ internal fun ModelProviderListScreen(
             }
         }
 
+        item(key = "default_runtime") {
+            ProviderSection(title = "默认运行") {
+                ProviderRuntimeSwitch(
+                    title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
+                    prefKey = Prefs.Keys.AGENT_THINKING_ENABLED,
+                )
+                ProviderRuntimeSwitch(
+                    title = stringResource(R.string.settings_auto_compaction),
+                    prefKey = Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED,
+                )
+            }
+        }
+
         item(key = "create_section") {
             ProviderSection(title = stringResource(R.string.ui_add_new_provider_74df54)) {
                 ArrowPreference(
@@ -279,6 +306,7 @@ internal fun ModelProviderListScreen(
                             ProviderListItem(
                                 provider = provider,
                                 isSelected = provider.id == selectedProviderId,
+                                credentialsReady = providerCredentialState[provider.id] == true,
                                 onOpen = { onNavigate(AppRoute.ModelProviderDetail(provider.id)) },
                                 onDelete = if (!provider.isBuiltIn) ({ providerToDelete = provider }) else null,
                                 onSelect = {
@@ -643,6 +671,7 @@ private fun FallbackPickerRow(
 private fun ProviderListItem(
     provider: ProviderSetting,
     isSelected: Boolean,
+    credentialsReady: Boolean,
     onOpen: () -> Unit,
     onDelete: (() -> Unit)?,
     onSelect: () -> Unit,
@@ -687,8 +716,12 @@ private fun ProviderListItem(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     EtaStatusPill(
-                        text = if (provider.isEnabled) "可用" else stringResource(R.string.ui_disabled_0fe5a9),
-                        tone = if (provider.isEnabled) EtaStatusTone.Positive else EtaStatusTone.Neutral,
+                        text = when {
+                            !provider.isEnabled -> stringResource(R.string.ui_disabled_0fe5a9)
+                            credentialsReady -> "可用"
+                            else -> "待配置"
+                        },
+                        tone = if (provider.isEnabled && credentialsReady) EtaStatusTone.Positive else EtaStatusTone.Neutral,
                     )
                     TagChip(pluralStringResource(R.plurals.provider_models_count, provider.models.size, provider.models.size))
                 }
@@ -700,4 +733,46 @@ private fun ProviderListItem(
             )
         }
     }
+}
+
+@Composable
+private fun ProviderRuntimeSwitch(title: String, prefKey: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val preferences = remember { Prefs.localAgentPreferences() }
+    val default = Prefs.Keys.BOOLEAN_DEFAULTS[prefKey] ?: true
+    var checked by remember(preferences, prefKey) {
+        mutableStateOf(preferences?.getBoolean(prefKey, default) ?: default)
+    }
+    DisposableEffect(preferences, prefKey) {
+        val target = preferences ?: return@DisposableEffect onDispose {}
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { changed, key ->
+            if (key == prefKey) checked = changed.getBoolean(prefKey, default)
+        }
+        target.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { target.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    SwitchPreference(
+        title = title,
+        checked = checked,
+        enabled = preferences != null,
+        onCheckedChange = { enabled ->
+            val target = preferences ?: return@SwitchPreference
+            if (target.edit().putBoolean(prefKey, enabled).commit()) {
+                checked = enabled
+                Prefs.reconcileAgentPreferences(EtaApp.serviceInstance)
+            } else {
+                Toast.makeText(context, R.string.settings_write_failed, Toast.LENGTH_SHORT).show()
+            }
+        },
+    )
+}
+
+private fun ProviderSetting.hasUsableCredentials(): Boolean {
+    if (!isEnabled) return false
+    if (!ProviderAuthModes.isOAuth(authMode)) return apiKey.isNotBlank()
+    return runCatching {
+        ProviderCredentialRepository.account(id, authMode)?.let { account ->
+            !account.needsReauthentication && account.planEnabled
+        } == true
+    }.getOrDefault(false)
 }
