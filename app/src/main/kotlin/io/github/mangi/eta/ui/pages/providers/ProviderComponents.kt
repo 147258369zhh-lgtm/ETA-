@@ -2,9 +2,13 @@ package io.github.mangi.eta.ui.pages.providers
 
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -16,6 +20,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -28,10 +34,11 @@ import io.github.mangi.eta.ui.components.providerBrandLogoRes as sharedProviderB
 import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaIconTone
 import io.github.mangi.eta.ui.components.EtaUiMetrics
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -44,13 +51,36 @@ internal fun ProviderSection(
 ) {
     Column(modifier = modifier) {
         if (title != null) {
-            SmallTitle(title, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+            Row(
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 7.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(width = 3.dp, height = 14.dp)
+                        .then(Modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(50)))
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(MiuixTheme.colorScheme.primary, MiuixTheme.colorScheme.secondary),
+                            ),
+                        ),
+                )
+                Text(
+                    text = title,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = EtaUiMetrics.pageHorizontal)
-                .padding(bottom = EtaUiMetrics.groupGap),
+                .padding(bottom = EtaUiMetrics.groupGap)
+                .etaGlassSurface(),
         ) {
             content()
         }
@@ -79,7 +109,10 @@ private fun ProviderBrandImage(
         modifier = modifier
             .padding(end = 4.dp)
             .size(32.dp)
-            .clip(CircleShape),
+            .shadow(3.dp, CircleShape, ambientColor = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+            .clip(CircleShape)
+            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+            .border(0.65.dp, Color.White.copy(alpha = 0.16f), CircleShape),
     )
 }
 
@@ -125,16 +158,19 @@ internal fun TagChip(
     val background: Color
     val foreground: Color
     val weight: FontWeight
+    val borderColor: Color
     when (tone) {
         TagChipTone.Normal -> {
             background = MiuixTheme.colorScheme.secondaryContainer
             foreground = MiuixTheme.colorScheme.onSurfaceVariantSummary
             weight = FontWeight.Normal
+            borderColor = MiuixTheme.colorScheme.dividerLine.copy(alpha = 0.34f)
         }
         TagChipTone.Emphasized -> {
             background = MiuixTheme.colorScheme.tertiaryContainer
             foreground = MiuixTheme.colorScheme.onTertiaryContainer
             weight = FontWeight.Medium
+            borderColor = MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)
         }
     }
     Text(
@@ -143,6 +179,7 @@ internal fun TagChip(
         fontWeight = weight,
         color = foreground,
         modifier = Modifier
+            .squircleBorder(width = 0.65.dp, color = borderColor, cornerRadius = 8.dp)
             .squircleSurface(color = background, cornerRadius = 8.dp)
             .padding(horizontal = 7.dp, vertical = 3.dp),
     )

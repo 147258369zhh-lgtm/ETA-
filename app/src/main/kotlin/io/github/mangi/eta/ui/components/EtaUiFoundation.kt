@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -127,21 +128,41 @@ internal fun EtaIconTile(
         )
     }
     val rim = if (enabled) accent.copy(alpha = 0.20f) else MiuixTheme.colorScheme.dividerLine.copy(alpha = 0.55f)
+    val innerRim = Color.White.copy(alpha = if (enabled) 0.22f else 0.055f)
     Box(
         modifier = modifier
             .size(size)
-            .shadow(if (enabled) 4.dp else 0.dp, shape, ambientColor = accent.copy(alpha = 0.16f), spotColor = accent.copy(alpha = 0.16f))
+            .shadow(
+                elevation = if (enabled) 5.dp else 0.dp,
+                shape = shape,
+                ambientColor = accent.copy(alpha = 0.18f),
+                spotColor = accent.copy(alpha = 0.22f),
+            )
             .clip(shape)
             .background(container)
             .border(0.7.dp, rim, shape)
             .drawWithContent {
-                drawContent()
+                val tileSize = this.size
                 drawRoundRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.16f), Color.Transparent),
-                        endY = this.size.height * 0.62f,
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color.White.copy(alpha = if (enabled) 0.18f else 0.05f), Color.Transparent),
+                        center = Offset(tileSize.width * 0.28f, tileSize.height * 0.16f),
+                        radius = tileSize.maxDimension * 0.82f,
                     ),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(EtaUiMetrics.iconCorner.toPx()),
+                )
+                drawContent()
+                val inset = 0.9.dp.toPx()
+                val radius = (EtaUiMetrics.iconCorner.toPx() - inset).coerceAtLeast(0f)
+                drawRoundRect(
+                    color = innerRim,
+                    topLeft = Offset(inset, inset),
+                    size = Size(
+                        (tileSize.width - inset * 2f).coerceAtLeast(0f),
+                        (tileSize.height - inset * 2f).coerceAtLeast(0f),
+                    ),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius),
+                    style = Stroke(width = 0.65.dp.toPx()),
                 )
             },
         contentAlignment = Alignment.Center,
@@ -164,31 +185,46 @@ internal fun EtaStatusPill(
         EtaStatusTone.Warning -> EtaIconTone.MEMORY.accent
         EtaStatusTone.Danger -> MiuixTheme.colorScheme.error
     }
-    val container by animateColorAsState(color.copy(alpha = 0.11f), tween(EtaMotion.state, easing = FastOutSlowInEasing), label = "eta-status-container")
+    val container by animateColorAsState(color.copy(alpha = 0.14f), tween(EtaMotion.state, easing = FastOutSlowInEasing), label = "eta-status-container")
     val border by animateColorAsState(color.copy(alpha = 0.18f), tween(EtaMotion.state, easing = FastOutSlowInEasing), label = "eta-status-border")
     Box(
         modifier = modifier
             .defaultMinSize(minHeight = EtaUiMetrics.statusMinHeight)
             .clip(RoundedCornerShape(50))
-            .background(container)
+            .background(
+                Brush.linearGradient(
+                    listOf(container, Color.White.copy(alpha = 0.045f), container.copy(alpha = container.alpha * 0.62f)),
+                ),
+            )
             .border(0.7.dp, border, RoundedCornerShape(50))
             .padding(horizontal = 9.dp, vertical = 5.dp)
             .semantics { contentDescription = text },
         contentAlignment = Alignment.Center,
     ) {
-        Crossfade(
-            targetState = text,
-            animationSpec = EtaMotion.standard(),
-            label = "eta-status-content",
-        ) { current ->
-            Text(
-                text = current,
-                fontSize = EtaTypography.statusSize,
-                lineHeight = EtaTypography.statusLineHeight,
-                fontWeight = FontWeight.Medium,
-                color = color,
-                maxLines = 1,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(5.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(color),
             )
+            Crossfade(
+                targetState = text,
+                animationSpec = EtaMotion.standard(),
+                label = "eta-status-content",
+            ) { current ->
+                Text(
+                    text = current,
+                    fontSize = EtaTypography.statusSize,
+                    lineHeight = EtaTypography.statusLineHeight,
+                    fontWeight = FontWeight.Medium,
+                    color = color,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -237,28 +273,37 @@ internal fun Modifier.etaGlassSurface(
     val highlight = Color.White.copy(alpha = if (dark) 0.075f else 0.34f)
     return this
         .shadow(
-            elevation = if (dark) 5.dp else 3.dp,
+            elevation = if (dark) 7.dp else 4.dp,
             shape = shape,
-            ambientColor = accent.copy(alpha = if (dark) 0.20f else 0.10f),
-            spotColor = accent.copy(alpha = if (dark) 0.24f else 0.12f),
+            ambientColor = accent.copy(alpha = if (dark) 0.24f else 0.12f),
+            spotColor = accent.copy(alpha = if (dark) 0.30f else 0.15f),
             clip = false,
         )
         .border(
-            width = 0.7.dp,
+            width = 0.8.dp,
             brush = Brush.linearGradient(
-                listOf(highlight, accent.copy(alpha = if (dark) 0.10f else 0.06f), colors.dividerLine.copy(alpha = 0.18f)),
+                listOf(
+                    highlight,
+                    accent.copy(alpha = if (dark) 0.18f else 0.10f),
+                    Color.White.copy(alpha = if (dark) 0.035f else 0.16f),
+                    colors.dividerLine.copy(alpha = 0.22f),
+                ),
             ),
             shape = shape,
         )
         .drawWithContent {
             drawContent()
+            val inset = 0.8.dp.toPx()
+            val innerRadius = (cornerRadius.toPx() - inset).coerceAtLeast(0f)
             drawRoundRect(
-                brush = Brush.verticalGradient(
-                    listOf(Color.White.copy(alpha = if (dark) 0.016f else 0.045f), Color.Transparent),
-                    endY = size.height * 0.42f,
+                color = Color.White.copy(alpha = if (dark) 0.035f else 0.13f),
+                topLeft = Offset(inset, inset),
+                size = Size(
+                    (size.width - inset * 2f).coerceAtLeast(0f),
+                    (size.height - inset * 2f).coerceAtLeast(0f),
                 ),
-                size = Size(size.width, size.height),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius.toPx()),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(innerRadius),
+                style = Stroke(width = 0.6.dp.toPx()),
             )
         }
 }
@@ -280,6 +325,17 @@ internal fun Modifier.etaPageAtmosphere(): Modifier {
                 ),
             ),
         )
+        drawRect(
+            Brush.linearGradient(
+                colors = listOf(
+                    primary.copy(alpha = if (dark) 0.035f else 0.018f),
+                    Color.Transparent,
+                    secondary.copy(alpha = if (dark) 0.025f else 0.014f),
+                ),
+                start = Offset.Zero,
+                end = Offset(size.width, size.height),
+            ),
+        )
         drawCircle(
             brush = Brush.radialGradient(
                 listOf(primary.copy(alpha = if (dark) 0.13f else 0.075f), Color.Transparent),
@@ -298,13 +354,13 @@ internal fun Modifier.etaPageAtmosphere(): Modifier {
             radius = size.minDimension * 0.56f,
             center = Offset(size.width * 0.08f, size.height * 0.88f),
         )
-        val step = 24.dp.toPx()
-        val dot = Color.White.copy(alpha = if (dark) 0.025f else 0.16f)
+        val step = 30.dp.toPx()
+        val dot = Color.White.copy(alpha = if (dark) 0.014f else 0.09f)
         var x = step / 2
         while (x < size.width) {
             var y = step / 2
             while (y < size.height) {
-                drawCircle(dot, radius = 0.55.dp.toPx(), center = Offset(x, y))
+                drawCircle(dot, radius = 0.38.dp.toPx(), center = Offset(x, y))
                 y += step
             }
             x += step

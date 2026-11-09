@@ -60,6 +60,7 @@ import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaIconTone
 import io.github.mangi.eta.ui.components.EtaStatusPill
 import io.github.mangi.eta.ui.components.EtaStatusTone
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.navigation.AppRoute
 import io.github.mangi.eta.ui.navigation.NewProviderType
 import kotlinx.coroutines.launch
@@ -651,6 +652,7 @@ private fun ProviderListItem(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp, vertical = 4.dp)
+            .etaGlassSurface(accent = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondary)
             .combinedClickable(onClick = onOpen, onLongClick = onDelete)
             .graphicsLayer { alpha = opacity },
     ) {

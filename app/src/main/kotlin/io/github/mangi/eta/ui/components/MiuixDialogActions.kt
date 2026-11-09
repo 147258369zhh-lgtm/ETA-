@@ -1,12 +1,18 @@
 package io.github.mangi.eta.ui.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
@@ -39,30 +45,43 @@ fun MiuixDialogActions(
     destructive: Boolean = false,
 ) {
     val tokens = LocalEtaDesignTokens.current
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        TextButton(
-            text = cancelText ?: stringResource(R.string.action_cancel),
-            onClick = onCancel,
-            enabled = cancelEnabled,
-            modifier = Modifier.weight(1f),
+    Column(modifier = modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(Color.Transparent, MiuixTheme.colorScheme.dividerLine.copy(alpha = 0.34f), Color.Transparent),
+                    ),
+                ),
         )
-        Spacer(Modifier.width(tokens.dialogActionSpacing))
-        TextButton(
-            text = confirmText,
-            onClick = onConfirm,
-            enabled = confirmEnabled,
-            modifier = Modifier.weight(1f),
-            colors = if (destructive) {
-                ButtonDefaults.textButtonColorsPrimary(
-                    color = MiuixTheme.colorScheme.error,
-                    textColor = MiuixTheme.colorScheme.onError,
-                )
-            } else {
-                ButtonDefaults.textButtonColorsPrimary()
-            },
-        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            TextButton(
+                text = cancelText ?: stringResource(R.string.action_cancel),
+                onClick = onCancel,
+                enabled = cancelEnabled,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(tokens.dialogActionSpacing))
+            TextButton(
+                text = confirmText,
+                onClick = onConfirm,
+                enabled = confirmEnabled,
+                modifier = Modifier.weight(1f),
+                colors = if (destructive) {
+                    ButtonDefaults.textButtonColorsPrimary(
+                        color = MiuixTheme.colorScheme.error,
+                        textColor = MiuixTheme.colorScheme.onError,
+                    )
+                } else {
+                    ButtonDefaults.textButtonColorsPrimary()
+                },
+            )
+        }
     }
 }

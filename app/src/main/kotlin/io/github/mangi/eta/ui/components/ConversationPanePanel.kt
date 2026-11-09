@@ -1761,12 +1761,6 @@ private fun PaneDock(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         DockEntry(
-            icon = Icons.Outlined.Settings,
-            label = "设置",
-            onClick = onOpenSettings,
-            modifier = Modifier.weight(0.8f),
-        )
-        DockEntry(
             label = "会话",
             selected = mode == ConversationPaneMode.Chats,
             onClick = { onModeChange(ConversationPaneMode.Chats) },
@@ -1777,6 +1771,12 @@ private fun PaneDock(
             selected = mode == ConversationPaneMode.Meetings,
             onClick = { onModeChange(ConversationPaneMode.Meetings) },
             modifier = Modifier.weight(1f),
+        )
+        DockEntry(
+            icon = Icons.Outlined.Settings,
+            label = "设置",
+            onClick = onOpenSettings,
+            modifier = Modifier.weight(0.8f),
         )
     }
 }

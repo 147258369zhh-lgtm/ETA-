@@ -7,12 +7,18 @@ import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.rounded.AccessibilityNew
@@ -29,7 +35,6 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderSpecial
 import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.GppMaybe
-import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Hearing
 import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.ImportContacts
@@ -44,7 +49,6 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Schedule
-import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SettingsVoice
@@ -69,13 +73,17 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -113,6 +121,7 @@ import io.github.mangi.eta.ui.components.StatusWarning
 import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaIconTone
 import io.github.mangi.eta.ui.components.EtaUiMetrics
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.navigation.AppRoute
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -120,7 +129,6 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -145,7 +153,8 @@ private fun SettingsGroupCard(content: @Composable () -> Unit) {
     Card(
         modifier = Modifier
             .padding(horizontal = EtaUiMetrics.pageHorizontal)
-            .padding(bottom = EtaUiMetrics.groupGap),
+            .padding(bottom = EtaUiMetrics.groupGap)
+            .etaGlassSurface(),
     ) {
         content()
     }
@@ -167,10 +176,32 @@ private fun SettingsIcon(
 
 @Composable
 private fun SettingsSectionHeader(title: String) {
-    SmallTitle(
-        text = title,
-        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
-    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 7.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            Modifier
+                .width(3.dp)
+                .height(14.dp)
+                .clip(RoundedCornerShape(50))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(MiuixTheme.colorScheme.primary, MiuixTheme.colorScheme.secondary),
+                    ),
+                ),
+        )
+        Text(
+            text = title,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
 }
 
 /**
@@ -387,16 +418,6 @@ private fun SettingsPageContent(
                         icon = Icons.Rounded.Layers,
                         iconTint = SettingsIconColors.Blue,
                     )
-                    ArrowPreference(
-                        title = "本地模型",
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.CloudQueue,
-                                tint = SettingsIconColors.Blue,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.LocalModels) },
-                    )
                 }
             }
 
@@ -443,16 +464,6 @@ private fun SettingsPageContent(
                             )
                         },
                         onClick = { onNavigate(AppRoute.PromptInjection) },
-                    )
-                    ArrowPreference(
-                        title = "A2A 协作",
-                        startAction = {
-                            SettingsIcon(
-                                icon = Icons.Rounded.Groups,
-                                tint = SettingsIconColors.Tool,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.A2AAgents) },
                     )
                 }
             }
@@ -596,8 +607,8 @@ private fun SettingsPageContent(
             }
 
             // ── 系统助手接管 ──────────────────────────────────────────────
-            item(key = "section_assistant_takeover") {
-                SettingsSectionHeader("系统接入")
+            item(key = "section_system_assistant") {
+                SettingsSectionHeader("系统助手与手势")
                 SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.capability_enhancements),
@@ -658,14 +669,7 @@ private fun SettingsPageContent(
                             iconTint = SettingsIconColors.Green,
                         )
                     }
-                }
-            }
-
-            if (prefs != null || hasConnectedFramework) {
-                // ── 厂商助手兼容入口 ──────────────────────────────────────────
-                item(key = "section_oem_assistant_compatibility") {
-                    SettingsSectionHeader("厂商助手兼容")
-                    SettingsGroupCard {
+                    if (prefs != null || hasConnectedFramework) {
                         SwitchPref(
                             context = context,
                             prefs = prefs,
@@ -683,14 +687,7 @@ private fun SettingsPageContent(
                             iconTint = SettingsIconColors.Blue,
                         )
                     }
-                }
-            }
-
-            if (prefs != null || hasConnectedFramework || capabilities.root.isGranted || hasUsedSystemizer) {
-                // ── Gemini ─────────────────────────────────────────────────
-                item(key = "section_gemini") {
-                    SettingsSectionHeader("Gemini")
-                    SettingsGroupCard {
+                    if (prefs != null || hasConnectedFramework || capabilities.root.isGranted || hasUsedSystemizer) {
                         if (prefs != null || hasConnectedFramework) {
                             SwitchPref(
                                 context = context,
@@ -740,14 +737,7 @@ private fun SettingsPageContent(
                             )
                         }
                     }
-                }
-            }
-
-            if (prefs != null || hasConnectedFramework) {
-                // ── 一圈即搜 ────────────────────────────────────────────────
-                item(key = "section_circle_to_search") {
-                    SettingsSectionHeader(stringResource(R.string.ui_search_in_one_turn_179584))
-                    SettingsGroupCard {
+                    if (prefs != null || hasConnectedFramework) {
                         SwitchPref(
                             context = context,
                             prefs = prefs,

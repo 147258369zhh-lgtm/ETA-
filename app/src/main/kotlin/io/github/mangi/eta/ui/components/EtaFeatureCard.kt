@@ -29,8 +29,10 @@ internal fun EtaFeatureCard(
     footer: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     Card(
-        modifier = modifier.heightIn(min = 136.dp),
-        insideMargin = PaddingValues(16.dp),
+        modifier = modifier
+            .heightIn(min = 132.dp)
+            .etaGlassSurface(),
+        insideMargin = PaddingValues(15.dp),
         pressFeedbackType = PressFeedbackType.Sink,
         showIndication = true,
         onClick = onClick,

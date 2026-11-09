@@ -169,6 +169,7 @@ fun DialogChoicePreference(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                    .etaGlassSurface(accent = MiuixTheme.colorScheme.primary, cornerRadius = 12.dp)
                     .squircleSurface(MiuixTheme.colorScheme.surfaceContainerHigh, 12.dp)
                     .padding(6.dp)
                     .heightIn(max = 220.dp)
@@ -245,12 +246,19 @@ fun DialogChoicePreference(
                                 ),
                                 exit = fadeOut(EtaMotion.standard(EtaMotion.press)) + scaleOut(targetScale = 0.72f),
                             ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Check,
-                                    contentDescription = "已选择",
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MiuixTheme.colorScheme.primary,
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .squircleSurface(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f), 10.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = "已选择",
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MiuixTheme.colorScheme.primary,
+                                    )
+                                }
                             }
                         }
                     }
