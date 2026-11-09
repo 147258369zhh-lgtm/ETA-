@@ -90,6 +90,7 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "computer", "computer_call", "计算机操作" -> Icons.Rounded.Computer
     "image_generation", "image_generation_call", "图像生成" -> Icons.Rounded.Image
     "mcp_call", "MCP 工具" -> Icons.Rounded.Extension
+    "connector_call" -> Icons.Rounded.Hub
     "memory_get", "memory_write", "character_memory_get", "character_memory_write" ->
         Icons.Rounded.Psychology
     "learning_feedback" -> Icons.Rounded.Psychology

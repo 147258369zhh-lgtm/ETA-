@@ -51,7 +51,7 @@ class MemoryBackupTest {
         EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
         assertEquals(expected, db.memoryDao().entries().sortedBy { it.id })
         assertTrue(db.memoryDao().jobs().isEmpty())
-        assertEquals("pending", db.memoryDao().entry(pending.id)?.status)
+        assertEquals("butler_approved", db.memoryDao().entry(pending.id)?.status)
         assertEquals("active", db.memoryDao().entry(active.id)?.status)
     }
 

@@ -1,44 +1,53 @@
 package io.github.mangi.eta.ui.components
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
@@ -64,13 +73,18 @@ fun DialogChoicePreference(
 ) {
     var expanded by rememberSaveable(title, enabled) { mutableStateOf(false) }
     val safeIndex = selectedIndex.takeIf { options.isNotEmpty() }?.coerceIn(options.indices)
-    val bringIntoViewRequester = androidx.compose.runtime.remember { BringIntoViewRequester() }
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(EtaMotion.state, easing = FastOutSlowInEasing),
+        label = "dialog-choice-chevron",
+    )
 
     LaunchedEffect(expanded) {
         if (expanded) {
             // Wait for the expand animation to claim its height before asking the parent dialog
             // scroll container to reveal the option panel.
-            delay(140)
+            delay(190)
             bringIntoViewRequester.bringIntoView()
         }
     }
@@ -85,43 +99,59 @@ fun DialogChoicePreference(
                 .fillMaxWidth()
                 .clickable(enabled = enabled) { expanded = !expanded }
                 .semantics { contentDescription = "$title，当前 $value" }
-                .padding(horizontal = 16.dp, vertical = 13.dp),
+                .padding(start = EtaUiMetrics.cardPadding, end = 14.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    text = title,
-                    style = MiuixTheme.textStyles.body2,
-                    fontWeight = FontWeight.Medium,
-                    color = if (enabled) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-                Text(
-                    text = value,
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
+            Text(
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = MiuixTheme.textStyles.body2.copy(fontSize = 15.sp, lineHeight = 21.sp),
+                fontWeight = FontWeight.Medium,
+                color = if (enabled) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = value,
+                modifier = Modifier.widthIn(max = 164.dp).padding(start = 12.dp),
+                style = MiuixTheme.textStyles.footnote1.copy(fontSize = 13.sp, lineHeight = 18.sp),
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Icon(
-                imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                imageVector = Icons.Rounded.ExpandMore,
                 contentDescription = if (expanded) "收起选项" else "展开选项",
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.padding(start = 6.dp).size(18.dp).rotate(arrowRotation),
                 tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
         }
 
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = EtaUiMetrics.cardPadding)
+                .height(1.dp)
+                .background(MiuixTheme.colorScheme.outline.copy(alpha = 0.08f)),
+        )
+
         AnimatedVisibility(
             visible = expanded,
-            enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
-            exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
+            enter = expandVertically(
+                animationSpec = tween(EtaMotion.state, easing = FastOutSlowInEasing),
+                expandFrom = Alignment.Top,
+            ) + fadeIn(tween(EtaMotion.state)),
+            exit = shrinkVertically(
+                animationSpec = tween(EtaMotion.state, easing = FastOutSlowInEasing),
+                shrinkTowards = Alignment.Top,
+            ) + fadeOut(tween(EtaMotion.state)),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
-                    .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 12.dp)
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                    .squircleSurface(MiuixTheme.colorScheme.surfaceContainerHigh, 12.dp)
+                    .padding(6.dp)
                     .heightIn(max = 220.dp)
                     .verticalScroll(rememberScrollState())
                     .selectableGroup(),
@@ -136,9 +166,20 @@ fun DialogChoicePreference(
                 } else {
                     options.forEachIndexed { index, option ->
                         val selected = index == safeIndex
+                        val container by animateColorAsState(
+                            targetValue = if (selected) {
+                                MiuixTheme.colorScheme.primary.copy(alpha = 0.10f)
+                            } else {
+                                androidx.compose.ui.graphics.Color.Transparent
+                            },
+                            animationSpec = tween(EtaMotion.state, easing = FastOutSlowInEasing),
+                            label = "dialog-choice-option",
+                        )
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(container)
                                 .selectable(
                                     selected = selected,
                                     enabled = enabled,
@@ -154,7 +195,7 @@ fun DialogChoicePreference(
                             Text(
                                 text = option,
                                 modifier = Modifier.weight(1f),
-                                style = MiuixTheme.textStyles.body2,
+                                style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp, lineHeight = 20.sp),
                                 fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
                                 color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
                                 maxLines = 2,

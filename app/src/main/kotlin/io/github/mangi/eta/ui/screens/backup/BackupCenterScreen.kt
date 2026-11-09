@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -23,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.mangi.eta.data.repository.*
 import io.github.mangi.eta.ui.components.*
+import io.github.mangi.eta.ui.pages.providers.TagChip
+import io.github.mangi.eta.ui.pages.providers.TagChipTone
 import java.io.InputStream
 import java.io.OutputStream
 import java.text.NumberFormat
@@ -150,9 +153,9 @@ internal fun DataBackupScreen(
         }
     }) {
         if (pending) item(key = "restart") {
-            SmallTitle("恢复待完成")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
-                ArrowPreference(title = "重启完成恢复", summary = "已暂存备份。重启后会在数据库打开前应用恢复。", startAction = { PreferenceIcon(Icons.Rounded.RestartAlt) }, onClick = {
+            SmallTitle("恢复待完成", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+                ArrowPreference(title = "重启完成恢复", summary = "恢复数据已暂存", startAction = { PreferenceIcon(Icons.Rounded.RestartAlt, EtaIconTone.DATA) }, onClick = {
                     if (!restartRequested) {
                         restartRequested = true
                         try {
@@ -169,21 +172,24 @@ internal fun DataBackupScreen(
                 })
             }
         }
+        item(key = "backup_overview") {
+            BackupOverviewCard(auto = auto, autoStatus = autoStatus, autoEncrypted = autoEncrypted)
+        }
         item(key = "actions") {
-            SmallTitle("备份与恢复")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
-                ArrowPreference(title = "导出数据", summary = if (isExportOperation(vm.operation)) "正在导出" else "完整迁移或自选内容",
-                    startAction = { PreferenceIcon(Icons.Rounded.Upload) }, enabled = !busy && !pending,
+            SmallTitle("备份与恢复", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+                ArrowPreference(title = "导出数据", summary = if (isExportOperation(vm.operation)) "正在导出" else null,
+                    startAction = { PreferenceIcon(Icons.Rounded.Upload, EtaIconTone.DATA) }, enabled = !busy && !pending,
                     endActions = { if (isExportOperation(vm.operation)) InfiniteProgressIndicator(size = 20.dp) }, onClick = { password = ""; exportDialog = true })
-                ArrowPreference(title = "导入数据", summary = if (isImportOperation(vm.operation)) "正在校验或恢复" else "校验后恢复",
-                    startAction = { PreferenceIcon(Icons.Rounded.Download) }, enabled = !busy && !pending,
+                ArrowPreference(title = "导入数据", summary = if (isImportOperation(vm.operation)) "正在校验或恢复" else null,
+                    startAction = { PreferenceIcon(Icons.Rounded.Download, EtaIconTone.DATA) }, enabled = !busy && !pending,
                     endActions = { if (isImportOperation(vm.operation)) InfiniteProgressIndicator(size = 20.dp) },
                     onClick = { importLauncher.launch(arrayOf("*/*")) })
             }
         }
         vm.progress?.let { progress -> item(key = "progress") {
-            SmallTitle(if (isExportOperation(vm.operation)) "导出进度" else "恢复进度")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            SmallTitle(if (isExportOperation(vm.operation)) "导出进度" else "恢复进度", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
                 val size = if (progress.bytes > 0) android.text.format.Formatter.formatShortFileSize(app, progress.bytes) +
                     (progress.totalBytes?.let { " / ${android.text.format.Formatter.formatShortFileSize(app, it)}" } ?: "") else null
                 val summary = listOfNotNull(
@@ -191,17 +197,23 @@ internal fun DataBackupScreen(
                     progress.records.takeIf { it > 0 }?.let { "已写入 ${NumberFormat.getIntegerInstance().format(it)} 条记录" },
                     size,
                 ).joinToString(" · ").ifBlank { backupPhaseDetail(progress.phase) }
-                BasicComponent(title = backupPhaseLabel(progress.phase), summary = summary)
-                ArrowPreference(title = "取消操作", onClick = vm::cancel)
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    InfiniteProgressIndicator(size = 22.dp)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(backupPhaseLabel(progress.phase), style = MiuixTheme.textStyles.body1, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        Text(summary, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    }
+                    TextButton(text = "取消", onClick = vm::cancel)
+                }
             }
         } }
         vm.status?.let { status -> item(key = "status") {
-            Text(status, Modifier.padding(horizontal = 28.dp, vertical = 12.dp), style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            BackupStatusBanner(status)
         } }
         item(key = "automatic") {
-            SmallTitle("自动备份")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
-                SwitchPreference(title = "定期备份", summary = "按计划保存到所选目录", checked = auto.enabled, enabled = !busy && !pending && auto.tree.isNotBlank(), onCheckedChange = { saveAuto(auto.copy(enabled = it)) })
+            SmallTitle("自动备份", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+                SwitchPreference(title = "定期备份", checked = auto.enabled, enabled = !busy && !pending && auto.tree.isNotBlank(), onCheckedChange = { saveAuto(auto.copy(enabled = it)) })
                 ArrowPreference(title = "备份目录", summary = backupDirectoryLabel(auto.tree),
                     enabled = !busy && !pending, onClick = { directoryLauncher.launch(auto.tree.takeIf { it.isNotBlank() }?.let(Uri::parse)) })
                 val dayOptions = (1..30).map { "每 $it 天" }
@@ -213,9 +225,60 @@ internal fun DataBackupScreen(
                 SwitchPreference(title = "仅充电时备份", checked = auto.chargingOnly, enabled = !busy && !pending, onCheckedChange = { saveAuto(auto.copy(chargingOnly = it)) })
                 ArrowPreference(title = "备份加密", summary = if (autoEncrypted) "已设置密码" else "未设置密码", enabled = !busy && !pending, onClick = { password = ""; autoPasswordDialog = true })
                 BackupOptionsPanel(auto.options, { saveAuto(auto.copy(options = it)) }, enabled = !busy && !pending)
-                ArrowPreference(title = "立即备份一次", summary = autoStatus, enabled = !busy && !pending && auto.tree.isNotBlank(), onClick = { AutoBackupScheduler.enqueue(app); autoStatus = "已安排备份" })
+                ArrowPreference(title = "立即备份一次", summary = autoStatus.takeIf { it.isNotBlank() }, enabled = !busy && !pending && auto.tree.isNotBlank(), onClick = { AutoBackupScheduler.enqueue(app); autoStatus = "已安排备份" })
             }
         }
+    }
+}
+
+@Composable
+private fun BackupOverviewCard(auto: AutoBackupSettings, autoStatus: String, autoEncrypted: Boolean) {
+    val configured = auto.tree.isNotBlank()
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                EtaIconTile(Icons.Rounded.Backup, tone = EtaIconTone.DATA, size = 42.dp, glyphSize = 22.dp)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("备份中心", style = MiuixTheme.textStyles.title3, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                    Text(
+                        if (configured) "每 ${auto.days} 天 · ${auto.hour.toString().padStart(2, '0')}:00" else "选择目录后可启用自动备份",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+                EtaStatusPill(
+                    text = if (auto.enabled && configured) "已启用" else if (configured) "已配置" else "未配置",
+                    tone = if (auto.enabled && configured) EtaStatusTone.Positive else EtaStatusTone.Neutral,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TagChip(backupDirectoryLabel(auto.tree), if (configured) TagChipTone.Emphasized else TagChipTone.Normal)
+                if (autoEncrypted) TagChip("已加密")
+                if (auto.chargingOnly) TagChip("仅充电")
+            }
+            if (autoStatus.isNotBlank()) {
+                Text(autoStatus, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupStatusBanner(status: String) {
+    val error = status.contains("失败") || status.contains("错误") || status.contains("无法")
+    val positive = status.contains("成功") || status.contains("完成")
+    val tone = when {
+        error -> EtaStatusTone.Danger
+        positive -> EtaStatusTone.Positive
+        else -> EtaStatusTone.Neutral
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        EtaStatusPill(text = if (error) "未完成" else if (positive) "已完成" else "处理中", tone = tone)
+        Text(status, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.weight(1f))
     }
 }
 
@@ -237,7 +300,7 @@ internal fun isImportOperation(operation: BackupOperation?): Boolean =
     operation == BackupOperation.IMPORT || operation == BackupOperation.INSPECT
 
 @Composable private fun PasswordInput(value: String, change: (String) -> Unit) {
-    TextField(value = value, onValueChange = change, label = "备份密码（可选）", singleLine = true,
+    TextField(value = value, onValueChange = change, label = "密码（可选）", singleLine = true,
         visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp))
 }
 

@@ -5,20 +5,26 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,8 +39,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.mcp.McpServerManager
@@ -50,9 +58,16 @@ import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.data.repository.McpCredentialStatus
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.DetailListRow
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaStatusPill
+import io.github.mangi.eta.ui.components.EtaStatusTone
+import io.github.mangi.eta.ui.components.EtaUiMetrics
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.navigation.AppRoute
+import io.github.mangi.eta.ui.pages.providers.TagChip
+import io.github.mangi.eta.ui.pages.providers.TagChipTone
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -64,6 +79,7 @@ import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -164,51 +180,37 @@ internal fun McpServersScreen(
             }
         },
     ) {
+        item(key = "mcp_overview") {
+            McpConnectionOverviewCard(servers)
+        }
         item(key = "servers") {
-            SmallTitle(stringResource(R.string.mcp_configured_servers, servers.size))
-            Card(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
-            ) {
-                if (servers.isEmpty()) {
+            SmallTitle(
+                stringResource(R.string.mcp_configured_servers, servers.size),
+                modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+            )
+            if (servers.isEmpty()) {
+                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = EtaUiMetrics.groupGap)) {
                     ListEmptyState(
                         title = stringResource(R.string.mcp_empty_title),
                         summary = stringResource(R.string.mcp_empty_summary),
                         icon = Icons.Rounded.Hub,
                         action = {
-                            TextButton(
-                                text = stringResource(R.string.mcp_add_server),
-                                onClick = { showAdd = true },
-                            )
+                            TextButton(text = stringResource(R.string.mcp_add_server), onClick = { showAdd = true })
                         },
                     )
-                } else {
-                    servers.forEach { server ->
-                        ArrowPreference(
-                            title = server.name,
-                            summary = server.lastError?.takeIf(String::isNotBlank)?.let { "连接异常 · ${it.take(90)}" }
-                                ?: if (server.transportType == McpTransportType.STDIO) {
-                                    "STDIO · ${server.activeTools.size}/${server.tools.size} 个工具"
-                                } else {
-                                    stringResource(
-                                        R.string.mcp_server_row_summary,
-                                        server.activeTools.size,
-                                        server.tools.size,
-                                    )
-                                },
-                            onClick = { onNavigate(AppRoute.McpServerDetail(server.id)) },
-                        )
-                    }
+                }
+            } else {
+                servers.forEach { server ->
+                    McpServerListCard(server) { onNavigate(AppRoute.McpServerDetail(server.id)) }
                 }
             }
         }
         item(key = "portable") {
-            SmallTitle("批量迁移")
+            SmallTitle("批量迁移", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = EtaUiMetrics.groupGap),
             ) {
                 DetailListRow(
                     title = "导入 MCP 连接",
@@ -407,6 +409,91 @@ internal fun McpServersScreen(
     }
 }
 
+@Composable
+private fun McpConnectionOverviewCard(servers: List<McpServerSetting>) {
+    val healthy = servers.count { it.enabled && it.lastError.isNullOrBlank() && it.lastHealthyAt != null }
+    val tools = servers.sumOf { it.activeTools.size }
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            EtaIconTile(Icons.Rounded.Hub, tone = EtaIconTone.TOOL, size = 42.dp, glyphSize = 22.dp)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("MCP 连接", style = MiuixTheme.textStyles.title3, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TagChip("${servers.size} 个连接")
+                    TagChip("$tools 项工具", TagChipTone.Emphasized)
+                    if (servers.isNotEmpty()) TagChip("$healthy 个正常")
+                }
+            }
+            EtaStatusPill(
+                text = if (servers.isEmpty()) "未配置" else if (healthy > 0) "可用" else "待连接",
+                tone = if (healthy > 0) EtaStatusTone.Positive else EtaStatusTone.Neutral,
+            )
+        }
+    }
+}
+
+@Composable
+private fun McpServerListCard(server: McpServerSetting, onClick: () -> Unit) {
+    val failed = server.lastError?.isNotBlank() == true
+    val status = when {
+        !server.enabled -> "已停用" to EtaStatusTone.Neutral
+        failed -> "需处理" to EtaStatusTone.Danger
+        server.lastHealthyAt != null -> "已连接" to EtaStatusTone.Positive
+        else -> "待检测" to EtaStatusTone.Warning
+    }
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            EtaIconTile(
+                icon = Icons.Rounded.Hub,
+                tone = if (failed) EtaIconTone.RISK else EtaIconTone.TOOL,
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = server.name,
+                        modifier = Modifier.weight(1f),
+                        style = MiuixTheme.textStyles.body1,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    EtaStatusPill(text = status.first, tone = status.second)
+                }
+                Text(
+                    text = server.lastError?.takeIf(String::isNotBlank)?.take(90)
+                        ?: if (server.transportType == McpTransportType.STDIO) server.stdioCommand
+                        else server.url,
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = if (failed) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TagChip(if (server.transportType == McpTransportType.STDIO) "STDIO" else "HTTP")
+                    TagChip("${server.activeTools.size}/${server.tools.size} 工具", TagChipTone.Emphasized)
+                }
+            }
+            Icon(
+                imageVector = Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+            )
+        }
+    }
+}
+
 private fun readBoundedMcpConfig(context: Context, uri: Uri): String {
     val input = context.contentResolver.openInputStream(uri) ?: error("无法读取所选文件")
     input.use { stream ->
@@ -445,6 +532,7 @@ internal fun McpServerDetailScreen(
     var debugTool by remember(serverId) { mutableStateOf<McpToolDefinition?>(null) }
     var debugArgs by remember(serverId) { mutableStateOf("{}") }
     var debugResult by remember(serverId) { mutableStateOf<String?>(null) }
+    var debugFailed by remember(serverId) { mutableStateOf(false) }
     var debugWorking by remember { mutableStateOf(false) }
 
     LaunchedEffect(server, working) {
@@ -576,7 +664,7 @@ internal fun McpServerDetailScreen(
                             title = stringResource(R.string.mcp_debug_tool),
                             summary = tool.name,
                             enabled = checked && !working,
-                            onClick = { debugTool = tool; debugArgs = "{}"; debugResult = null },
+                            onClick = { debugTool = tool; debugArgs = "{}"; debugResult = null; debugFailed = false },
                         )
                         SwitchPreference(
                             title = tool.title.ifBlank { tool.name },
@@ -640,7 +728,19 @@ internal fun McpServerDetailScreen(
             summary = tool.name,
             onDismissRequest = { if (!debugWorking) debugTool = null },
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    EtaIconTile(Icons.Rounded.Science, tone = EtaIconTone.TOOL)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("调用参数", style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Medium)
+                        Text("JSON", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    }
+                    if (debugWorking) InfiniteProgressIndicator(size = 18.dp)
+                }
                 TextField(
                     value = debugArgs,
                     onValueChange = { debugArgs = it.take(64_000) },
@@ -649,7 +749,36 @@ internal fun McpServerDetailScreen(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
                 )
                 debugResult?.let { result ->
-                    Text(result, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                                .verticalScroll(rememberScrollState())
+                                .padding(13.dp),
+                            verticalArrangement = Arrangement.spacedBy(9.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Icon(
+                                    if (debugFailed) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(17.dp),
+                                    tint = if (debugFailed) MiuixTheme.colorScheme.error else EtaIconTone.SYSTEM.accent,
+                                )
+                                Text(
+                                    if (debugFailed) "调用失败" else "调用结果",
+                                    style = MiuixTheme.textStyles.footnote1,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (debugFailed) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurface,
+                                )
+                            }
+                            Text(
+                                result,
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        }
+                    }
                 }
                 MiuixDialogActions(
                     confirmText = stringResource(if (debugWorking) R.string.mcp_debug_running else R.string.mcp_debug_call),
@@ -659,13 +788,16 @@ internal fun McpServerDetailScreen(
                         val current = debugTool ?: return@MiuixDialogActions
                         val parsed = runCatching { JSONObject(debugArgs) }.getOrElse {
                             debugResult = resources.getString(R.string.mcp_debug_invalid_json)
+                            debugFailed = true
                             return@MiuixDialogActions
                         }
                         scope.launch {
                             debugWorking = true
-                            debugResult = runCatching {
+                            val result = runCatching {
                                 withContext(Dispatchers.IO) { McpServerManager.callTool(serverId, current.name, parsed) }
-                            }.fold(
+                            }
+                            debugFailed = result.isFailure
+                            debugResult = result.fold(
                                 onSuccess = { it.toString(2).take(8_000) },
                                 onFailure = { it.message ?: resources.getString(R.string.mcp_debug_failed) },
                             )

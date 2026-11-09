@@ -1,17 +1,23 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
@@ -29,6 +35,13 @@ internal fun EtaChoiceChip(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (enabled && pressed) 0.97f else 1f,
+        animationSpec = tween(EtaMotion.press),
+        label = "choice_chip_press",
+    )
     val container by animateColorAsState(
         targetValue = if (selected) {
             MiuixTheme.colorScheme.tertiaryContainer
@@ -54,14 +67,22 @@ internal fun EtaChoiceChip(
     )
     Text(
         text = text,
-        style = MiuixTheme.textStyles.footnote1,
+        style = MiuixTheme.textStyles.footnote1.copy(fontSize = 13.sp, lineHeight = 18.sp),
+        fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.Medium else androidx.compose.ui.text.font.FontWeight.Normal,
         color = content,
         maxLines = 1,
         modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .semantics { this.selected = selected }
             .squircleBorder(width = 1.dp, color = border, cornerRadius = 16.dp)
             .squircleSurface(color = container, cornerRadius = 16.dp)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                interactionSource = interactionSource,
+                indication = etaRippleIndication(),
+                onClick = onClick,
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp),
     )
 }

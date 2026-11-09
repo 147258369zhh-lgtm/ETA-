@@ -26,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.prompt.PromptScopeType
 import io.github.mangi.eta.agent.prompt.PromptTarget
@@ -59,7 +60,7 @@ internal fun PromptPill(
     }
     Text(
         text = text,
-        style = MiuixTheme.textStyles.footnote2,
+        style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp),
         color = tint,
         maxLines = if (expanded) 2 else 1,
         overflow = TextOverflow.Ellipsis,

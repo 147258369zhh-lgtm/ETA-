@@ -56,13 +56,19 @@ import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.ModelBrandMark
 import io.github.mangi.eta.ui.components.PreferenceIcon
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaStatusPill
+import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.navigation.AppRoute
 import io.github.mangi.eta.ui.navigation.NewProviderType
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.InputField
+import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
@@ -210,8 +216,7 @@ internal fun ModelProviderListScreen(
             ProviderSection(title = "本地模型") {
                 ArrowPreference(
                     title = "模型文件",
-                    summary = "下载、校验或导入手机上的模型文件",
-                    startAction = { PreferenceIcon(Icons.Rounded.Storage) },
+                    startAction = { PreferenceIcon(Icons.Rounded.Storage, EtaIconTone.MODEL) },
                     onClick = { onNavigate(AppRoute.LocalModels) },
                 )
             }
@@ -221,27 +226,13 @@ internal fun ModelProviderListScreen(
             ProviderSection(title = stringResource(R.string.ui_add_new_provider_74df54)) {
                 ArrowPreference(
                     title = "从 models.dev 添加",
-                    summary = "浏览 models.dev 社区目录并选择模型",
                     startAction = {
-                        Box(
-                            modifier = Modifier
-                                .padding(end = 8.dp)
-                                .size(24.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.TravelExplore,
-                                contentDescription = null,
-                                modifier = Modifier.size(22.dp),
-                                tint = MiuixTheme.colorScheme.primary,
-                            )
-                        }
+                        PreferenceIcon(Icons.Rounded.TravelExplore, EtaIconTone.MODEL)
                     },
                     onClick = { onNavigate(AppRoute.CommunityCatalog) },
                 )
                 ArrowPreference(
                     title = stringResource(R.string.ui_added_openai_compatible_6bd471),
-                    summary = stringResource(R.string.ui_support_chatgpt_deepseek_kimi_glm_qwen_etc_b31d02),
                     startAction = {
                         ProviderBrandIcon(ProviderSourceTypes.OPENAI)
                     },
@@ -249,7 +240,6 @@ internal fun ModelProviderListScreen(
                 )
                 ArrowPreference(
                     title = stringResource(R.string.ui_new_anthropic_db6098),
-                    summary = stringResource(R.string.ui_support_anthropic_claude_official_or_compatible_api_de3f80),
                     startAction = {
                         ProviderBrandIcon(ProviderSourceTypes.ANTHROPIC)
                     },
@@ -257,7 +247,6 @@ internal fun ModelProviderListScreen(
                 )
                 ArrowPreference(
                     title = "新增 Gemini",
-                    summary = "使用 API Key 连接原生 Interactions API",
                     startAction = { ProviderBrandIcon(ProviderSourceTypes.GEMINI) },
                     onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.Gemini)) },
                 )
@@ -265,40 +254,40 @@ internal fun ModelProviderListScreen(
         }
 
         item(key = "list_section") {
-            ProviderSection(title = pluralStringResource(R.plurals.provider_configured_count, filteredProviders.size, filteredProviders.size)) {
+            Column {
+                SmallTitle(
+                    text = pluralStringResource(R.plurals.provider_configured_count, filteredProviders.size, filteredProviders.size),
+                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                )
                 if (filteredProviders.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (searchQuery.isBlank()) {
-                                stringResource(R.string.provider_empty)
-                            } else {
-                                stringResource(R.string.provider_no_matches)
-                            },
-                            style = MiuixTheme.textStyles.body2,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
+                    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 20.dp)) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = if (searchQuery.isBlank()) stringResource(R.string.provider_empty) else stringResource(R.string.provider_no_matches),
+                                style = MiuixTheme.textStyles.body2,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        }
                     }
                 } else {
-                    filteredProviders.forEach { provider ->
-                        ProviderListItem(
-                            provider = provider,
-                            isSelected = provider.id == selectedProviderId,
-                            onOpen = { onNavigate(AppRoute.ModelProviderDetail(provider.id)) },
-                            onDelete = if (!provider.isBuiltIn) {
-                                { providerToDelete = provider }
-                            } else {
-                                null
-                            },
-                            onSelect = {
-                                scope.launch {
-                                    RuntimeConfigRepository.setSelectedProviderId(provider.id)
-                                    RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
-                                }
-                            },
-                        )
+                    Column(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                        filteredProviders.forEach { provider ->
+                            ProviderListItem(
+                                provider = provider,
+                                isSelected = provider.id == selectedProviderId,
+                                onOpen = { onNavigate(AppRoute.ModelProviderDetail(provider.id)) },
+                                onDelete = if (!provider.isBuiltIn) ({ providerToDelete = provider }) else null,
+                                onSelect = {
+                                    scope.launch {
+                                        RuntimeConfigRepository.setSelectedProviderId(provider.id)
+                                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -348,28 +337,15 @@ private fun FailoverModelRow(
                 .fillMaxWidth()
                 .clickable(enabled = enabled, onClick = onClick)
                 .graphicsLayer { alpha = if (enabled) 1f else 0.5f }
-                .padding(horizontal = 20.dp, vertical = 11.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Box(
-                modifier = Modifier.size(34.dp).squircleSurface(
-                    MiuixTheme.colorScheme.secondaryContainer,
-                    10.dp,
-                ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Rounded.SwapHoriz,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MiuixTheme.colorScheme.primary,
-                )
-            }
+            EtaIconTile(Icons.Rounded.SwapHoriz, tone = EtaIconTone.MODEL)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     text = role,
-                    style = MiuixTheme.textStyles.body1,
+                    style = MiuixTheme.textStyles.body1.copy(fontWeight = FontWeight.Medium),
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
@@ -396,15 +372,15 @@ private fun FailoverModelRow(
         startAction = {
             Box(
                 modifier = Modifier
-                    .padding(end = 10.dp)
-                    .size(34.dp)
+                    .padding(end = 6.dp)
+                    .size(32.dp)
                     .squircleSurface(MiuixTheme.colorScheme.secondaryContainer, 10.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 ModelBrandMark(
                     modelId = model?.id,
                     sourceType = provider?.sourceType,
-                    size = 22.dp,
+                    size = 20.dp,
                 )
             }
         },
@@ -671,87 +647,55 @@ private fun ProviderListItem(
     onSelect: () -> Unit,
 ) {
     val opacity = if (provider.isEnabled) 1f else 0.6f
-    BasicComponent(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 4.dp)
             .combinedClickable(onClick = onOpen, onLongClick = onDelete)
             .graphicsLayer { alpha = opacity },
-        startAction = {
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Box(
-                modifier = Modifier
-                    .padding(end = 10.dp)
-                    .size(38.dp)
-                    .squircleSurface(MiuixTheme.colorScheme.secondaryContainer, 12.dp),
+                modifier = Modifier.size(38.dp).squircleSurface(MiuixTheme.colorScheme.secondaryContainer, 12.dp),
                 contentAlignment = Alignment.Center,
-            ) {
-                ProviderIcon(provider)
+            ) { ProviderIcon(provider) }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = provider.name,
+                        modifier = Modifier.weight(1f),
+                        style = MiuixTheme.textStyles.body1,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (isSelected) TagChip(text = stringResource(R.string.ui_current_25e74d), tone = TagChipTone.Emphasized)
+                }
+                Text(
+                    text = listOf(provider.typeLabel, provider.baseUrl).filter(String::isNotBlank).joinToString(" · "),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    EtaStatusPill(
+                        text = if (provider.isEnabled) "可用" else stringResource(R.string.ui_disabled_0fe5a9),
+                        tone = if (provider.isEnabled) EtaStatusTone.Positive else EtaStatusTone.Neutral,
+                    )
+                    TagChip(pluralStringResource(R.plurals.provider_models_count, provider.models.size, provider.models.size))
+                }
             }
-        },
-        endActions = {
             Checkbox(
                 state = ToggleableState(isSelected),
                 onClick = if (provider.isEnabled) onSelect else null,
                 enabled = provider.isEnabled,
             )
-        },
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                text = provider.name,
-                fontSize = MiuixTheme.textStyles.headline1.fontSize,
-                fontWeight = FontWeight.Medium,
-                color = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            if (isSelected) {
-                TagChip(text = stringResource(R.string.ui_current_25e74d), tone = TagChipTone.Emphasized)
-            }
         }
-        Row(
-            modifier = Modifier.padding(top = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .squircleSurface(
-                        if (provider.isEnabled) MiuixTheme.colorScheme.primary
-                        else MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.35f),
-                        4.dp,
-                    ),
-            )
-            Text(
-                text = if (provider.isEnabled) "已启用" else stringResource(R.string.ui_disabled_0fe5a9),
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
-            Text(
-                text = provider.typeLabel,
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Text(
-            text = provider.baseUrl,
-            style = MiuixTheme.textStyles.footnote2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Text(
-            text = pluralStringResource(R.plurals.provider_models_count, provider.models.size, provider.models.size),
-            style = MiuixTheme.textStyles.footnote2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.padding(top = 4.dp),
-        )
     }
 }

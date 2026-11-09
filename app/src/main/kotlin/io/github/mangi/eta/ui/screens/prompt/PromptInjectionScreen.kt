@@ -212,7 +212,7 @@ private fun PromptLibraryScaffold(
     val deleteFailed = stringResource(R.string.prompt_injection_delete_failed)
 
     MiuixScaffoldPage(
-        title = "角色与指令",
+        title = "提示词与工具边界",
         onBack = onBack,
         actions = {
             if (tab == TAB_TEMPLATES) {

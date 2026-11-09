@@ -1,5 +1,9 @@
 package io.github.mangi.eta.ui.components
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,7 +19,13 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -47,6 +57,18 @@ fun MiuixScaffoldPage(
     val scrollBehavior = MiuixScrollBehavior()
     val backdrop = rememberTopBarBackdrop()
     val topBarColor = topBarContainerColor(backdrop)
+    var entered by remember { mutableStateOf(false) }
+    val contentAlpha by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = tween(EtaMotion.content, easing = FastOutSlowInEasing),
+        label = "page-content-alpha",
+    )
+    val contentOffset by animateDpAsState(
+        targetValue = if (entered) 0.dp else 6.dp,
+        animationSpec = tween(EtaMotion.content, easing = FastOutSlowInEasing),
+        label = "page-content-offset",
+    )
+    LaunchedEffect(Unit) { entered = true }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -85,6 +107,10 @@ fun MiuixScaffoldPage(
                     state = listState,
                     modifier = Modifier
                         .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = contentAlpha
+                            translationY = contentOffset.toPx()
+                        }
                         .horizontalCutoutPadding()
                         .captureForTopBar(backdrop)
                         .scrollEndHaptic()

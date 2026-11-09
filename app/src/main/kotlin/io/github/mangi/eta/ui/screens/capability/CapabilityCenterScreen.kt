@@ -80,6 +80,7 @@ import io.github.mangi.eta.data.model.McpServerSetting
 import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.ui.components.DetailListRow
 import io.github.mangi.eta.ui.components.EtaChoiceChip
+import io.github.mangi.eta.ui.components.EtaIconTone
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
@@ -395,54 +396,60 @@ internal fun CapabilityCenterScreen(
                     Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                         DetailListRow(
                             title = "已安装 Skills",
-                            subtitle = installedSkills.size.toString() + " 个 · 查看、启停、删除与本地安装",
+                            subtitle = "${installedSkills.size} 个已安装",
                             icon = Icons.Rounded.AutoAwesome,
+                            tone = EtaIconTone.MEMORY,
                             value = installedSkills.count { it.enabled }.toString() + " 已启用",
                             onClick = onOpenSkills,
                         )
                         DetailListRow(
                             title = "MCP 与外部工具",
-                            subtitle = mcpServers.count { it.activeTools.isNotEmpty() }.toString() +
-                                " 个连接提供工具 · 认证、工具开关与健康状态",
+                            subtitle = "${mcpServers.count { it.activeTools.isNotEmpty() }} 个连接可用",
                             icon = Icons.Rounded.Hub,
+                            tone = EtaIconTone.TOOL,
                             onClick = onOpenMcp,
                         )
                         DetailListRow(
-                            title = "角色与指令",
-                            subtitle = "角色人格、世界书、作用域指令、冲突治理与导入导出",
+                            title = "提示词与工具边界",
+                            subtitle = "按模型、会话、会议室与子 Agent 设置注入范围",
                             icon = Icons.Rounded.Description,
+                            tone = EtaIconTone.AUTOMATION,
                             onClick = onOpenPromptInjection,
                         )
                         DetailListRow(
                             title = "REST API 连接",
-                            subtitle = apiConnectors.count { it.activeActions.isNotEmpty() }.toString() +
-                                " 个连接提供操作 · OpenAPI 导入与逐项授权",
+                            subtitle = "${apiConnectors.count { it.activeActions.isNotEmpty() }} 个连接可用",
                             icon = Icons.Rounded.Link,
+                            tone = EtaIconTone.DATA,
                             value = apiConnectors.size.toString() + " 个已导入",
                             onClick = onOpenApiConnectors,
                         )
                         DetailListRow(
                             title = "本地模型与视觉",
-                            subtitle = "文本、TTS、ASR、视觉与向量模型分组；只有已验证运行时可进入聊天",
+                            subtitle = "文本、语音、视觉与向量能力",
                             icon = Icons.Rounded.Memory,
+                            tone = EtaIconTone.MODEL,
                             onClick = onOpenLocalModels,
                         )
                         DetailListRow(
                             title = "语音识别",
-                            subtitle = "配置本地或在线 ASR；本地 TTS/ASR 适配器完成后可从这里管理",
+                            subtitle = "本地与在线 ASR",
                             icon = Icons.Rounded.Mic,
+                            tone = EtaIconTone.TOOL,
                             onClick = onOpenSpeechRecognition,
                         )
                         DetailListRow(
                             title = "语音合成",
-                            subtitle = "配置阅读播报与流式 TTS；本地模型能力单独绑定",
+                            subtitle = "阅读播报与流式 TTS",
                             icon = Icons.Rounded.RecordVoiceOver,
+                            tone = EtaIconTone.TOOL,
                             onClick = onOpenSpeechSynthesis,
                         )
                         DetailListRow(
                             title = "工具边界与审批",
-                            subtitle = "按能力组控制 Skill、MCP、设备与文件访问",
+                            subtitle = "Skill、MCP、设备与文件权限",
                             icon = Icons.Rounded.Security,
+                            tone = EtaIconTone.RISK,
                             onClick = onOpenPermissions,
                         )
                     }
@@ -525,7 +532,7 @@ internal fun CapabilityCenterScreen(
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                text = "搜索会并行聚合可用来源；单个来源故障不会中断整次搜索。",
+                                text = "并发搜索全部可用来源",
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
@@ -619,29 +626,33 @@ internal fun CapabilityCenterScreen(
                     Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                         DetailListRow(
                             title = "MCP 服务",
-                            subtitle = "标准 MCP 工具、资源与提示词，支持 Bearer 凭据与逐工具授权",
+                            subtitle = "工具、资源与提示词",
                             icon = Icons.Rounded.Hub,
+                            tone = EtaIconTone.TOOL,
                             value = mcpServers.size.toString() + " 个已配置",
                             onClick = onOpenMcp,
                         )
                         DetailListRow(
                             title = "REST API",
-                            subtitle = "OpenAPI 3.x JSON、Bearer 或自定义请求头认证、逐操作授权",
+                            subtitle = "OpenAPI 与逐操作授权",
                             icon = Icons.Rounded.Link,
+                            tone = EtaIconTone.DATA,
                             value = apiConnectors.size.toString() + " 个已配置",
                             onClick = onOpenApiConnectors,
                         )
                         DetailListRow(
                             title = "A2A Agent 协作",
-                            subtitle = "Agent Card、双向任务、流式事件、Token 配对与独立服务进程",
+                            subtitle = "Agent Card、双向任务与流式事件",
                             icon = Icons.Rounded.Groups,
+                            tone = EtaIconTone.AUTOMATION,
                             value = "Agent 网络",
                             onClick = onOpenA2A,
                         )
                         DetailListRow(
                             title = "统一连接中心",
-                            subtitle = "WebSocket、OpenAPI、Android Intent、ContentProvider 与 SAF",
+                            subtitle = "MCP、API、Intent 与本机服务",
                             icon = Icons.Rounded.Hub,
+                            tone = EtaIconTone.TOOL,
                             value = "Connector SDK",
                             onClick = onOpenConnectorCenter,
                         )
@@ -671,8 +682,9 @@ internal fun CapabilityCenterScreen(
                     Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                         DetailListRow(
                             title = "连接凭据按设备加密保存",
-                            subtitle = "令牌不会进入对话；完整备份的凭据迁移取决于是否设置备份密码，未加密备份请妥善保管",
+                            subtitle = "令牌不会进入对话",
                             icon = Icons.Rounded.Security,
+                            tone = EtaIconTone.RISK,
                             onClick = onOpenMcp,
                         )
                     }
@@ -688,8 +700,7 @@ internal fun CapabilityCenterScreen(
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text("Skill 来源", style = MiuixTheme.textStyles.body1)
                             Text(
-                                sources.count(SkillSourceDefinition::enabled).toString() +
-                                    " 个启用 · 失败来源不会影响其他来源",
+                                "${sources.count(SkillSourceDefinition::enabled)} 个来源已启用",
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
@@ -1224,7 +1235,7 @@ private fun CapabilityBadge(
 ) {
     Text(
         text = text,
-        style = MiuixTheme.textStyles.footnote2.copy(fontSize = 11.sp),
+        style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp),
         color = color,
         modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
     )

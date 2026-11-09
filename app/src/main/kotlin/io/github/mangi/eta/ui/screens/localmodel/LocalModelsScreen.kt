@@ -11,8 +11,12 @@ import android.os.Build
 import android.os.PowerManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,11 +64,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -107,6 +113,12 @@ import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.EtaChoiceChip
+import io.github.mangi.eta.ui.components.DialogChoicePreference
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaMotion
+import io.github.mangi.eta.ui.components.EtaUiMetrics
+import io.github.mangi.eta.ui.components.etaRippleIndication
 import io.github.mangi.eta.ui.pages.providers.ProviderSection
 import io.github.mangi.eta.ui.pages.providers.TagChip
 import io.github.mangi.eta.ui.pages.providers.TagChipTone
@@ -1084,20 +1096,12 @@ private fun LocalModelLaunchCard(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    modifier = Modifier.size(46.dp).squircleSurface(
-                        MiuixTheme.colorScheme.primary.copy(alpha = .11f),
-                        14.dp,
-                    ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Memory,
-                        contentDescription = null,
-                        tint = MiuixTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
+                EtaIconTile(
+                    icon = Icons.Rounded.Memory,
+                    tone = EtaIconTone.MODEL,
+                    size = 44.dp,
+                    glyphSize = 23.dp,
+                )
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
                         stringResource(R.string.local_models_overview),
@@ -1113,8 +1117,11 @@ private fun LocalModelLaunchCard(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .squircleSurface(MiuixTheme.colorScheme.surfaceContainerHigh, 14.dp)
+                    .padding(vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 LocalLaunchMetric(
                     value = models.size.toString(),
@@ -1122,12 +1129,14 @@ private fun LocalModelLaunchCard(
                     icon = Icons.Rounded.Storage,
                     modifier = Modifier.weight(1f),
                 )
+                Box(Modifier.size(width = 1.dp, height = 34.dp).background(MiuixTheme.colorScheme.outline.copy(alpha = .10f)))
                 LocalLaunchMetric(
                     value = formatLocalModelBytes(total),
                     label = stringResource(R.string.local_models_metric_storage),
                     icon = Icons.Rounded.Download,
                     modifier = Modifier.weight(1f),
                 )
+                Box(Modifier.size(width = 1.dp, height = 34.dp).background(MiuixTheme.colorScheme.outline.copy(alpha = .10f)))
                 LocalLaunchMetric(
                     value = formatLocalModelBytes(snapshot.availableRamBytes),
                     label = stringResource(R.string.local_models_metric_available_memory),
@@ -1137,9 +1146,10 @@ private fun LocalModelLaunchCard(
             }
 
             if (models.isNotEmpty()) {
-                OverlayDropdownPreference(
+                DialogChoicePreference(
                     title = stringResource(R.string.local_models_launch_model),
-                    items = models.map(LocalModelRecord::displayName),
+                    value = record?.displayName ?: stringResource(R.string.local_models_primary_recommendation),
+                    options = models.map(LocalModelRecord::displayName),
                     selectedIndex = models.indexOfFirst { it.id == record?.id }.coerceAtLeast(0),
                     onSelectedIndexChange = { index ->
                         models.getOrNull(index)?.let(onSelectModel)
@@ -1148,9 +1158,10 @@ private fun LocalModelLaunchCard(
             }
 
             if (record != null && backendOptions.isNotEmpty()) {
-                OverlayDropdownPreference(
+                DialogChoicePreference(
                     title = stringResource(R.string.local_models_launch_backend),
-                    items = backendLabels,
+                    value = backendLabels.getOrElse(backendOptions.indexOf(record.runtimeSettings.backend).coerceAtLeast(0)) { automaticLabel },
+                    options = backendLabels,
                     selectedIndex = backendOptions.indexOf(record.runtimeSettings.backend).coerceAtLeast(0),
                     onSelectedIndexChange = { index ->
                         backendOptions.getOrNull(index)?.let { backend -> onBackend(record, backend) }
@@ -1160,7 +1171,7 @@ private fun LocalModelLaunchCard(
 
             Column(
                 modifier = Modifier.fillMaxWidth().squircleSurface(
-                    MiuixTheme.colorScheme.secondaryContainer.copy(alpha = .52f),
+                    MiuixTheme.colorScheme.surfaceContainerHigh,
                     18.dp,
                 ).padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1257,21 +1268,21 @@ private fun LocalLaunchMetric(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = modifier,
+        modifier = modifier.padding(horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Icon(icon, null, modifier = Modifier.size(18.dp), tint = MiuixTheme.colorScheme.primary)
+        Icon(icon, null, modifier = Modifier.size(16.dp), tint = MiuixTheme.colorScheme.primary)
         Text(
             value,
-            style = MiuixTheme.textStyles.body2,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 15.sp, lineHeight = 20.sp),
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             label,
-            style = MiuixTheme.textStyles.footnote1,
+            style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp),
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1300,13 +1311,16 @@ private fun LocalRuntimeStatusBadge(
         else -> stringResource(R.string.local_models_runtime_state_not_installed)
     }
     Row(
+        modifier = Modifier
+            .squircleSurface(color.copy(alpha = .10f), 9.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(Modifier.size(7.dp).background(color, CircleShape))
         Text(
             label,
-            style = MiuixTheme.textStyles.footnote1,
+            style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp),
             fontWeight = FontWeight.Medium,
             color = color,
         )
@@ -1322,6 +1336,13 @@ private fun LocalCompactAction(
     prominent: Boolean = false,
     danger: Boolean = false,
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (enabled && pressed) .96f else 1f,
+        animationSpec = tween(EtaMotion.press),
+        label = "local-model-action-press",
+    )
     val tint = when {
         danger -> MiuixTheme.colorScheme.error
         prominent -> MiuixTheme.colorScheme.onPrimary
@@ -1334,10 +1355,16 @@ private fun LocalCompactAction(
     }
     Row(
         modifier = Modifier
-            .height(34.dp)
+            .height(EtaUiMetrics.statusMinHeight + 8.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .squircleSurface(background, 10.dp)
-            .padding(horizontal = 10.dp)
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = etaRippleIndication(),
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
@@ -1349,7 +1376,7 @@ private fun LocalCompactAction(
         )
         Text(
             text = description,
-            style = MiuixTheme.textStyles.footnote1,
+            style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp),
             fontWeight = FontWeight.Medium,
             color = tint.copy(alpha = if (enabled) 1f else .45f),
             maxLines = 1,

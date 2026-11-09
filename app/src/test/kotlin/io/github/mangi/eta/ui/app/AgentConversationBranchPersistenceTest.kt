@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage
+import io.github.mangi.eta.data.db.ETA_DATABASE_VERSION
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.ConversationBranchSetupEntity
 import io.github.mangi.eta.ui.model.*
@@ -130,7 +131,7 @@ class AgentConversationBranchPersistenceTest {
         val database = EtaDatabase.get(context)
         val dao = database.conversationDao()
         assertEquals(2, dao.messageCount("root"))
-        assertEquals(26, database.openHelper.writableDatabase.version)
+        assertEquals(ETA_DATABASE_VERSION, database.openHelper.writableDatabase.version)
         assertEquals("原回答", dao.messagesPage("root", 2, 0).last().content)
         assertNotNull(dao.contextCheckpoint("root"))
         assertTrue(dao.branchesPage(8, 0).isEmpty())

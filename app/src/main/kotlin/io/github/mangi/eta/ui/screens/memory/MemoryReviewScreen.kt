@@ -1,5 +1,7 @@
 package io.github.mangi.eta.ui.screens.memory
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -215,7 +217,7 @@ internal fun AgentMemoryScreen(state: AgentMemoryUiState, onAction: (AgentMemory
             item("memory_filters") {
                 ArrowPreference(title = listOf("待审阅", "已生效", "冲突", "已归档 / 已拒绝", "已过期")[filter],
                     summary = listOf(if (scopeFilter == "all") "全部作用域" else memoryScopeName(scopeFilter, names), if (layerFilter == "all") "全部层级" else memoryLayerName(layerFilter)).joinToString(" · "),
-                    startAction = { PreferenceIcon(Icons.Rounded.Tune) }, onClick = { showFilters = true })
+                    startAction = { PreferenceIcon(Icons.Rounded.Tune, EtaIconTone.TOOL) }, onClick = { showFilters = true })
             }
             val shown = entries.filter { entry ->
                 val expired = entry.expiresAt != null && entry.expiresAt <= now
@@ -244,6 +246,7 @@ internal fun AgentMemoryScreen(state: AgentMemoryUiState, onAction: (AgentMemory
                 Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                     DetailListRow(title = entry.topic, subtitle = "${memoryScopeName(entry.scope, names)} · ${memoryLayerName(entry.layer)} · ${memoryStatus(entry)}", preview = entry.content,
                         icon = if (entry.status == "conflict" || entry.conflictIds.isNotBlank()) Icons.Rounded.CompareArrows else when (entry.layer) { "core" -> Icons.Rounded.BookmarkBorder; "project" -> Icons.Rounded.FolderOpen; "task" -> Icons.Rounded.TaskAlt; else -> Icons.Rounded.Notes },
+                        tone = if (entry.status == "conflict" || entry.conflictIds.isNotBlank()) EtaIconTone.RISK else EtaIconTone.MEMORY,
                         onClick = { message = null; inspected = entry })
                 }
             } }
@@ -310,12 +313,17 @@ private fun MemoryModuleTabBar(selectedTab: Int, onTabSelected: (Int) -> Unit) {
     ) {
         labels.forEachIndexed { index, label ->
             val selected = index == selectedTab
+            val background by animateColorAsState(
+                targetValue = if (selected) colors.surface else colors.surfaceContainer,
+                animationSpec = tween(EtaMotion.state),
+                label = "memory-tab-background",
+            )
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = 42.dp)
                     .squircleSurface(
-                        color = if (selected) colors.surface else colors.surfaceContainer,
+                        color = background,
                         cornerRadius = 11.dp,
                     )
                     .semantics { this.selected = selected }

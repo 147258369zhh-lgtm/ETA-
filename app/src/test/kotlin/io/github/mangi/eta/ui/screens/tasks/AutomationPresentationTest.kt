@@ -31,9 +31,9 @@ class AutomationPresentationTest {
             AgentScheduleRule(AgentScheduleKind.DAILY, System.currentTimeMillis(), localHour = 8, localMinute = 0, timeZoneId = "Asia/Shanghai"))
         Panel { AgentTaskCenterScreen {} }.use { p ->
             p.await { p.texts().contains("早间行业报告") }; p.capture("automation-center")
-            p.click("早间行业报告"); p.await { p.texts().contains("触发方式") }; p.capture("automation-editor")
-            p.scrollUntil("执行流程 · 3 步"); p.capture("automation-workflow")
-            p.click("1. 收集并核对资料"); p.await { p.texts().contains("执行控制") }; p.capture("automation-step-editor")
+            p.click("早间行业报告"); p.await { p.texts().contains("触发条件") }; p.capture("automation-editor")
+            p.scrollUntil("执行流程"); p.await { p.texts().contains("3 步") }; p.capture("automation-workflow")
+            p.click("收集并核对资料"); p.await { p.texts().contains("执行控制") }; p.capture("automation-step-editor")
         }
         AgentTaskDatabase.closeForTests()
     }
@@ -51,7 +51,7 @@ class AutomationPresentationTest {
             p.await { p.texts().contains("整理项目周报") }; p.capture("skill-candidates-narrow-dark")
             assertTrue(p.texts().any { it.contains("全局") })
             assertFalse(p.texts().any { it.contains("global") })
-            p.click("整理项目周报"); p.await { p.texts().any { it.contains("待验证") } }; p.capture("skill-detail-narrow-dark")
+            p.click("整理项目周报"); p.await { p.texts().any { it.contains("待软件管家复核") } }; p.capture("skill-detail-narrow-dark")
             p.scrollUntil("已验证工具"); p.capture("skill-evidence-narrow-dark")
             assertTrue(p.texts().contains("读取文件"))
             assertTrue(p.texts().contains("写入文件"))

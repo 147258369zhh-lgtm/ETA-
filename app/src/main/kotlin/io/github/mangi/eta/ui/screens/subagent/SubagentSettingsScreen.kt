@@ -56,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.agent.subagent.SubagentProfile
 import io.github.mangi.eta.agent.subagent.SubagentProfileCatalog
@@ -73,9 +74,15 @@ import io.github.mangi.eta.data.model.enabledModel
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.components.EtaChoiceChip
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaInteractiveRow
+import io.github.mangi.eta.ui.components.EtaUiMetrics
 import io.github.mangi.eta.ui.components.AgentIdentityAvatar
 import io.github.mangi.eta.ui.components.DialogChoicePreference
 import io.github.mangi.eta.ui.components.ListEmptyState
+import io.github.mangi.eta.ui.components.etaRippleIndication
+import io.github.mangi.eta.ui.components.rememberEtaInteractionSource
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.ModelBrandMark
@@ -416,7 +423,7 @@ internal fun SubagentSettingsScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Text(
-                            text = "只选择这个 Agent 真正需要的权限。分类可整体切换，展开后可逐项核对。",
+                            text = "选择此 Agent 可使用的工具",
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
@@ -735,11 +742,11 @@ internal fun SubagentSettingsScreen(
             }
 
             item(key = "builtin_group") {
-                SmallTitle("内置 Agent")
+                SmallTitle("内置 Agent", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     SubagentProfile.BUILTIN_PROFILES.forEach { profile ->
                         SubagentProfileRow(
@@ -751,16 +758,16 @@ internal fun SubagentSettingsScreen(
             }
 
             item(key = "custom_group") {
-                SmallTitle("自定义 Agent")
+                SmallTitle("自定义 Agent", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     if (customProfiles.isEmpty()) {
                         ListEmptyState(
                             title = "还没有自定义 Agent",
-                            summary = "从一段任务描述生成专属角色，或手动定义职责、工具权限与运行模型。",
+                            summary = "定义职责、权限与运行模型",
                             icon = Icons.Rounded.Extension,
                             action = {
                                 TextButton(
@@ -792,15 +799,18 @@ private fun SubagentProfileRow(
     profile: SubagentProfile,
     onClick: () -> Unit,
 ) {
-    Row(
+    val interactionSource = rememberEtaInteractionSource()
+    EtaInteractiveRow(
+        interactionSource = interactionSource,
+        enabled = true,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 5.dp)
-            .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 14.dp)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = etaRippleIndication(),
+                onClick = onClick,
+            )
+            .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
         AgentIdentityAvatar(
             displayName = subagentDisplayName(profile.name),
@@ -818,7 +828,7 @@ private fun SubagentProfileRow(
             ) {
                 Text(
                     text = subagentDisplayName(profile.name),
-                    style = MiuixTheme.textStyles.body2,
+                    style = MiuixTheme.textStyles.body2.copy(fontSize = 16.sp, lineHeight = 22.sp),
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -831,23 +841,18 @@ private fun SubagentProfileRow(
             }
             Text(
                 text = profile.summary,
-                style = MiuixTheme.textStyles.footnote1,
+                style = MiuixTheme.textStyles.footnote1.copy(fontSize = 13.sp, lineHeight = 18.sp),
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                TagChip("${profile.toolHighlights.size} 项核心能力")
-            }
+            TagChip("${profile.toolHighlights.size} 项能力")
         }
         Icon(
             imageVector = Icons.Rounded.ChevronRight,
             contentDescription = null,
             tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(18.dp),
         )
     }
 }
@@ -1067,11 +1072,11 @@ private fun SubagentEditorSheet(
         ) {
             when (tab) {
                 0 -> {
-                    SmallTitle("角色身份")
+                    SmallTitle("角色身份", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(EtaUiMetrics.cardPadding),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             TextField(
                                 value = draft.name,
@@ -1090,11 +1095,6 @@ private fun SubagentEditorSheet(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
                             )
-                            Text(
-                                text = "用于派发与识别，例如 bill-analyzer。",
-                                style = MiuixTheme.textStyles.footnote2,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            )
                             SubagentRoleField("一句话简介", draft.role.description, 2) {
                                 onDraftChange(draft.copy(role = draft.role.copy(description = it)))
                             }
@@ -1104,29 +1104,17 @@ private fun SubagentEditorSheet(
                         }
                     }
 
-                    SmallTitle("AI 起草")
+                    SmallTitle("AI 起草", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(EtaUiMetrics.cardPadding),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(9.dp),
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .squircleSurface(MiuixTheme.colorScheme.primaryContainer, 10.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.AutoAwesome,
-                                        contentDescription = null,
-                                        tint = MiuixTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
+                                EtaIconTile(Icons.Rounded.AutoAwesome, tone = EtaIconTone.AUTOMATION)
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = "从任务描述生成",
@@ -1134,7 +1122,7 @@ private fun SubagentEditorSheet(
                                         fontWeight = FontWeight.SemiBold,
                                     )
                                     Text(
-                                        text = "生成职责、流程、输出与失败边界。",
+                                        text = "自动生成职责、流程与边界",
                                         style = MiuixTheme.textStyles.footnote1,
                                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                     )
@@ -1189,10 +1177,10 @@ private fun SubagentEditorSheet(
                         }
                     }
 
-                    SmallTitle("角色指令")
+                    SmallTitle("角色指令", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     Text(
-                        text = "这是每次派发都会发送给模型的长期行为约束。用职责、步骤、输出和禁区描述稳定能力；一次性任务不要写进来。",
-                        style = MiuixTheme.textStyles.footnote1,
+                        text = "长期行为约束；一次性任务不要写在这里",
+                        style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1216,7 +1204,7 @@ private fun SubagentEditorSheet(
                     }
                 }
                 1 -> {
-                    SmallTitle("工具授权")
+                    SmallTitle("工具授权", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     SubagentPermissionEditor(
                         selectedTools = tools,
                         onSelectedToolsChange = { selected ->
@@ -1226,7 +1214,7 @@ private fun SubagentEditorSheet(
                     )
                 }
                 2 -> {
-                    SmallTitle("独立运行配置")
+                    SmallTitle("独立运行配置", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     DialogChoicePreference(
                         title = "运行模型",
                         value = modelLabels[selectedModelIndex],
@@ -1600,43 +1588,14 @@ private fun SubagentProfileDetailContent(
                     TagChip(contextLabel)
                     TagChip("单次最多 $toolCallLabel")
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 12.dp)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Memory,
-                        contentDescription = null,
-                        tint = MiuixTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "运行模型",
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                        Text(
-                            text = modelSummary,
-                            style = MiuixTheme.textStyles.footnote1,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
             }
         }
 
-        SmallTitle("运行配置")
+        SmallTitle("运行配置", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Card(
             modifier = Modifier
                 .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(bottom = EtaUiMetrics.groupGap),
         ) {
             ArrowPreference(
                 title = "独立模型",
@@ -1674,11 +1633,11 @@ private fun SubagentProfileDetailContent(
             )
         }
 
-        SmallTitle("角色与边界")
+        SmallTitle("角色与边界", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Card(
             modifier = Modifier
                 .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(bottom = EtaUiMetrics.groupGap),
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -1708,11 +1667,11 @@ private fun SubagentProfileDetailContent(
             }
         }
 
-        SmallTitle("工具能力")
+        SmallTitle("工具能力", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Card(
             modifier = Modifier
                 .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(bottom = EtaUiMetrics.groupGap),
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -1722,19 +1681,7 @@ private fun SubagentProfileDetailContent(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .squircleSurface(MiuixTheme.colorScheme.secondaryContainer, 10.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Rounded.VerifiedUser,
-                            contentDescription = null,
-                            tint = MiuixTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
+                    EtaIconTile(Icons.Rounded.VerifiedUser, tone = EtaIconTone.TOOL)
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "权限策略",
@@ -1767,11 +1714,11 @@ private fun SubagentProfileDetailContent(
         }
 
         if (onEdit != null || onDelete != null) {
-            SmallTitle("管理")
+            SmallTitle("管理", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = EtaUiMetrics.groupGap),
             ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),

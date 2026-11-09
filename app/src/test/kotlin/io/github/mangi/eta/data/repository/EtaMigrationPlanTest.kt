@@ -11,7 +11,7 @@ class EtaMigrationPlanTest {
         assertEquals("conversation_extensions", EtaMigrationPlan.sectionForDatabase("eta_fork.db"))
         assertEquals("core", EtaMigrationPlan.sectionForDatabase("eta.db"))
         assertEquals("runtime", EtaMigrationPlan.sectionForDatabase("eta_run_metrics.db"))
-        assertEquals(26, EtaMigrationPlan.entries.single { it.name == "core" }.currentVersion)
+        assertEquals(27, EtaMigrationPlan.entries.single { it.name == "core" }.currentVersion)
         assertEquals(5, EtaMigrationPlan.entries.single { it.name == "conversation_extensions" }.currentVersion)
         assertEquals(2, EtaMigrationPlan.entries.single { it.name == "projects" }.currentVersion)
         assertEquals(5, EtaMigrationPlan.entries.single { it.name == "meeting" }.currentVersion)

@@ -73,8 +73,11 @@ class AgentConversationPersistenceTest {
         val rows = EtaDatabase.get(context).conversationDao().conversationEntities().associateBy { it.id }
         assertEquals(1L, rows.getValue("active").createdAt)
         assertEquals(9L, rows.getValue("active").updatedAt)
-        assertEquals(next.conversationsById.getValue("active").journal, AgentConversationCodec.decodeTranscript(
-            EtaDatabase.get(context).conversationDao().contextCheckpoint("active")!!.journalJson))
+        val checkpoint = EtaDatabase.get(context).conversationDao().contextCheckpoint("active")!!
+        assertEquals(next.conversationsById.getValue("active").history, AgentConversationCodec.decodeTranscript(checkpoint.historyJson))
+        assertTrue("Identical history and journal should share one stored copy", checkpoint.journalJson.isEmpty())
+        assertEquals(next.conversationsById.getValue("active").journal,
+            AgentConversationStore.loadConversation(context, "active")!!.journal)
     }
 
     @Test

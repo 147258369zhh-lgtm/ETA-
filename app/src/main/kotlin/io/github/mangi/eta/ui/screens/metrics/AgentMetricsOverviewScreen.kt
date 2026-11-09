@@ -162,10 +162,10 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
                 AgentMetricDistributionCard("来源 Token 分布", sourceDistribution)
             }
         }
-        item("token_trend") {
-            AgentTokenUsageTrendCard(AgentMetricsTrend.lastWeek(filtered, usages = metricsByRun))
+        item("trends") {
+            SmallTitle("使用趋势")
+            AgentMetricsTrendCard(AgentMetricsTrend.lastWeek(filtered, usages = metricsByRun))
         }
-        item("trends") { SmallTitle("近 7 天趋势"); AgentMetricsTrendCard(AgentMetricsTrend.lastWeek(filtered, usages = metricsByRun)) }
         item("history") {
             SmallTitle(day?.let { "$it · ${shown.size} 次运行" } ?: "运行记录 · ${shown.size}")
             if (day != null) ArrowPreference(title = "查看全部日期", onClick = { selectedDay = null })
@@ -196,7 +196,7 @@ internal fun AgentMetricsScreen(onBack: () -> Unit, onOpenRun: (String) -> Unit,
                 AgentMetricsExportControls(shown.map { it.recordId }, enabled = !loading && !failed && !clearing)
                 ArrowPreference(title = "清除已完成记录", enabled = !clearing && records.any { it.status != AgentMetricStatus.RUNNING }, onClick = { confirmClear = true })
             }
-            Text(stringResource(R.string.metrics_retention_note), Modifier.padding(horizontal = 24.dp, vertical = 12.dp), style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            Text(stringResource(R.string.metrics_retention_note), Modifier.padding(horizontal = 24.dp, vertical = 10.dp), style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
         }
     }
 }

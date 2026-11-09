@@ -108,7 +108,7 @@ class AgentImageCodecTest {
     }
 
     @Test
-    fun ordinaryAttachmentStillUsesJpegAndKeepsDimensions() {
+    fun ordinaryAttachmentUsesJpegAndBoundsModelPixelBudget() {
         val bitmap = patternedBitmap(width = 2_400, height = 1_600)
         val original = ByteArrayOutputStream().use { output ->
             bitmap.compress(Bitmap.CompressFormat.JPEG, 100, output)
@@ -125,14 +125,14 @@ class AgentImageCodecTest {
         val height = image.height ?: error("缺少图片高度")
 
         assertEquals("image/jpeg", image.mimeType)
-        assertEquals(2_400, width)
-        assertEquals(1_600, height)
+        assertEquals(1_568, width)
+        assertEquals(1_045, height)
         val encoded = image.reference.decodeDataUrl()
         assertEquals(encoded.size, image.bytes)
         val decoded = BitmapFactory.decodeByteArray(encoded, 0, encoded.size) ?: error("附件无法解码")
         try {
-            assertEquals(2_400, decoded.width)
-            assertEquals(1_600, decoded.height)
+            assertEquals(width, decoded.width)
+            assertEquals(height, decoded.height)
         } finally { decoded.recycle() }
         org.junit.Assert.assertFalse(image.preserveOriginal)
     }
@@ -161,7 +161,7 @@ class AgentImageCodecTest {
     }
 
     @Test
-    fun fileToolImageUsesJpegAndKeepsDimensions() {
+    fun fileToolImageUsesJpegAndBoundsModelPixelBudget() {
         val context = RuntimeEnvironment.getApplication()
         val sourceFile = File(context.cacheDir, "tool-image-${System.nanoTime()}.jpg")
         val bitmap = patternedBitmap(width = 3_200, height = 2_400)
@@ -177,8 +177,8 @@ class AgentImageCodecTest {
             val height = image.height ?: error("缺少图片高度")
 
             assertEquals("image/jpeg", image.mimeType)
-            assertEquals(3_200, width)
-            assertEquals(2_400, height)
+            assertEquals(1_568, width)
+            assertEquals(1_176, height)
             assertTrue(image.bytes < sourceFile.length())
         } finally {
             sourceFile.delete()

@@ -57,7 +57,7 @@ class EtaDatabaseMigrationTest {
             }
             assertEquals("保留的对话", conversation.title)
             assertEquals("旧消息", message.content)
-            assertEquals(26, currentVersion(database))
+            assertEquals(ETA_DATABASE_VERSION, currentVersion(database))
         } finally {
             database.close()
             assertTrue("The legacy database must remain available for recovery", legacyFile.isFile)
@@ -150,6 +150,7 @@ class EtaDatabaseMigrationTest {
                 EtaDatabase.MIGRATION_23_24,
                 EtaDatabase.MIGRATION_24_25,
                 EtaDatabase.MIGRATION_25_26,
+                EtaDatabase.MIGRATION_26_27,
             )
             .build()
         try {
@@ -391,6 +392,7 @@ class EtaDatabaseMigrationTest {
         EtaDatabase.MIGRATION_23_24,
         EtaDatabase.MIGRATION_24_25,
         EtaDatabase.MIGRATION_25_26,
+        EtaDatabase.MIGRATION_26_27,
     )
 
     private fun currentVersion(database: EtaDatabase): Int =

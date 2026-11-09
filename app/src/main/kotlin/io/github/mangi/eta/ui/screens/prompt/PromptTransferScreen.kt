@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +65,7 @@ internal fun PromptTransferPanel(
     onOpenExportPicker: () -> Unit,
 ) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<String?>(null) }
     var statusError by remember { mutableStateOf(false) }
@@ -319,7 +321,7 @@ internal fun PromptTransferPanel(
                         }
                         report(
                             if (added != null) {
-                                context.getString(R.string.prompt_injection_import_success, added)
+                                resources.getString(R.string.prompt_injection_import_success, added)
                             } else {
                                 importFailed
                             },

@@ -21,9 +21,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.ui.components.providerBrandLogoRes as sharedProviderBrandLogoRes
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaUiMetrics
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.SmallTitle
@@ -40,13 +44,13 @@ internal fun ProviderSection(
 ) {
     Column(modifier = modifier) {
         if (title != null) {
-            SmallTitle(title)
+            SmallTitle(title, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         }
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = EtaUiMetrics.pageHorizontal)
+                .padding(bottom = EtaUiMetrics.groupGap),
         ) {
             content()
         }
@@ -73,8 +77,8 @@ private fun ProviderBrandImage(
         contentDescription = null,
         contentScale = ContentScale.Fit,
         modifier = modifier
-            .padding(end = 8.dp)
-            .size(24.dp)
+            .padding(end = 4.dp)
+            .size(32.dp)
             .clip(CircleShape),
     )
 }
@@ -103,19 +107,11 @@ internal fun ProviderIcon(
         is CustomProviderSetting -> Icons.Rounded.Dns
         else -> Icons.Rounded.Language
     }
-    Box(
-        modifier = modifier
-            .padding(end = 8.dp)
-            .size(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(22.dp),
-            tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
-        )
-    }
+    EtaIconTile(
+        icon = icon,
+        modifier = modifier.padding(end = 4.dp),
+        tone = EtaIconTone.MODEL,
+    )
 }
 
 internal enum class TagChipTone { Normal, Emphasized }
@@ -143,11 +139,11 @@ internal fun TagChip(
     }
     Text(
         text = text,
-        style = MiuixTheme.textStyles.footnote2,
+        style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp),
         fontWeight = weight,
         color = foreground,
         modifier = Modifier
-            .squircleSurface(color = background, cornerRadius = 6.dp)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .squircleSurface(color = background, cornerRadius = 8.dp)
+            .padding(horizontal = 7.dp, vertical = 3.dp),
     )
 }

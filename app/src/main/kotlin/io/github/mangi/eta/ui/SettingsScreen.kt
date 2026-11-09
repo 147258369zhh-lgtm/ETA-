@@ -19,6 +19,7 @@ import androidx.compose.material.icons.rounded.AccessibilityNew
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Dashboard
@@ -109,6 +110,9 @@ import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.StatusWarning
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaUiMetrics
 import io.github.mangi.eta.ui.navigation.AppRoute
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -126,18 +130,22 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 private object SettingsIconColors {
-    val Blue = Color(0xFF4285F4)
-    val Green = StatusSuccess
-    val Orange = Color(0xFFFA7B17)
+    val Blue = EtaIconTone.MODEL.accent
+    val Green = EtaIconTone.SYSTEM.accent
+    val Orange = EtaIconTone.MEMORY.accent
     val Yellow = StatusWarning
+    val Automation = EtaIconTone.AUTOMATION.accent
+    val Tool = EtaIconTone.TOOL.accent
+    val Data = EtaIconTone.DATA.accent
+    val System = EtaIconTone.SYSTEM.accent
 }
 
 @Composable
 private fun SettingsGroupCard(content: @Composable () -> Unit) {
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp)
-            .padding(bottom = 12.dp),
+            .padding(horizontal = EtaUiMetrics.pageHorizontal)
+            .padding(bottom = EtaUiMetrics.groupGap),
     ) {
         content()
     }
@@ -149,23 +157,20 @@ private fun SettingsIcon(
     tint: Color,
     enabled: Boolean = true,
 ) {
-    val glyphSize = when (icon) {
-        Icons.AutoMirrored.Rounded.MenuBook -> 22.dp
-        else -> 24.dp
-    }
-    Box(
-        modifier = Modifier
-            .padding(end = 8.dp)
-            .size(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(glyphSize),
-            tint = if (enabled) tint else MiuixTheme.colorScheme.disabledOnSecondaryVariant,
-        )
-    }
+    EtaIconTile(
+        icon = icon,
+        modifier = Modifier.padding(end = 4.dp),
+        accentColor = tint,
+        enabled = enabled,
+    )
+}
+
+@Composable
+private fun SettingsSectionHeader(title: String) {
+    SmallTitle(
+        text = title,
+        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+    )
 }
 
 /**
@@ -353,7 +358,7 @@ private fun SettingsPageContent(
     ) {
             // ── LLM 提供商 ──────────────────────────────────────────────
             item(key = "section_agent") {
-                SmallTitle(stringResource(R.string.settings_llm_providers))
+                SettingsSectionHeader("模型与推理")
                 SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.ui_model_provider_e8c7f5),
@@ -374,13 +379,6 @@ private fun SettingsPageContent(
                         icon = Icons.Rounded.Psychology,
                         iconTint = SettingsIconColors.Blue,
                     )
-                }
-            }
-
-            // ── 上下文与扩展 ────────────────────────────────────────────
-            item(key = "section_context_extensions") {
-                SmallTitle(stringResource(R.string.settings_context_extensions))
-                SettingsGroupCard {
                     SwitchPref(
                         context = context,
                         prefs = agentPrefs,
@@ -390,8 +388,24 @@ private fun SettingsPageContent(
                         iconTint = SettingsIconColors.Blue,
                     )
                     ArrowPreference(
+                        title = "本地模型",
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.CloudQueue,
+                                tint = SettingsIconColors.Blue,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.LocalModels) },
+                    )
+                }
+            }
+
+            // ── 记忆与智能体 ────────────────────────────────────────────
+            item(key = "section_agent_core") {
+                SettingsSectionHeader("记忆与智能体")
+                SettingsGroupCard {
+                    ArrowPreference(
                         title = "记忆与自学习",
-                        summary = "分层记忆、候选审阅、规则沉淀与休眠整理",
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.AutoMirrored.Rounded.MenuBook,
@@ -402,7 +416,6 @@ private fun SettingsPageContent(
                     )
                     ArrowPreference(
                         title = "角色与指令",
-                        summary = "角色人格、世界书、作用域指令、冲突检查与导入导出",
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Description,
@@ -422,30 +435,55 @@ private fun SettingsPageContent(
                         onClick = { onNavigate(AppRoute.Subagents) },
                     )
                     ArrowPreference(
+                        title = "提示词与工具边界",
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.Description,
+                                tint = SettingsIconColors.Automation,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.PromptInjection) },
+                    )
+                    ArrowPreference(
+                        title = "A2A 协作",
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.Groups,
+                                tint = SettingsIconColors.Tool,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.A2AAgents) },
+                    )
+                }
+            }
+
+            // ── 自动化与能力 ────────────────────────────────────────────
+            item(key = "section_automation_capability") {
+                SettingsSectionHeader("自动化与能力")
+                SettingsGroupCard {
+                    ArrowPreference(
                         title = stringResource(R.string.route_task_center),
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Schedule,
-                                tint = SettingsIconColors.Orange,
+                                tint = SettingsIconColors.Automation,
                             )
                         },
                         onClick = { onNavigate(AppRoute.TaskCenter) },
                     )
                     ArrowPreference(
                         title = stringResource(R.string.route_agent_metrics),
-                        summary = stringResource(R.string.route_agent_metrics_summary),
                         startAction = {
-                            SettingsIcon(Icons.Rounded.Dashboard, tint = SettingsIconColors.Green)
+                            SettingsIcon(Icons.Rounded.Dashboard, tint = SettingsIconColors.Data)
                         },
                         onClick = { onNavigate(AppRoute.AgentMetrics) },
                     )
                     ArrowPreference(
                         title = "能力中心",
-                        summary = "Skills、MCP、来源、安装与工具边界",
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Inventory2,
-                                tint = SettingsIconColors.Green,
+                                tint = SettingsIconColors.Tool,
                             )
                         },
                         onClick = { onNavigate(AppRoute.CapabilityCenter) },
@@ -453,13 +491,13 @@ private fun SettingsPageContent(
                 }
             }
 
-            // ── 工具 ───────────────────────────────────────────────────
+            // ── 工具与设备 ─────────────────────────────────────────────
             item(key = "section_tools") {
-                SmallTitle(stringResource(R.string.ui_tool_a72ef1))
+                SettingsSectionHeader("工具与设备")
                 SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.settings_tools_list),
-                        startAction = { SettingsIcon(Icons.Rounded.Dashboard, tint = SettingsIconColors.Green) },
+                        startAction = { SettingsIcon(Icons.Rounded.Build, tint = SettingsIconColors.Tool) },
                         onClick = { onNavigate(AppRoute.Tools) },
                     )
                     SwitchPref(
@@ -557,20 +595,15 @@ private fun SettingsPageContent(
                 }
             }
 
-            item(key = "system_enhancements") {
+            // ── 系统助手接管 ──────────────────────────────────────────────
+            item(key = "section_assistant_takeover") {
+                SettingsSectionHeader("系统接入")
                 SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.capability_enhancements),
-                        startAction = { SettingsIcon(Icons.Rounded.Security, tint = SettingsIconColors.Blue) },
+                        startAction = { SettingsIcon(Icons.Rounded.Security, tint = SettingsIconColors.System) },
                         onClick = { onNavigate(AppRoute.SystemEnhance) },
                     )
-                }
-            }
-
-            // ── 系统助手接管 ──────────────────────────────────────────────
-            item(key = "section_assistant_takeover") {
-                SmallTitle(stringResource(R.string.ui_system_assistant_takes_over_f46043))
-                SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.ui_eta_system_assistant_003e9b),
                         summary = if (assistantActive) "已设为系统默认助手" else "未设为系统默认助手；唤醒词不会生效",
@@ -631,7 +664,7 @@ private fun SettingsPageContent(
             if (prefs != null || hasConnectedFramework) {
                 // ── 厂商助手兼容入口 ──────────────────────────────────────────
                 item(key = "section_oem_assistant_compatibility") {
-                    SmallTitle(stringResource(R.string.ui_xiaobu_xiaoai_compatible_entrance_ae918a))
+                    SettingsSectionHeader("厂商助手兼容")
                     SettingsGroupCard {
                         SwitchPref(
                             context = context,
@@ -656,7 +689,7 @@ private fun SettingsPageContent(
             if (prefs != null || hasConnectedFramework || capabilities.root.isGranted || hasUsedSystemizer) {
                 // ── Gemini ─────────────────────────────────────────────────
                 item(key = "section_gemini") {
-                    SmallTitle("Gemini")
+                    SettingsSectionHeader("Gemini")
                     SettingsGroupCard {
                         if (prefs != null || hasConnectedFramework) {
                             SwitchPref(
@@ -713,7 +746,7 @@ private fun SettingsPageContent(
             if (prefs != null || hasConnectedFramework) {
                 // ── 一圈即搜 ────────────────────────────────────────────────
                 item(key = "section_circle_to_search") {
-                    SmallTitle(stringResource(R.string.ui_search_in_one_turn_179584))
+                    SettingsSectionHeader(stringResource(R.string.ui_search_in_one_turn_179584))
                     SettingsGroupCard {
                         SwitchPref(
                             context = context,
@@ -735,9 +768,9 @@ private fun SettingsPageContent(
                 }
             }
 
-            // ── 通用 ────────────────────────────────────────────────────
+            // ── 语音与外观 ──────────────────────────────────────────────
             item(key = "section_general") {
-                SmallTitle(stringResource(R.string.settings_general))
+                SettingsSectionHeader("语音与外观")
                 SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.appearance_title),
@@ -763,25 +796,35 @@ private fun SettingsPageContent(
                             )
                         },
                     )
+                }
+            }
+
+            // ── 项目与数据 ──────────────────────────────────────────────
+            item(key = "section_project_data") {
+                SettingsSectionHeader("项目与数据")
+                SettingsGroupCard {
+                    ArrowPreference(
+                        title = stringResource(R.string.projects_title),
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.FolderSpecial,
+                                tint = SettingsIconColors.Data,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.Projects) },
+                    )
                     ArrowPreference(
                         title = stringResource(R.string.data_backup_title),
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Description,
-                                tint = SettingsIconColors.Blue,
+                                tint = SettingsIconColors.Data,
                             )
                         },
                         onClick = { onNavigate(AppRoute.DataBackup) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.projects_title),
-                        summary = stringResource(R.string.projects_summary),
-                        startAction = { SettingsIcon(Icons.Rounded.FolderSpecial, tint = SettingsIconColors.Blue) },
-                        onClick = { onNavigate(AppRoute.Projects) },
-                    )
-                    ArrowPreference(
                         title = stringResource(R.string.conversation_archive_settings_title),
-                        summary = stringResource(R.string.conversation_archive_settings_summary),
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Archive,
@@ -793,9 +836,9 @@ private fun SettingsPageContent(
                 }
             }
 
-            // ── 权限 ────────────────────────────────────────────────────
+            // ── 权限与运行状态 ──────────────────────────────────────────
             item(key = "section_permissions") {
-                SmallTitle(stringResource(R.string.ui_permissions_560165))
+                SettingsSectionHeader("权限与运行状态")
                 SettingsGroupCard {
                     ArrowPreference(
                         title = stringResource(R.string.ui_floating_window_permissions_076b77),
@@ -902,14 +945,14 @@ private fun SettingsPageContent(
 
             if (BuildConfig.DEBUG) {
                 item(key = "section_debug_diagnostics") {
-                    SmallTitle("调试诊断")
+                    SettingsSectionHeader("调试诊断")
                     DebugDiagnosticsCard()
                 }
             }
 
             // ── 关于 ────────────────────────────────────────────────────
             item(key = "section_about") {
-                SmallTitle(stringResource(R.string.ui_about_bed172))
+                SettingsSectionHeader(stringResource(R.string.ui_about_bed172))
                 SettingsGroupCard {
                     BasicComponent(
                         title = stringResource(R.string.ui_about_version_title),
@@ -950,7 +993,6 @@ private fun SettingsPageContent(
                     )
                     ArrowPreference(
                         title = stringResource(R.string.ui_about_github_star_title),
-                        summary = stringResource(R.string.ui_about_github_star_hint),
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Code,
@@ -972,7 +1014,6 @@ private fun SettingsPageContent(
                     )
                     ArrowPreference(
                         title = "微信赞赏支持",
-                        summary = "扫码支持 Eta 持续开发",
                         startAction = {
                             SettingsIcon(
                                 icon = Icons.Rounded.Favorite,

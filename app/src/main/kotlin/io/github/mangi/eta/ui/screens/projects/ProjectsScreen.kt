@@ -6,8 +6,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountTree
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -17,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -29,11 +39,15 @@ import io.github.mangi.eta.fork.projects.ProjectSubjectType
 import io.github.mangi.eta.ui.app.WorkspaceArtifactStore
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaStatusPill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -165,37 +179,97 @@ private fun ProjectDetailsDialog(
     var meetingId by remember(project.id) { mutableStateOf("") }
     var bindings by remember(project.id) { mutableStateOf<List<io.github.mangi.eta.fork.projects.ProjectSubjectBinding>>(emptyList()) }
     var artifacts by remember(project.id) { mutableStateOf(emptyList<io.github.mangi.eta.ui.app.WorkspaceArtifact>()) }
+    var localError by remember(project.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(project.id) {
         bindings = runCatching { ProjectRepository.bindingsForProject(context, project.id) }.getOrDefault(emptyList())
         artifacts = WorkspaceArtifactStore(context).list(200).filter { it.projectId == project.id }
     }
-    WindowDialog(show = true, title = project.name, summary = project.rootIdentityKey, onDismissRequest = onDismiss) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.projects_bind_summary), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-            TextField(value = conversationId, onValueChange = { conversationId = it.take(256) }, label = stringResource(R.string.projects_conversation_id), singleLine = true, modifier = Modifier.fillMaxWidth())
-            TextField(value = meetingId, onValueChange = { meetingId = it.take(256) }, label = stringResource(R.string.projects_meeting_id), singleLine = true, modifier = Modifier.fillMaxWidth())
+    WindowDialog(show = true, title = project.name, summary = project.rootDisplayName, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 560.dp)) {
+            Column(
+                modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    EtaIconTile(Icons.Rounded.FolderOpen, tone = EtaIconTone.SYSTEM)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(stringResource(R.string.projects_bind_summary), style = MiuixTheme.textStyles.body2)
+                        Text("${bindings.size} 个对话或会议室 · ${artifacts.size} 个文件", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    }
+                    EtaStatusPill(if (project.archivedAt == null) "使用中" else "已归档")
+                }
+                TextField(value = conversationId, onValueChange = { conversationId = it.take(256) }, label = stringResource(R.string.projects_conversation_id), singleLine = true, modifier = Modifier.fillMaxWidth())
+                TextField(value = meetingId, onValueChange = { meetingId = it.take(256) }, label = stringResource(R.string.projects_meeting_id), singleLine = true, modifier = Modifier.fillMaxWidth())
+                localError?.let { message ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Rounded.WarningAmber, null, tint = MiuixTheme.colorScheme.error, modifier = Modifier.padding(2.dp))
+                        Text(message, color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.footnote1)
+                    }
+                }
+                if (bindings.isNotEmpty()) {
+                    ProjectDialogSection(stringResource(R.string.projects_bound_subjects), Icons.Rounded.Link) {
+                        bindings.forEach { binding ->
+                            Text(
+                                "${binding.subjectType}: ${binding.subjectId}",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
+                }
+                ProjectDialogSection(stringResource(R.string.projects_artifacts, artifacts.size), Icons.Rounded.AccountTree) {
+                    if (artifacts.isEmpty()) {
+                        Text("暂无文件", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp))
+                    } else artifacts.take(5).forEach { artifact ->
+                        Text(artifact.label, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, style = MiuixTheme.textStyles.footnote1, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp))
+                    }
+                }
+            }
             MiuixDialogActions(
+                modifier = Modifier.padding(top = 14.dp),
                 confirmText = stringResource(R.string.projects_bind),
                 confirmEnabled = conversationId.isNotBlank() || meetingId.isNotBlank(),
                 onCancel = onDismiss,
                 onConfirm = {
+                    localError = null
                     scope.launch {
                         runCatching {
                             conversationId.trim().takeIf { it.isNotBlank() }?.let { ProjectRepository.bindSubject(context, project.id, ProjectSubjectType.CONVERSATION, it) }
                             meetingId.trim().takeIf { it.isNotBlank() }?.let { ProjectRepository.bindSubject(context, project.id, ProjectSubjectType.MEETING, it) }
                             bindings = ProjectRepository.bindingsForProject(context, project.id)
-                        }.onFailure { onError(context.getString(R.string.projects_save_failed)) }
+                            conversationId = ""
+                            meetingId = ""
+                        }.onFailure {
+                            localError = context.getString(R.string.projects_save_failed)
+                            onError(context.getString(R.string.projects_save_failed))
+                        }
                     }
                 },
             )
-            if (bindings.isNotEmpty()) {
-                Text(stringResource(R.string.projects_bound_subjects), style = MiuixTheme.textStyles.subtitle)
-                bindings.forEach { binding ->
-                    Text("${binding.subjectType}: ${binding.subjectId}", color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                }
-            }
-            Text(stringResource(R.string.projects_artifacts, artifacts.size), style = MiuixTheme.textStyles.subtitle)
-            artifacts.take(5).forEach { artifact -> Text(artifact.label, color = MiuixTheme.colorScheme.onSurfaceVariantSummary) }
         }
+    }
+}
+
+@Composable
+private fun ProjectDialogSection(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    content: @Composable () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(icon, contentDescription = null, tint = MiuixTheme.colorScheme.primary, modifier = Modifier.padding(2.dp))
+            Text(title, style = MiuixTheme.textStyles.body2)
+        }
+        Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(vertical = 3.dp)) { content() } }
     }
 }

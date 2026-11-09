@@ -4,6 +4,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -27,11 +29,19 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.skill.SkillFolderArchive
 import io.github.mangi.eta.agent.skill.SkillPackageExportService
 import io.github.mangi.eta.ui.components.ListEmptyState
+import io.github.mangi.eta.ui.components.DetailListRow
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaStatusPill
+import io.github.mangi.eta.ui.components.EtaStatusTone
+import io.github.mangi.eta.ui.components.EtaUiMetrics
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.model.AgentSkillsAction
@@ -56,6 +66,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 @Composable
@@ -192,13 +203,16 @@ fun AgentSkillsScreen(
         modifier = modifier,
     ) {
         item(key = "skill-evolution") {
-            io.github.mangi.eta.ui.components.DetailListRow("经验技能", "自动提炼 · 证据验证 · 版本管理", Icons.Rounded.AutoAwesome, onClick = { page = "evolution" })
-            io.github.mangi.eta.ui.components.DetailListRow(
-                title = stringResource(R.string.skills_tools_permission_title),
-                subtitle = stringResource(R.string.skills_tools_permission_summary),
-                icon = Icons.Rounded.AdminPanelSettings,
-                onClick = { page = "tools" },
-            )
+            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                DetailListRow("经验技能", "自动提炼、证据验证与版本管理", Icons.Rounded.AutoAwesome, tone = EtaIconTone.AUTOMATION, onClick = { page = "evolution" })
+                DetailListRow(
+                    title = stringResource(R.string.skills_tools_permission_title),
+                    subtitle = stringResource(R.string.skills_tools_permission_summary),
+                    icon = Icons.Rounded.AdminPanelSettings,
+                    tone = EtaIconTone.TOOL,
+                    onClick = { page = "tools" },
+                )
+            }
         }
         val installed = state.skills.filter { it.installed }
         val needsReview = installed.filter { it.reviewRecommended || it.setupRequired }
@@ -208,36 +222,17 @@ fun AgentSkillsScreen(
 
         if (installed.isNotEmpty()) {
             item(key = "skill-health") {
-                SmallTitle("能力健康")
-                Card(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .padding(bottom = 12.dp),
-                ) {
-                    BasicComponent(
-                        title = if (needsReview.isEmpty()) "所有 Skill 状态正常" else "${needsReview.size} 个 Skill 建议复核",
-                        summary = if (needsReview.isEmpty()) {
-                            "已检查 ${installed.size} 个 Skill 的使用记录与依赖状态"
-                        } else {
-                            "已检查 ${installed.size} 个 Skill；长期未使用、失败率偏高或依赖缺失会显示在这里"
-                        },
-                        startAction = {
-                            top.yukonga.miuix.kmp.basic.Icon(
-                                imageVector = Icons.Rounded.VerifiedUser,
-                                contentDescription = null,
-                            )
-                        },
-                    )
-                }
+                SmallTitle("能力健康", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+                SkillHealthCard(installedCount = installed.size, reviewCount = needsReview.size)
             }
         }
 
         item(key = "zip-import") {
-            SmallTitle(stringResource(R.string.ui_install_087db6))
+            SmallTitle(stringResource(R.string.ui_install_087db6), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = EtaUiMetrics.groupGap),
             ) {
                 ArrowPreference(
                     title = if (state.isImporting) stringResource(R.string.skills_checking_package) else stringResource(R.string.skills_import_zip),
@@ -278,11 +273,11 @@ fun AgentSkillsScreen(
 
         if (needsReview.isNotEmpty()) {
             item(key = "review") {
-                SmallTitle("建议复核")
+                SmallTitle("建议复核", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     needsReview.forEach { skill ->
                         SkillSwitchRow(
@@ -313,11 +308,11 @@ fun AgentSkillsScreen(
 
         if (builtinInstalled.isNotEmpty()) {
             item(key = "builtin") {
-                SmallTitle(stringResource(R.string.ui_built_in_skills_1ceedf))
+                SmallTitle(stringResource(R.string.ui_built_in_skills_1ceedf), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     builtinInstalled.forEach { skill ->
                         SkillSwitchRow(
@@ -343,11 +338,11 @@ fun AgentSkillsScreen(
 
         if (userInstalled.isNotEmpty()) {
             item(key = "user") {
-                SmallTitle(stringResource(R.string.ui_user_skills_748e7f))
+                SmallTitle(stringResource(R.string.ui_user_skills_748e7f), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     userInstalled.forEach { skill ->
                         SkillSwitchRow(
@@ -374,11 +369,11 @@ fun AgentSkillsScreen(
 
         if (removed.isNotEmpty()) {
             item(key = "removed") {
-                SmallTitle(stringResource(R.string.ui_removed_4e5c49))
+                SmallTitle(stringResource(R.string.ui_removed_4e5c49), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
-                        .padding(bottom = 12.dp),
+                        .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     removed.forEach { skill ->
                         BasicComponent(
@@ -474,26 +469,35 @@ fun AgentSkillsScreen(
                 skill.versions.forEach { version ->
                     val time = SimpleDateFormat("yyyy年M月d日 HH:mm", locale)
                         .format(Date(version.createdAt))
-                    BasicComponent(
-                        title = version.version?.let { "v$it" } ?: "历史版本",
-                        summary = buildString {
-                            version.sourceName?.let { append(it).append(" · ") }
-                            append(time)
-                            append(" · ").append(version.sizeBytes / 1024L).append(" KB")
-                        },
-                        enabled = !operationPending,
-                        onClick = {
-                            restoreTarget = skill to version
-                            versionTarget = null
-                        },
-                    )
+                    Card(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                        BasicComponent(
+                            title = version.version?.let { "v$it" } ?: "历史版本",
+                            summary = buildString {
+                                version.sourceName?.let { append(it).append(" · ") }
+                                append(time)
+                                append(" · ").append(version.sizeBytes / 1024L).append(" KB")
+                            },
+                            enabled = !operationPending,
+                            onClick = {
+                                restoreTarget = skill to version
+                                versionTarget = null
+                            },
+                        )
+                    }
                 }
                 if (skill.versions.isEmpty()) {
-                    Text(
-                        text = "暂无历史版本",
-                        style = top.yukonga.miuix.kmp.theme.MiuixTheme.textStyles.body2,
-                        modifier = Modifier.padding(vertical = 24.dp),
-                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        EtaIconTile(Icons.Rounded.VerifiedUser, tone = EtaIconTone.TOOL)
+                        Text(
+                            text = "暂无历史版本",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
                 }
             }
             TextButton(
@@ -577,6 +581,43 @@ fun AgentSkillsScreen(
                 } else {
                     ButtonDefaults.textButtonColorsPrimary()
                 },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SkillHealthCard(installedCount: Int, reviewCount: Int) {
+    val healthy = reviewCount == 0
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            EtaIconTile(
+                icon = Icons.Rounded.VerifiedUser,
+                tone = if (healthy) EtaIconTone.SYSTEM else EtaIconTone.MEMORY,
+                size = 40.dp,
+                glyphSize = 21.dp,
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = if (healthy) "能力状态正常" else "$reviewCount 个 Skill 建议复核",
+                    style = MiuixTheme.textStyles.body1,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "已检查 $installedCount 个 Skill 的使用、依赖和版本状态",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            EtaStatusPill(
+                text = if (healthy) "健康" else "需检查",
+                tone = if (healthy) EtaStatusTone.Positive else EtaStatusTone.Warning,
             )
         }
     }

@@ -192,7 +192,7 @@ class ConversationBranchSetupTest {
         val proj = ProjectDatabase.get(context).openHelper.writableDatabase
         proj.execSQL("DROP TABLE branch_setup_receipts"); proj.version = 1
         close()
-        assertEquals(26, EtaDatabase.get(context).openHelper.writableDatabase.version)
+        assertEquals(27, EtaDatabase.get(context).openHelper.writableDatabase.version)
         assertEquals(5, ConversationExtensionDatabase.get(context).openHelper.writableDatabase.version)
         assertEquals(2, ProjectDatabase.get(context).openHelper.writableDatabase.version)
         assertTrue(core.branchSetupsPage(8, 0).isEmpty())

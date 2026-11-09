@@ -1,21 +1,35 @@
 package io.github.mangi.eta.ui.screens.enhance
 
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AdminPanelSettings
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.app.description
 import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaStatusPill
+import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 fun SystemEnhanceScreen(
@@ -30,11 +44,40 @@ fun SystemEnhanceScreen(
         onBack = { onAction(AgentSystemEnhanceAction.NavigateBack) },
         modifier = modifier,
     ) {
+        item(key = "overview") {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    EtaIconTile(Icons.Rounded.AdminPanelSettings, tone = EtaIconTone.RISK, size = 40.dp, glyphSize = 21.dp)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("系统接管", style = MiuixTheme.textStyles.title3, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when {
+                                capabilities.root.isGranted && capabilities.xposedConnected -> "Root 与系统服务均可用"
+                                capabilities.root.isGranted -> "Root 可用，系统服务未连接"
+                                capabilities.xposedConnected -> "系统服务可用，Root 未授权"
+                                else -> "当前使用标准 Android 权限"
+                            },
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    EtaStatusPill(
+                        if (capabilities.root.isGranted || capabilities.xposedConnected) "增强" else "标准",
+                        tone = if (capabilities.root.isGranted || capabilities.xposedConnected) EtaStatusTone.Positive else EtaStatusTone.Neutral,
+                    )
+                }
+            }
+        }
         item(key = "access") {
+            SmallTitle("访问能力")
             Card(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .padding(top = 8.dp, bottom = 12.dp),
+                    .padding(bottom = 12.dp),
             ) {
                 BasicComponent(
                     title = "Root",

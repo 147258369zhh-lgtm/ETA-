@@ -37,7 +37,7 @@ class BackupMetricsPresentationTest {
             assertTrue(panel.texts().contains("正在校验或恢复"))
             assertFalse(panel.texts().contains("正在导出"))
             panel.capture("backup-import-progress")
-            panel.click("取消操作")
+            panel.click("取消")
             panel.await { panel.texts().contains("操作已取消") }
             assertNull(vm.operation)
         }
@@ -79,7 +79,7 @@ class BackupMetricsPresentationTest {
         MemoryLearningPresentationTest.Panel {
             AgentMetricsScreen({}, {}, {})
         }.use { panel ->
-            panel.await { panel.texts().contains("输入缓存命中") && panel.texts().contains("91.7%") }
+            panel.await { panel.texts().contains("缓存命中") && panel.texts().contains("91.7%") }
             panel.capture("metrics-overview")
         }
         MemoryLearningPresentationTest.Panel(dark = true, fontScale = 1.2f) {

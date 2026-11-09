@@ -199,7 +199,7 @@ internal fun LearningSettingsScreen(
             Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                 SwitchPreference(
                     title = "启用自学习",
-                    summary = "允许 Agent 检索已确认规则并提交候选经验",
+                    summary = "检索规则并提交候选经验",
                     checked = enabled,
                     onCheckedChange = {
                         enabled = it
@@ -208,7 +208,7 @@ internal fun LearningSettingsScreen(
                 )
                 SwitchPreference(
                     title = "自动捕获候选",
-                    summary = "先脱敏、去重，再由软件管家检查证据和质量；通过后才进入人工批准区",
+                    summary = "自动脱敏、去重并审核",
                     checked = enabled && autoCapture,
                     enabled = enabled,
                     onCheckedChange = {
@@ -216,25 +216,18 @@ internal fun LearningSettingsScreen(
                         LearningSettingsStore.setAutomaticCaptureEnabled(context, it)
                     },
                 )
-                Text(
-                    text = "软件管家会拒绝空泛、重复、缺证据和不可执行的经验；只有审核通过的候选才显示给用户批准。确认并启用后供 Agent 参考，规则保留历史版本。",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                )
             }
         }
         if (tab == 2) item(key = "idle_settings") { MemoryAutomationSettingsPanel() }
         if (tab != 2) item(key = "learning_search") {
             SmallTitle("查找经验")
-            TextField(value = search, onValueChange = { search = it.take(100) }, label = "搜索事实、偏好或做事步骤", singleLine = true,
+            TextField(value = search, onValueChange = { search = it.take(100) }, label = "搜索经验", singleLine = true,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth())
         }
         if (tab == 0) item(key = "history_toggle") {
             Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                 SwitchPreference(
                     title = "显示已处理候选",
-                    summary = "查看已确认、已启用或已拒绝的历史候选",
                     checked = showHistory,
                     onCheckedChange = { showHistory = it },
                 )
@@ -257,7 +250,7 @@ internal fun LearningSettingsScreen(
                 Card(modifier = Modifier.padding(horizontal = 12.dp)) {
                     ListEmptyState(
                         title = "没有待审批经验",
-                        summary = "软件管家审核通过的经验才会显示在这里；拒绝内容不会进入人工批准队列。",
+                        summary = "审核通过的经验会显示在这里",
                         icon = Icons.Rounded.Psychology,
                     )
                 }
@@ -288,7 +281,7 @@ internal fun LearningSettingsScreen(
                 Card(modifier = Modifier.padding(horizontal = 12.dp)) {
                     ListEmptyState(
                         title = "尚未确认长期规则",
-                        summary = "在候选页确认有复用价值的经验后，它会成为可检索、可回滚的规则。",
+                        summary = "确认候选后可成为长期规则",
                         icon = Icons.Rounded.Psychology,
                     )
                 }
@@ -313,6 +306,11 @@ private fun CandidateCard(candidate: LearningCandidateView, onClick: () -> Unit)
             icon = if (candidate.conflicts.isNotEmpty() || candidate.status == LearningStatus.CONFLICT) {
                 Icons.Rounded.CompareArrows
             } else Icons.Rounded.FactCheck,
+            tone = if (candidate.conflicts.isNotEmpty() || candidate.status == LearningStatus.CONFLICT) {
+                io.github.mangi.eta.ui.components.EtaIconTone.RISK
+            } else {
+                io.github.mangi.eta.ui.components.EtaIconTone.MEMORY
+            },
             onClick = onClick,
         )
     }

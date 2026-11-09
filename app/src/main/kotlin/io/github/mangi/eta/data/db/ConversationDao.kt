@@ -244,6 +244,9 @@ internal interface ConversationDao : ChunkedTextDao {
     @Query("SELECT * FROM conversation_context_checkpoints WHERE conversation_id = :conversationId")
     suspend fun contextCheckpointRow(conversationId: String): ConversationContextCheckpointEntity?
 
+    @Query("UPDATE agent_text_chunks SET field = :toField WHERE owner_table = :table AND owner_id = :owner AND field = :fromField")
+    suspend fun moveTextChunks(table: String, owner: String, fromField: String, toField: String)
+
     @Transaction
     suspend fun contextCheckpoint(conversationId: String): ConversationContextCheckpointEntity? =
         contextCheckpointRow(conversationId)?.let { restoreCheckpoint(it) }
@@ -319,6 +322,30 @@ internal interface ConversationDao : ChunkedTextDao {
     suspend fun updateContextCheckpoint(conversationId: String, historyJson: String?, journalJson: String?) {
         val previous = contextCheckpointRow(conversationId)
             ?: ConversationContextCheckpointEntity(conversationId, "[]")
+        // 旧 checkpoint 可能把相同内容只保存在 history 字段。必须先读取旧 history，
+        // 因为下面写入新 history 会替换同名的分块记录。
+        val previousJournal = runCatching {
+            if (previous.journalJson.isNotBlank()) {
+                restoreText("conversation_context_checkpoints", conversationId, "journal", previous.journalJson)
+            } else {
+                restoreText("conversation_context_checkpoints", conversationId, "history", previous.historyJson)
+            }
+        }.getOrNull()
+        // 如果旧 journal 与 history 共用一份内容，压缩 history 前可直接把整组分块改挂到 journal，
+        // 无需复制、解码后重写完整历史，也避免大对话在压缩时产生瞬时双份峰值。
+        val reusePreviousHistoryChunks = historyJson != null &&
+            journalJson == null &&
+            previous.journalJson.isBlank() &&
+            previous.historyJson.startsWith(ChunkedTextDao.REFERENCE_PREFIX) &&
+            previousJournal != null && previousJournal != historyJson
+        if (reusePreviousHistoryChunks) {
+            moveTextChunks(
+                "conversation_context_checkpoints",
+                conversationId,
+                "history",
+                "journal",
+            )
+        }
         val storedHistory = historyJson?.let {
             storeText("conversation_context_checkpoints", conversationId, "history", it)
         } ?: previous.historyJson
@@ -332,14 +359,15 @@ internal interface ConversationDao : ChunkedTextDao {
                 storeText("conversation_context_checkpoints", conversationId, "journal", "")
             journalJson != null ->
                 storeText("conversation_context_checkpoints", conversationId, "journal", journalJson)
-            historyText != null && previous.journalJson.isNotBlank() -> {
-                val previousJournal = runCatching {
-                    restoreText("conversation_context_checkpoints", conversationId, "journal", previous.journalJson)
-                }.getOrNull()
-                if (previousJournal == historyText) {
-                    storeText("conversation_context_checkpoints", conversationId, "journal", "")
-                } else {
-                    previous.journalJson
+            historyText != null -> {
+                // 相同内容会只保存 history，并让 journal_json 留空。上下文压缩改变 history 时，
+                // 必须先把先前的 history 物化为 journal，否则未变化的完整过程会被压缩摘要覆盖。
+                when {
+                    previousJournal == null -> previous.journalJson
+                    previousJournal == historyText -> storeText("conversation_context_checkpoints", conversationId, "journal", "")
+                    previous.journalJson.isNotBlank() -> previous.journalJson
+                    reusePreviousHistoryChunks -> previous.historyJson
+                    else -> storeText("conversation_context_checkpoints", conversationId, "journal", previousJournal)
                 }
             }
             else -> previous.journalJson

@@ -236,7 +236,7 @@ internal object VirtualDisplayCommandMain {
             it.name == "createVirtualDisplay" &&
                 it.parameterCount >= 3 &&
                 it.parameterTypes[0] == android.content.Context::class.java &&
-                it.parameterTypes[2] == android.hardware.display.VirtualDisplayConfig::class.java
+                it.parameterTypes[2].name == "android.hardware.display.VirtualDisplayConfig"
         }
 
         for (flags in CanvasRoutingPolicy.FLAG_CANDIDATES) {

@@ -163,7 +163,10 @@ internal object EtaBackupValidation {
                 .getOrElse { throw EtaBackupException("记忆条目作用域无效") }
             if (!memoryIds.add(entry.id) || !entry.id.matches(Regex("[A-Za-z0-9_-]{1,128}")) ||
                 entry.layer !in setOf("core", "project", "task", "long_term", "working", "other") ||
-                entry.status !in setOf("pending", "active", "conflict", "rejected", "archived", "superseded") ||
+                entry.status !in setOf(
+                    "pending", "butler_review", "butler_approved", "confirmed",
+                    "active", "conflict", "rejected", "archived", "superseded",
+                ) ||
                 entry.topic.isBlank() || entry.topic.length > 100 || entry.content.trim().length !in 4..1200 || entry.evidence.length > 600 ||
                 !entry.fingerprint.matches(Regex("[a-f0-9]{64}")) ||
                 entry.source.length > 256 || entry.createdAt < 0 || entry.updatedAt < entry.createdAt ||

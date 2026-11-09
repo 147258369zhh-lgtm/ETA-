@@ -7,6 +7,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 
+internal const val ETA_DATABASE_VERSION = 27
+
 @Database(
     entities = [
         AgentTextChunkEntity::class,
@@ -29,7 +31,7 @@ import androidx.room.migration.Migration
         CharacterEntity::class,
         UserPersonaEntity::class,
     ],
-    version = 27,
+    version = ETA_DATABASE_VERSION,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -136,14 +138,27 @@ internal abstract class EtaDatabase : RoomDatabase() {
         }
 
         internal val MIGRATION_26_27 = Migration(26, 27) { database ->
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN transport_type TEXT NOT NULL DEFAULT 'http'")
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN stdio_command TEXT NOT NULL DEFAULT ''")
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN stdio_arguments_json TEXT NOT NULL DEFAULT '[]'")
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN launch_command TEXT NOT NULL DEFAULT ''")
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN working_directory TEXT NOT NULL DEFAULT ''")
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN last_checked_at INTEGER")
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN last_healthy_at INTEGER")
-            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN last_error TEXT")
+            database.addColumnIfMissing("mcp_servers", "transport_type", "TEXT NOT NULL DEFAULT 'http'")
+            database.addColumnIfMissing("mcp_servers", "stdio_command", "TEXT NOT NULL DEFAULT ''")
+            database.addColumnIfMissing("mcp_servers", "stdio_arguments_json", "TEXT NOT NULL DEFAULT '[]'")
+            database.addColumnIfMissing("mcp_servers", "launch_command", "TEXT NOT NULL DEFAULT ''")
+            database.addColumnIfMissing("mcp_servers", "working_directory", "TEXT NOT NULL DEFAULT ''")
+            database.addColumnIfMissing("mcp_servers", "last_checked_at", "INTEGER")
+            database.addColumnIfMissing("mcp_servers", "last_healthy_at", "INTEGER")
+            database.addColumnIfMissing("mcp_servers", "last_error", "TEXT")
+        }
+
+        private fun androidx.sqlite.db.SupportSQLiteDatabase.addColumnIfMissing(
+            table: String,
+            column: String,
+            definition: String,
+        ) {
+            val exists = query("PRAGMA table_info($table)").use { cursor ->
+                val nameIndex = cursor.getColumnIndexOrThrow("name")
+                generateSequence { if (cursor.moveToNext()) cursor.getString(nameIndex) else null }
+                    .any { it == column }
+            }
+            if (!exists) execSQL("ALTER TABLE $table ADD COLUMN $column $definition")
         }
 
         internal val MIGRATION_24_25 = Migration(24, 25) { database ->
