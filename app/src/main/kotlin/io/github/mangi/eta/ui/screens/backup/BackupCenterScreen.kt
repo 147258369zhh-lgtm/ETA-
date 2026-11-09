@@ -154,7 +154,7 @@ internal fun DataBackupScreen(
     }) {
         if (pending) item(key = "restart") {
             SmallTitle("恢复待完成", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
                 ArrowPreference(title = "重启完成恢复", summary = "恢复数据已暂存", startAction = { PreferenceIcon(Icons.Rounded.RestartAlt, EtaIconTone.DATA) }, onClick = {
                     if (!restartRequested) {
                         restartRequested = true
@@ -177,7 +177,7 @@ internal fun DataBackupScreen(
         }
         item(key = "actions") {
             SmallTitle("备份与恢复", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap).etaGlassSurface()) {
                 ArrowPreference(title = "导出数据", summary = if (isExportOperation(vm.operation)) "正在导出" else null,
                     startAction = { PreferenceIcon(Icons.Rounded.Upload, EtaIconTone.DATA) }, enabled = !busy && !pending,
                     endActions = { if (isExportOperation(vm.operation)) InfiniteProgressIndicator(size = 20.dp) }, onClick = { password = ""; exportDialog = true })
@@ -189,7 +189,7 @@ internal fun DataBackupScreen(
         }
         vm.progress?.let { progress -> item(key = "progress") {
             SmallTitle(if (isExportOperation(vm.operation)) "导出进度" else "恢复进度", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
                 val size = if (progress.bytes > 0) android.text.format.Formatter.formatShortFileSize(app, progress.bytes) +
                     (progress.totalBytes?.let { " / ${android.text.format.Formatter.formatShortFileSize(app, it)}" } ?: "") else null
                 val summary = listOfNotNull(
@@ -212,7 +212,7 @@ internal fun DataBackupScreen(
         } }
         item(key = "automatic") {
             SmallTitle("自动备份", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).padding(bottom = EtaUiMetrics.groupGap).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
                 SwitchPreference(title = "定期备份", checked = auto.enabled, enabled = !busy && !pending && auto.tree.isNotBlank(), onCheckedChange = { saveAuto(auto.copy(enabled = it)) })
                 ArrowPreference(title = "备份目录", summary = backupDirectoryLabel(auto.tree),
                     enabled = !busy && !pending, onClick = { directoryLauncher.launch(auto.tree.takeIf { it.isNotBlank() }?.let(Uri::parse)) })
@@ -234,7 +234,7 @@ internal fun DataBackupScreen(
 @Composable
 private fun BackupOverviewCard(auto: AutoBackupSettings, autoStatus: String, autoEncrypted: Boolean) {
     val configured = auto.tree.isNotBlank()
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 EtaIconTile(Icons.Rounded.Backup, tone = EtaIconTone.DATA, size = 42.dp, glyphSize = 22.dp)

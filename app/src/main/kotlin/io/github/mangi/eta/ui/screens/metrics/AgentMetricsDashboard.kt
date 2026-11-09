@@ -36,7 +36,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.agent.runtime.*
+import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaMotion
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.time.LocalDate
@@ -104,15 +106,12 @@ private data class MetricStat(
 @Composable
 private fun MetricTile(stat: MetricStat, accent: Color, modifier: Modifier = Modifier) {
     val colors = MiuixTheme.colorScheme
-    Card(modifier, colors = CardDefaults.defaultColors(
+    Card(modifier.etaGlassSurface(accent = accent, cornerRadius = 18.dp), colors = CardDefaults.defaultColors(
         color = colors.surfaceContainer,
         contentColor = colors.onSurface,
     )) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            Box(
-                Modifier.size(32.dp).background(accent.copy(alpha = .13f), RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center,
-            ) { Icon(stat.icon, null, tint = accent, modifier = Modifier.size(17.dp)) }
+            EtaIconTile(stat.icon, tone = io.github.mangi.eta.ui.components.EtaIconTone.MODEL, accentColor = accent, size = 32.dp, glyphSize = 17.dp)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(stat.label, style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp), color = colors.onSurfaceVariantSummary)
                 Crossfade(
@@ -163,7 +162,7 @@ internal fun AgentMetricDistributionCard(
         animationSpec = tween(EtaMotion.chart),
         label = "metric-ring-reveal",
     )
-    Card(modifier, colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface)) {
+    Card(modifier.etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp), colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))

@@ -191,7 +191,7 @@ private fun AutomationOverviewCard(
     onMonitorChange: (Boolean) -> Unit,
     onOpenInbox: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 EtaIconTile(Icons.Rounded.Bolt, tone = EtaIconTone.AUTOMATION, size = 40.dp, glyphSize = 21.dp)
@@ -255,7 +255,7 @@ private fun AutomationTaskCard(
     onRun: () -> Unit,
     onDuplicate: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Column(Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
@@ -701,7 +701,7 @@ private fun AutomationEditorScreen(initial: AgentTaskDefinitionEntity?, duplicat
             }
         }
         item(key = "editor_actions") {
-            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                     TextButton(
                         text = if (saving) "正在保存" else "保存任务",
@@ -726,7 +726,7 @@ private fun AutomationEditorScreen(initial: AgentTaskDefinitionEntity?, duplicat
 
 @Composable
 private fun AutomationEditorHeader(title: String, timed: Boolean, stepCount: Int) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -764,7 +764,7 @@ private fun AutomationSectionCard(
     trailing: String? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
         Column {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 13.dp, bottom = 11.dp),

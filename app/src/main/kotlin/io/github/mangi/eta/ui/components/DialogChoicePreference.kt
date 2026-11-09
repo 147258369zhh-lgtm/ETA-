@@ -7,10 +7,14 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Box
@@ -41,6 +45,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -74,9 +81,16 @@ fun DialogChoicePreference(
     var expanded by rememberSaveable(title, enabled) { mutableStateOf(false) }
     val safeIndex = selectedIndex.takeIf { options.isNotEmpty() }?.coerceIn(options.indices)
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val triggerInteraction = remember { MutableInteractionSource() }
+    val triggerPressed by triggerInteraction.collectIsPressedAsState()
+    val triggerScale by animateFloatAsState(
+        targetValue = if (enabled && triggerPressed) 0.993f else 1f,
+        animationSpec = EtaMotion.pressSpring(),
+        label = "dialog-choice-trigger-scale",
+    )
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
-        animationSpec = tween(EtaMotion.state, easing = FastOutSlowInEasing),
+        animationSpec = EtaMotion.layoutSpring(),
         label = "dialog-choice-chevron",
     )
 
@@ -97,7 +111,12 @@ fun DialogChoicePreference(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = enabled) { expanded = !expanded }
+                .graphicsLayer { scaleX = triggerScale; scaleY = triggerScale }
+                .clickable(
+                    enabled = enabled,
+                    interactionSource = triggerInteraction,
+                    indication = etaRippleIndication(),
+                ) { expanded = !expanded }
                 .semantics { contentDescription = "$title，当前 $value" }
                 .padding(start = EtaUiMetrics.cardPadding, end = 14.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -170,20 +189,37 @@ fun DialogChoicePreference(
                             targetValue = if (selected) {
                                 MiuixTheme.colorScheme.primary.copy(alpha = 0.10f)
                             } else {
-                                androidx.compose.ui.graphics.Color.Transparent
+                                Color.Transparent
                             },
                             animationSpec = tween(EtaMotion.state, easing = FastOutSlowInEasing),
                             label = "dialog-choice-option",
                         )
+                        val optionInteraction = remember(option) { MutableInteractionSource() }
+                        val optionPressed by optionInteraction.collectIsPressedAsState()
+                        val optionScale by animateFloatAsState(
+                            targetValue = if (enabled && optionPressed) 0.985f else 1f,
+                            animationSpec = EtaMotion.pressSpring(),
+                            label = "dialog-choice-option-scale",
+                        )
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .graphicsLayer { scaleX = optionScale; scaleY = optionScale }
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(container)
+                                .then(
+                                    if (selected) Modifier.background(
+                                        Brush.linearGradient(
+                                            listOf(Color.White.copy(alpha = 0.09f), Color.Transparent),
+                                        ),
+                                    ) else Modifier,
+                                )
                                 .selectable(
                                     selected = selected,
                                     enabled = enabled,
                                     role = Role.RadioButton,
+                                    interactionSource = optionInteraction,
+                                    indication = etaRippleIndication(),
                                     onClick = {
                                         onSelectedIndexChange(index)
                                         expanded = false
@@ -201,7 +237,14 @@ fun DialogChoicePreference(
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            if (selected) {
+                            AnimatedVisibility(
+                                visible = selected,
+                                enter = fadeIn(EtaMotion.standard()) + scaleIn(
+                                    initialScale = 0.72f,
+                                    animationSpec = EtaMotion.layoutSpring(),
+                                ),
+                                exit = fadeOut(EtaMotion.standard(EtaMotion.press)) + scaleOut(targetScale = 0.72f),
+                            ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Check,
                                     contentDescription = "已选择",

@@ -64,9 +64,14 @@ fun MiuixScaffoldPage(
         label = "page-content-alpha",
     )
     val contentOffset by animateDpAsState(
-        targetValue = if (entered) 0.dp else 6.dp,
-        animationSpec = tween(EtaMotion.content, easing = FastOutSlowInEasing),
+        targetValue = if (entered) 0.dp else 10.dp,
+        animationSpec = EtaMotion.layoutSpring(),
         label = "page-content-offset",
+    )
+    val contentScale by animateFloatAsState(
+        targetValue = if (entered) 1f else 0.992f,
+        animationSpec = EtaMotion.layoutSpring(),
+        label = "page-content-scale",
     )
     LaunchedEffect(Unit) { entered = true }
 
@@ -98,6 +103,7 @@ fun MiuixScaffoldPage(
         Column(
             Modifier
                 .fillMaxSize()
+                .etaPageAtmosphere()
                 .padding(top = innerPadding.calculateTopPadding()),
         ) {
             Box(Modifier.fillMaxWidth().horizontalCutoutPadding()) { aboveContent() }
@@ -109,6 +115,8 @@ fun MiuixScaffoldPage(
                         .fillMaxSize()
                         .graphicsLayer {
                             alpha = contentAlpha
+                            scaleX = contentScale
+                            scaleY = contentScale
                             translationY = contentOffset.toPx()
                         }
                         .horizontalCutoutPadding()
@@ -177,7 +185,7 @@ fun MiuixScaffold(
             }
         },
     ) { paddingValues ->
-        Box(modifier = Modifier.fillMaxSize().captureForTopBar(backdrop)) {
+        Box(modifier = Modifier.fillMaxSize().etaPageAtmosphere().captureForTopBar(backdrop)) {
             WidePageContent { sidePadding ->
                 content(paddingValues, scrollBehavior, sidePadding)
             }

@@ -65,6 +65,7 @@ import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.components.EtaUiMetrics
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.navigation.AppRoute
 import io.github.mangi.eta.ui.pages.providers.TagChip
 import io.github.mangi.eta.ui.pages.providers.TagChipTone
@@ -413,7 +414,7 @@ internal fun McpServersScreen(
 private fun McpConnectionOverviewCard(servers: List<McpServerSetting>) {
     val healthy = servers.count { it.enabled && it.lastError.isNullOrBlank() && it.lastHealthyAt != null }
     val tools = servers.sumOf { it.activeTools.size }
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Row(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -445,7 +446,7 @@ private fun McpServerListCard(server: McpServerSetting, onClick: () -> Unit) {
         server.lastHealthyAt != null -> "已连接" to EtaStatusTone.Positive
         else -> "待检测" to EtaStatusTone.Warning
     }
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()

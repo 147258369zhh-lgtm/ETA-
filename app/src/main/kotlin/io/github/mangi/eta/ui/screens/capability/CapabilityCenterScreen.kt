@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.screens.capability
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -81,9 +82,12 @@ import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.ui.components.DetailListRow
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.EtaIconTone
+import io.github.mangi.eta.ui.components.EtaIconTile
+import io.github.mangi.eta.ui.components.EtaMotion
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
+import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -393,7 +397,7 @@ internal fun CapabilityCenterScreen(
                 }
                 item(key = "overview_entries") {
                     SmallTitle("能力管理")
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).etaGlassSurface()) {
                         DetailListRow(
                             title = "已安装 Skills",
                             subtitle = "${installedSkills.size} 个已安装",
@@ -521,7 +525,7 @@ internal fun CapabilityCenterScreen(
 
             TAB_DISCOVER -> {
                 item(key = "market_search") {
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Card(Modifier.padding(horizontal = 12.dp, vertical = 10.dp).etaGlassSurface()) {
                         Column(
                             Modifier.padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1059,7 +1063,7 @@ private fun CapabilityMetricsCard(
     connectionCount: Int,
     sourceCount: Int,
 ) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 18.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1083,18 +1087,19 @@ private fun CapabilityMetric(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(20.dp),
-            tint = MiuixTheme.colorScheme.primary,
-        )
-        Text(
-            text = value.toString(),
-            style = MiuixTheme.textStyles.title3,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-        )
+        EtaIconTile(icon, tone = EtaIconTone.TOOL, size = 34.dp, glyphSize = 18.dp)
+        Crossfade(
+            targetState = value,
+            animationSpec = EtaMotion.standard(),
+            label = "capability-metric-value",
+        ) { current ->
+            Text(
+                text = current.toString(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
         Text(
             text = label,
             style = MiuixTheme.textStyles.footnote1,
@@ -1107,7 +1112,7 @@ private fun CapabilityMetric(
 
 @Composable
 private fun SourceHealthCard(snapshot: SkillMarketSnapshot) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             snapshot.statuses.forEachIndexed { index, status ->
                 if (index > 0) {
@@ -1164,7 +1169,7 @@ private fun MarketItemCard(
     updateAvailable: Boolean,
     onClick: () -> Unit,
 ) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1635,7 +1640,7 @@ private fun CapabilityInlineWarning(text: String) {
 
 @Composable
 private fun CapabilityNote(text: String) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 3.dp)) {
+    Card(Modifier.padding(horizontal = 12.dp, vertical = 3.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Text(
             text = text,
             style = MiuixTheme.textStyles.footnote1.copy(lineHeight = 20.sp),

@@ -4,6 +4,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.padding
@@ -12,6 +13,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -39,7 +42,7 @@ internal fun EtaChoiceChip(
     val pressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (enabled && pressed) 0.97f else 1f,
-        animationSpec = tween(EtaMotion.press),
+        animationSpec = EtaMotion.pressSpring(),
         label = "choice_chip_press",
     )
     val container by animateColorAsState(
@@ -48,7 +51,7 @@ internal fun EtaChoiceChip(
         } else {
             Color.Transparent
         },
-        animationSpec = tween(durationMillis = 160),
+        animationSpec = tween(durationMillis = EtaMotion.state),
         label = "choice_chip_container",
     )
     val content by animateColorAsState(
@@ -57,12 +60,12 @@ internal fun EtaChoiceChip(
             selected -> MiuixTheme.colorScheme.onTertiaryContainer
             else -> MiuixTheme.colorScheme.onSurface
         },
-        animationSpec = tween(durationMillis = 160),
+        animationSpec = tween(durationMillis = EtaMotion.state),
         label = "choice_chip_content",
     )
     val border by animateColorAsState(
-        targetValue = if (selected) Color.Transparent else MiuixTheme.colorScheme.dividerLine,
-        animationSpec = tween(durationMillis = 160),
+        targetValue = if (selected) MiuixTheme.colorScheme.primary.copy(alpha = 0.12f) else MiuixTheme.colorScheme.dividerLine.copy(alpha = 0.74f),
+        animationSpec = tween(durationMillis = EtaMotion.state),
         label = "choice_chip_border",
     )
     Text(
@@ -72,10 +75,22 @@ internal fun EtaChoiceChip(
         color = content,
         maxLines = 1,
         modifier = modifier
+            .shadow(
+                elevation = if (selected && enabled) 3.dp else 0.dp,
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                ambientColor = MiuixTheme.colorScheme.primary.copy(alpha = 0.14f),
+                spotColor = MiuixTheme.colorScheme.primary.copy(alpha = 0.14f),
+            )
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .semantics { this.selected = selected }
             .squircleBorder(width = 1.dp, color = border, cornerRadius = 16.dp)
             .squircleSurface(color = container, cornerRadius = 16.dp)
+            .then(
+                if (selected) Modifier.background(
+                    Brush.linearGradient(listOf(Color.White.copy(alpha = 0.10f), Color.Transparent)),
+                    androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                ) else Modifier,
+            )
             .clickable(
                 enabled = enabled,
                 role = Role.Button,
